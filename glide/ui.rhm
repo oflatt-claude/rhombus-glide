@@ -5,11 +5,13 @@ import:
   pict open
   pict/text open
   pict/rhombus open
-  draw expose:
-    Font
-  gui expose:
-    ~>
-    <~
+  draw:
+    expose:
+      Font
+  gui:
+    expose:
+      ~>
+      <~
 
 import:
   "stx_helpers.rhm" open

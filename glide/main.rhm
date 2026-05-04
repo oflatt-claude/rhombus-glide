@@ -6,11 +6,13 @@ import:
   pict as pict
   rhombus/measure
   rhombus/runtime_path
-  rhombus/fixnum expose:
-    - as fm
-  gui expose:
-    ~>
-    <~
+  rhombus/fixnum:
+    expose:
+      - as fm
+  gui:
+    expose:
+      ~>
+      <~
   "traverse_rhombus.rhm" open
   "ui.rhm" open
   "stx_helpers.rhm" open
