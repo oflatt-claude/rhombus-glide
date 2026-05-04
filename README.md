@@ -19,19 +19,18 @@ import:
 glide {}:
   fun slide1():
     beside(~sep: 100, bubble(~width: 100), bubble())
-  
+
   fun slide2():
     bubble()
-  
+
   let tabs:
     [[bubble()]]
-  
+
   let slides:
-    [slide1()]
-
-2
-
+    [slide1(), slide2()]
 ```
 
-Select sub-elements of your slides and drag them to add padding.
-Drag and drop new elements to add them to your slides.
+- Click a sub-element of a slide and drag it to add padding around it.
+- Drag a pict from a tab on the left onto a slide to add it.
+- Click `+` in a tab to add a new slide.
+- Press `ctrl+s` to write your edits back to the source file.

@@ -40,6 +40,27 @@ class InputState(action, downMouseX, downMouseY, currentX, currentY, action_data
 fun distance(x1, y1, x2, y2):
   math.sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2))
 
+// Memoize the eval of the user's slideshow code, keyed on the code syntax.
+// Cache hits are O(1) (== short-circuits via eq?) so idle frames skip the
+// ~10ms eval entirely. Active drags produce fresh syntax per frame and miss.
+def mutable cached_code = #false
+def mutable cached_evaled_tabs = #false
+
+fun get_evaled_tabs(code):
+  cond
+  | cached_code && cached_code == code:
+      cached_evaled_tabs
+  | ~else:
+      let slides = get_slides(code)
+      let tabs = get_tabs(code)
+      let r:
+        eval('block:
+                $(code)
+                $tabs ++ [$slides]')
+      cached_code := code
+      cached_evaled_tabs := r
+      r
+
 // screen is a pict for the current screen
 // tabs is a list of lists
 // each list contains picts for the tab
@@ -77,23 +98,15 @@ class Glide(inputState, code, old_code, srcloc, ui):
 
   method current_rendered(canvas_size) :: Rendered:
     let code = this.code_with_action(canvas_size)
-    let slides = get_slides(code)
-    let tabs = get_tabs(code)
+    let evaled_tabs = get_evaled_tabs(code)
     let room_for_tabs = canvas_size.width * ui.tab_screen_width
     let room_for_slides = canvas_size.width - room_for_tabs
-
-    // TODO don't evaluate slides and tabs multiple times like we do here
-    let tabs:
-      eval('block:
-              $(code)
-              $tabs ++ [$slides]')
-    
     let slide:
       scale_to_fit(
-        draw_inset_slide(tabs[this.ui.current_slide_index.tab][this.ui.current_slide_index.index]),
+        draw_inset_slide(evaled_tabs[this.ui.current_slide_index.tab][this.ui.current_slide_index.index]),
         [room_for_slides, canvas_size.height])
         .pad(~left: room_for_tabs)
-    Rendered(slide, tabs)
+    Rendered(slide, evaled_tabs)
 
   method pad_action_start(current_rendered, ev):
     cond
@@ -186,18 +199,23 @@ class Glide(inputState, code, old_code, srcloc, ui):
 
   method on_mouse(ev, canvas_size):
     let updated = this.update_input_state(ev)
-    let current_rendered:
-      updated.current_rendered(canvas_size)
-
-    let tabs_pict = updated.ui.tabs_pict(canvas_size, current_rendered)
-  
+    // The click handlers below all guard on left_down or left_up. For pure
+    // movement events, skip current_rendered + tabs_pict entirely (those
+    // are ~10ms and would otherwise run on every mouse-move).
     let with_input:
-      updated
-        .pad_action_start(current_rendered, ev)
-        .pad_action_end(current_rendered, ev, canvas_size)
-        .ui_slide_button_start(ev, tabs_pict, current_rendered)
-        .ui_slide_button_end(ev, tabs_pict, current_rendered, canvas_size)
-        .mouse_released(ev)
+      cond
+      | ev.kind == gui.MouseEvent.Kind.left_down
+         || ev.kind == gui.MouseEvent.Kind.left_up:
+          let current_rendered:
+            updated.current_rendered(canvas_size)
+          let tabs_pict = updated.ui.tabs_pict(canvas_size, current_rendered)
+          updated
+            .pad_action_start(current_rendered, ev)
+            .pad_action_end(current_rendered, ev, canvas_size)
+            .ui_slide_button_start(ev, tabs_pict, current_rendered)
+            .ui_slide_button_end(ev, tabs_pict, current_rendered, canvas_size)
+            .mouse_released(ev)
+      | ~else: updated
 
     with_input
 

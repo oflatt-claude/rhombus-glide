@@ -6,6 +6,7 @@ import:
   pict as pict
   rhombus/measure
   rhombus/runtime_path
+  draw
   rhombus/fixnum:
     expose:
       - as fm
@@ -22,6 +23,7 @@ import:
 
 export:
   glide
+  glide_bench
   pad
   draw_slide
   scale_to_fit
@@ -61,7 +63,7 @@ fun onkeyfor(state):
   onkey
 
 
-fun edit_slide(stx, config_stx):
+fun make_initial_glide(stx, config_stx):
   let tabs_stx = stx_to_list(get_tabs(stx))
   let num_tabs = tabs_stx.length() + 1
   let tabs:
@@ -71,12 +73,82 @@ fun edit_slide(stx, config_stx):
 
   let ui = UI(#false, eval(config_stx), config_stx, tabs, 0.15, num_tabs-1, SlideIndex(num_tabs-1, 0))
   let with_ids = add_pict_identities(stx)
+  Glide(InputState(Action.none, 0, 0, 0, 0, #false), with_ids, with_ids, with_ids.srcloc(), ui)
 
-  println("with_ids: " +& with_ids.to_source_string())
-  let state = gui.Obs(Glide(InputState(Action.none, 0, 0, 0, 0, #false), with_ids, with_ids, with_ids.srcloc(), ui))
+fun edit_slide(stx, config_stx):
+  let glide_state = make_initial_glide(stx, config_stx)
+  println("with_ids: " +& glide_state.code.to_source_string())
+  let state = gui.Obs(glide_state)
 
   let win = gui.Window(gui.Canvas(state, draw_for(state), ~mouse: on_mousefor(state), ~key: onkeyfor(state)), ~size: [initialScreenW, initialScreenH])
   gui.render(win)
+
+class FakeSize(width, height)
+
+fun avg_ms_per(label, n, thunk):
+  // warm up
+  for (_i in 0..3): thunk()
+  let t0 = measure.real_milliseconds()
+  for (_i in 0..n): thunk()
+  let t1 = measure.real_milliseconds()
+  let per = (t1 - t0) / n
+  println(label +& ": " +& per +& " ms/iter (n=" +& n +& ", total=" +& (t1 - t0) +& " ms)")
+  per
+
+fun bench_slide(stx, config_stx):
+  let glide_state = make_initial_glide(stx, config_stx)
+  let canvas_size = FakeSize(initialScreenW, initialScreenH)
+  let n = 30
+
+  println("=== glide headless benchmark ===")
+  println("slides: " +& get_slide_list(glide_state.code).length() +& ", tabs: " +& get_tab_list(glide_state.code).length())
+
+  avg_ms_per("current_rendered (full frame)", n,
+             fun (): glide_state.current_rendered(canvas_size))
+
+  avg_ms_per("code_with_action", n,
+             fun (): glide_state.code_with_action(canvas_size))
+
+  let code = glide_state.code_with_action(canvas_size)
+
+  avg_ms_per("get_slides", n, fun (): get_slides(code))
+  avg_ms_per("get_tabs", n, fun (): get_tabs(code))
+
+  let slides_stx = get_slides(code)
+  let tabs_stx = get_tabs(code)
+  avg_ms_per("eval(block: code; tabs ++ [slides])", n,
+             fun ():
+               eval('block:
+                       $(code)
+                       $tabs_stx ++ [$slides_stx]'))
+
+  let evaled_tabs:
+    eval('block:
+            $(code)
+            $tabs_stx ++ [$slides_stx]')
+  let current_pict = evaled_tabs[glide_state.ui.current_slide_index.tab][glide_state.ui.current_slide_index.index]
+
+  avg_ms_per("draw_inset_slide(current)", n,
+             fun (): draw_inset_slide(current_pict))
+
+  let cr = glide_state.current_rendered(canvas_size)
+  avg_ms_per("ui.tabs_pict(canvas_size, cr)", n,
+             fun (): glide_state.ui.tabs_pict(canvas_size, cr))
+
+  // simulate the full per-frame work the GUI does: current_rendered (in on_mouse + draw) + tabs_pict
+  avg_ms_per("simulated frame: 2x current_rendered + tabs_pict", n,
+             fun ():
+               let cr1 = glide_state.current_rendered(canvas_size)
+               let _ = glide_state.ui.tabs_pict(canvas_size, cr1)
+               let cr2 = glide_state.current_rendered(canvas_size)
+               glide_state.ui.tabs_pict(canvas_size, cr2))
+
+  // also try rendering to a bitmap dc to get real draw cost
+  let bm = draw.Bitmap([initialScreenW, initialScreenH])
+  let dc = bm.make_dc()
+  avg_ms_per("selected_slide.draw(bitmap_dc)", n,
+             fun (): cr.selected_slide.draw(dc))
+  println("===============================")
 
 meta:
   import:
@@ -87,7 +159,14 @@ meta:
   fun glide(syntax, config):
     '«edit_slide('$(syntax)', '$(config)')»'
 
+  fun glide_bench(syntax, config):
+    '«bench_slide('$(syntax)', '$(config)')»'
+
 
 defn.macro 'glide $config:
               $stx':
   glide(stx, config)
+
+defn.macro 'glide_bench $config:
+              $stx':
+  glide_bench(stx, config)
