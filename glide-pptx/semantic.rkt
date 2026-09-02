@@ -1,0 +1,176 @@
+#lang racket/base
+;; Structure-aware export: turn the descriptors a pict carries into items that
+;; keep their meaning, and fall back to the flattened display list for anything
+;; that carries none.
+;;
+;; The walk is over the runtime's own composition -- `slide-canvas` collecting
+;; `placed` elements -- rather than over the pict tree, which makes it exact
+;; rather than a reconstruction. Elements are emitted in paint order, and an
+;; element with no descriptor is rendered on its own and spliced in at the right
+;; point, so z-order is preserved either way.
+(require racket/list racket/math racket/class pict
+         "ir.rkt" "tagged.rkt" "draw-ir.rkt" "record-adapt.rkt"
+         (only-in "runtime.rkt" placed placed? placed-x placed-y placed-rot
+                  placed-pict placed-tag pin-placed))
+(provide pict->page semantic-page?)
+
+;; A pict is exported semantically when it says how it was built.
+(define (semantic-page? p) (slide-desc? (pict-desc p)))
+
+(define (pict->page p width height)
+  (define d (pict-desc p))
+  (cond
+    [(slide-desc? d)
+     (display-page width height
+                   (ir-fill->fill (slide-desc-background d))
+                   (slide-items d p width height))]
+    [else (pict->display-page (lambda (dc) (draw-pict p dc 0 0)) width height)]))
+
+;; ------------------------------------------------------------------ colors
+
+(define (ir-color->rgba c)
+  (if (rgba? c) (rgba* (rgba-r c) (rgba-g c) (rgba-b c) (rgba-a c)) (rgba* 0 0 0 1.0)))
+
+(define (ir-fill->fill f)
+  (cond
+    [(solid-fill? f) (fill:solid (ir-color->rgba (solid-fill-color f)))]
+    [(gradient-fill? f)
+     ;; Endpoints are resolved by the writer from the angle, so a unit span is
+     ;; enough here; the angle is what carries the direction.
+     (define a (degrees->radians (gradient-fill-angle f)))
+     (fill:linear 0.0 0.0 (cos a) (sin a)
+                  (for/list ([s (in-list (gradient-fill-stops f))])
+                    (list (exact->inexact (car s)) (ir-color->rgba (cdr s)))))]
+    [(pattern-fill? f) (fill:solid (ir-color->rgba (pattern-fill-fg f)))]
+    [else #f]))
+
+(define (ir-line->pen l scale)
+  (and (stroke? l)
+       (pen* (ir-color->rgba (stroke-color l))
+             (* scale (stroke-width l))
+             (stroke-dash l)
+             (case (stroke-cap l) [(round) 'round] [(projecting) 'square] [else 'flat])
+             'miter)))
+
+;; A group with a scale changes text size along with everything else, matching
+;; what the renderer draws.
+(define (scale-body body factor)
+  (cond
+    [(or (not body) (= 1.0 factor)) body]
+    [else
+     (struct-copy
+      text-body body
+      [paras (for/list ([p (in-list (text-body-paras body))])
+               (struct-copy para p
+                            [runs (for/list ([r (in-list (para-runs p))])
+                                    (struct-copy trun r [size (* factor (trun-size r))]))]
+                            [margin-left (* factor (para-margin-left p))]
+                            [indent (* factor (para-indent p))]
+                            [space-before (* factor (para-space-before p))]
+                            [space-after (* factor (para-space-after p))]))]
+      [insets (let ([i (text-body-insets body)])
+                (insets (* factor (insets-l i)) (* factor (insets-t i))
+                        (* factor (insets-r i)) (* factor (insets-b i))))])]))
+
+;; ------------------------------------------------------------------- walking
+
+;; A transform from an element's own coordinate space to the slide's:
+;; absolute = offset + scale * local.
+(struct xf (ox oy sx sy) #:transparent)
+(define (xf-x t v) (+ (xf-ox t) (* (xf-sx t) v)))
+(define (xf-y t v) (+ (xf-oy t) (* (xf-sy t) v)))
+(define (xf-factor t) (sqrt (max 0.0 (* (abs (xf-sx t)) (abs (xf-sy t))))))
+
+(define (slide-items d whole width height)
+  (append* (for/list ([pl (in-list (slide-desc-placeds d))])
+             (placed-items pl (xf 0.0 0.0 1.0 1.0) width height))))
+
+(define (placed-items pl t page-w page-h)
+  (define p (placed-pict pl))
+  (define d (pict-desc p))
+  (define x (xf-x t (placed-x pl)))
+  (define y (xf-y t (placed-y pl)))
+  (define rot (placed-rot pl))
+  (define f (xf-factor t))
+  (define tag (placed-tag pl))
+  (cond
+    [(shape-desc? d) (shape-items d x y rot t f tag)]
+    [(text-desc? d)
+     (list (it:textbox x y (* (xf-sx t) (text-desc-width d)) (* (xf-sy t) (text-desc-height d))
+                       rot (scale-body (text-desc-body d) f) tag))]
+    [(image-desc? d)
+     (list (it:picture x y (* (xf-sx t) (image-desc-width d))
+                       (* (xf-sy t) (image-desc-height d)) rot
+                       (image-desc-src d) (image-desc-crop d)
+                       (image-desc-flip-h? d) (image-desc-flip-v? d)
+                       (ir-line->pen (image-desc-line d) f)
+                       (image-desc-opacity d) tag))]
+    [(group-desc? d) (group-items d x y t page-w page-h)]
+    ;; A table or anything undescribed is rendered on its own and spliced in
+    ;; here, which keeps paint order exact.
+    [else (raw-items pl page-w page-h)]))
+
+(define (shape-items d x y rot t f tag)
+  (define w (* (xf-sx t) (shape-desc-width d)))
+  (define h (* (xf-sy t) (shape-desc-height d)))
+  (define geom (shape-desc-geom d))
+  (define fill (ir-fill->fill (shape-desc-fill d)))
+  (define pen (ir-line->pen (shape-desc-line d) f))
+  (define body (scale-body (shape-desc-body d) f))
+  (cond
+    [(preset-geom? geom)
+     (list (it:preset x y w h rot (preset-geom-name geom) (preset-geom-adjust geom)
+                      (shape-desc-flip-h? d) (shape-desc-flip-v? d)
+                      fill pen body tag))]
+    ;; Custom geometry has no preset to name, so it stays a drawn path; the text
+    ;; still travels with it.
+    [else
+     (define segs (custom-geom->segs geom x y w h))
+     (list (it:shape-path segs fill pen (list x y w h) body tag))]))
+
+;; Custom geometry arrives in its own coordinate space; scale it onto the box.
+(define (custom-geom->segs g x y w h)
+  (define gw (max 1 (custom-geom-w g)))
+  (define gh (max 1 (custom-geom-h g)))
+  (define (X v) (+ x (* w (/ (exact->inexact v) gw))))
+  (define (Y v) (+ y (* h (/ (exact->inexact v) gh))))
+  (append*
+   (for/list ([path (in-list (custom-geom-paths g))])
+     (for/list ([cmd (in-list path)])
+       (case (car cmd)
+         [(move) (seg:move (X (car (second cmd))) (Y (cdr (second cmd))))]
+         [(line) (seg:line (X (car (second cmd))) (Y (cdr (second cmd))))]
+         [(curve) (let ([ps (rest cmd)])
+                    (if (= 3 (length ps))
+                        (seg:curve (X (car (first ps))) (Y (cdr (first ps)))
+                                   (X (car (second ps))) (Y (cdr (second ps)))
+                                   (X (car (third ps))) (Y (cdr (third ps))))
+                        (seg:close)))]
+         [(quad) (let ([ps (rest cmd)])
+                   (if (= 2 (length ps))
+                       (seg:curve (X (car (first ps))) (Y (cdr (first ps)))
+                                  (X (car (first ps))) (Y (cdr (first ps)))
+                                  (X (car (second ps))) (Y (cdr (second ps))))
+                       (seg:close)))]
+         [else (seg:close)])))))
+
+(define (group-items d gx gy t page-w page-h)
+  (define cw (max 1e-9 (group-desc-child-width d)))
+  (define ch (max 1e-9 (group-desc-child-height d)))
+  (define inner-sx (/ (group-desc-width d) cw))
+  (define inner-sy (/ (group-desc-height d) ch))
+  (define sx (* (xf-sx t) inner-sx))
+  (define sy (* (xf-sy t) inner-sy))
+  (define inner
+    (xf (- gx (* sx (group-desc-child-x d)))
+        (- gy (* sy (group-desc-child-y d)))
+        sx sy))
+  (append* (for/list ([pl (in-list (group-desc-placeds d))])
+             (placed-items pl inner page-w page-h))))
+
+;; Renders one element by itself, through the runtime's own placement, so the
+;; ink lands exactly where the slide put it.
+(define (raw-items pl page-w page-h)
+  (define composed (pin-placed (blank page-w page-h) pl))
+  (display-page-items
+   (pict->display-page (lambda (dc) (draw-pict composed dc 0 0)) page-w page-h)))

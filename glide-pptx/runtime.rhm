@@ -1,0 +1,191 @@
+#lang rhombus/and_meta
+// Rhombus spelling for the drawing runtime.
+//
+// The runtime itself is Racket, so a fidelity fix lands in the Racket and the
+// Rhombus output at the same time. This module only renames: the wrappers exist
+// because Racket keywords like `#:bold?` and `#:flip-h?` have no direct
+// Rhombus spelling, and generated code should not have to escape them.
+
+import:
+  lib("glide-pptx/runtime.rkt") as rt
+  lib("glide-pptx/export.rkt") as ex
+  lib("pict/main.rkt") as pict_rkt
+
+export:
+  slide_canvas
+  at
+  shape_pict
+  textbox
+  image_pict
+  group_pict
+  table_pict
+  body
+  para
+  run
+  hex
+  solid_fill
+  gradient_fill
+  image_fill
+  pattern_fill
+  make_stroke
+  rgba
+  rgb
+  black
+  white
+  insets
+  default_insets
+  bullet
+  no_bullet
+  preset_geom
+  custom_geom
+  tbl_cell
+  current_default_font
+  pair
+  deck_to_pdf
+  picts_to_pptx
+  pict_to_png
+  media_lookup
+  current_media_base
+  pict_width
+  pict_height
+  blank
+
+// A Rhombus list is not a Racket list, so anything crossing into the Racket
+// runtime as a list argument is converted here. Generated code can then use
+// plain `[...]` literals throughout.
+
+fun to_rkt_list(v):
+  match v
+  | l :: List: PairList[& l]
+  | ~else: v
+
+fun to_rkt_list_of_lists(v):
+  match v
+  | l :: List: PairList[& l.map(to_rkt_list)]
+  | ~else: v
+
+// ---------------------------------------------------------------- composition
+
+fun slide_canvas(~width: w, ~height: h, ~background: bg = rt.#{white}, & elems):
+  rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, & elems)
+
+fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false):
+  rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag)
+
+// --------------------------------------------------------------------- leaves
+
+fun shape_pict(~width: w, ~height: h,
+               ~shape: shape = #false, ~geom: geom = #false,
+               ~fill: fill = #false, ~line: line = #false, ~body: body = #false,
+               ~flip_h: fh = #false, ~flip_v: fv = #false):
+  rt.#{shape-pict}(~width: w, ~height: h, ~shape: shape, ~geom: geom,
+                   ~fill: fill, ~line: line, ~body: body,
+                   ~#{flip-h?}: fh, ~#{flip-v?}: fv)
+
+fun textbox(~width: w, ~height: h,
+            ~anchor: anchor = #'top, ~anchor_center: ac = #false,
+            ~wrap: wrap = #true, ~autofit: autofit = #'none,
+            ~insets: ins = rt.#{default-insets}, ~rotate: rot = 0.0,
+            & paras):
+  rt.#{textbox}(~width: w, ~height: h, ~anchor: anchor,
+                ~#{anchor-center?}: ac, ~#{wrap?}: wrap, ~autofit: autofit,
+                ~insets: ins, ~rotate: rot, & paras)
+
+fun image_pict(src, w, h,
+               ~crop: crop = #false, ~line: line = #false,
+               ~flip_h: fh = #false, ~flip_v: fv = #false,
+               ~opacity: opacity = 1.0):
+  rt.#{image-pict}(src, w, h, ~crop: to_rkt_list(crop), ~line: line,
+                   ~#{flip-h?}: fh, ~#{flip-v?}: fv, ~opacity: opacity)
+
+fun group_pict(~width: w, ~height: h,
+               ~child_x: cx = 0.0, ~child_y: cy = 0.0,
+               ~child_width: cw = w, ~child_height: ch = h,
+               & elems):
+  rt.#{group-pict}(~width: w, ~height: h, ~#{child-x}: cx, ~#{child-y}: cy,
+                   ~#{child-width}: cw, ~#{child-height}: ch, & elems)
+
+fun table_pict(~width: w, ~height: h, ~col_widths: cols, ~row_heights: rows,
+               ~cells: cells):
+  rt.#{table-pict}(~width: w, ~height: h,
+                   ~#{col-widths}: to_rkt_list(cols),
+                   ~#{row-heights}: to_rkt_list(rows),
+                   ~cells: to_rkt_list_of_lists(cells))
+
+// ----------------------------------------------------------------------- text
+
+fun body(~anchor: anchor = #'top, ~anchor_center: ac = #false,
+         ~wrap: wrap = #true, ~autofit: autofit = #'none,
+         ~insets: ins = rt.#{default-insets}, ~rotate: rot = 0.0,
+         & paras):
+  rt.#{body*}(~anchor: anchor, ~#{anchor-center?}: ac, ~#{wrap?}: wrap,
+              ~autofit: autofit, ~insets: ins, ~rotate: rot, & paras)
+
+fun para(~align: align = #'left, ~level: level = 0,
+         ~margin_left: marl = 0.0, ~indent: indent = 0.0,
+         ~line_spacing: ls = Pair(#'percent, 1.0),
+         ~space_before: sb = 0.0, ~space_after: sa = 0.0,
+         ~bullet: b = rt.#{no-bullet},
+         & runs):
+  rt.#{para*}(~align: align, ~level: level, ~#{margin-left}: marl,
+              ~indent: indent, ~#{line-spacing}: ls,
+              ~#{space-before}: sb, ~#{space-after}: sa, ~bullet: b, & runs)
+
+fun run(text,
+        ~font: font = rt.#{current-default-font}(),
+        ~size: size = 18.0,
+        ~bold: bold = #false, ~italic: italic = #false,
+        ~underline: underline = #false, ~strike: strike = #false,
+        ~color: color = rt.#{black}, ~spacing: spacing = 0.0,
+        ~caps: caps = #'none, ~baseline: baseline = 0.0):
+  rt.#{run*}(text, ~font: font, ~size: size,
+             ~#{bold?}: bold, ~#{italic?}: italic,
+             ~#{underline?}: underline, ~#{strike?}: strike,
+             ~color: color, ~spacing: spacing, ~caps: caps, ~baseline: baseline)
+
+// ---------------------------------------------------------------------- paint
+
+fun hex(s, ~alpha: alpha = 1.0): rt.#{hex}(s, ~alpha: alpha)
+
+fun make_stroke(color, ~width: w = 1.0, ~dash: dash = #'solid, ~cap: cap = #'flat):
+  rt.#{make-stroke}(color, ~width: w, ~dash: dash, ~cap: cap)
+
+def solid_fill = rt.#{solid-fill}
+
+fun gradient_fill(stops, angle): rt.#{gradient-fill}(to_rkt_list(stops), angle)
+
+fun preset_geom(name, adjust): rt.#{preset-geom}(name, to_rkt_list(adjust))
+
+fun custom_geom(paths, w, h):
+  rt.#{custom-geom}(PairList[& paths.map(to_rkt_list_of_lists)], w, h)
+def image_fill = rt.#{image-fill}
+def pattern_fill = rt.#{pattern-fill}
+def rgba = rt.#{rgba}
+def rgb = rt.#{rgb}
+def black = rt.#{black}
+def white = rt.#{white}
+def insets = rt.#{insets}
+def default_insets = rt.#{default-insets}
+def bullet = rt.#{bullet}
+def no_bullet = rt.#{no-bullet}
+def tbl_cell = rt.#{tbl-cell}
+def current_default_font = rt.#{current-default-font}
+
+fun pair(a, b): Pair(a, b)
+
+// --------------------------------------------------------------------- output
+
+fun deck_to_pdf(picts, path, ~width: w = #false, ~height: h = #false):
+  rt.#{deck->pdf}(to_rkt_list(picts), path, ~width: w, ~height: h)
+
+fun pict_to_png(p, path, ~scale: s = 1.0): rt.#{pict->png}(p, path, ~scale: s)
+
+// Writing a .pptx lives in its own module, so it is imported where it is used.
+fun picts_to_pptx(picts, path, ~width: w = #false, ~height: h = #false):
+  ex.#{picts->pptx}(to_rkt_list(picts), path, ~width: w, ~height: h)
+
+def media_lookup = rt.#{media-lookup}
+def current_media_base = rt.#{current-media-base}
+def blank = pict_rkt.#{blank}
+def pict_width = pict_rkt.#{pict-width}
+def pict_height = pict_rkt.#{pict-height}
