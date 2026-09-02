@@ -35,3 +35,18 @@ glide {}:
 
 Select sub-elements of your slides and drag them to add padding.
 Drag and drop new elements to add them to your slides.
+
+## glide-pptx
+
+`glide-pptx/` is a second front end for the same idea: instead of a GUI of our
+own, it uses **PowerPoint or Keynote** as the direct-manipulation editor.
+
+```
+$ raco glide-pptx translate -o out talk.pptx   # deck  -> Rhombus or Racket program
+$ raco glide-pptx export out/talk.rhm          # program -> deck
+$ raco glide-pptx watch out/talk.rhm --app keynote
+```
+
+Saving the program regenerates the deck and reopens it; saving the deck merges
+the geometry back into the program's source, changing only the literals that
+moved. See `glide-pptx/README.md`.

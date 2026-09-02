@@ -1,0 +1,4 @@
+compiled/
+out/
+*.pdf
+!docs/*.pdf
