@@ -228,9 +228,23 @@ known form. Nothing restructures the program.
 
 | what changed | position is a literal | position is computed |
 | --- | --- | --- |
-| drag | patch the two numbers on `at` | insert a `nudge` wrapper *(not yet built)* |
-| resize | patch `#:width` / `#:height` | reported |
+| drag | patch the two numbers on `at` | insert or update a `#:nudge` correction |
+| resize | patch `#:width` / `#:height` | patched if the size is a literal |
 | text | patch the string literal | reported |
+
+When a position is computed there is no number to rewrite, so the drag is
+recorded as a correction on `at` instead:
+
+```racket
+(at left 60.0 #:tag "Box" #:nudge (list 160.0 40.0)
+    (shape-pict #:width 100.0 #:height 40.0 ...))
+```
+
+The program's own layout logic is untouched, and the correction says plainly
+that a hand adjustment was made. Being one argument rather than a wrapper is
+deliberate: **a second drag updates those two numbers**, so corrections cannot
+stack up the way nested pads do. Dragging the same element twice leaves exactly
+one `#:nudge`, which the tests check.
 
 A drag on `(at 57.6 158.4 #:tag "Rounded Rectangle 2" ...)` changes exactly that
 one line and no other; `(at margin (+ top 20) ...)` is reported and left alone,
@@ -270,6 +284,24 @@ compares pages pixel by pixel. It reports two numbers per page:
 
 It also writes, per page, a diff image (grey where the two agree, red where they
 do not) and a montage stacking reference, ours, and the diff.
+
+### It converges rather than drifts
+
+Round-tripping repeatedly does not accumulate error. Measured over five
+generations of deck -> program -> deck:
+
+| | |
+| --- | --- |
+| exported slide XML | **byte-identical from generation 1 onward** |
+| generated program | a fixed point from generation 2, modulo the input filename |
+| pixel error against the original | **0.182% at every generation** |
+
+The residual is a one-time conversion difference, and it is not arithmetic: EMU
+is a 12700th of a point and generated source rounds to a thousandth, about
+0.0001pt, or 0.00013px at 96 dpi. It is **text laid out twice by two engines** --
+our renderer measures with cairo to decide a box, and then PowerPoint re-lays the
+paragraphs inside it. On a real talk with 203 text bodies, small disagreements
+about line breaking, ascent and autofit scale account for nearly all of it.
 
 Exact equality is not the goal and is not reachable. LibreOffice is itself an
 approximation of PowerPoint, and two text engines will never agree to the pixel.
@@ -355,6 +387,7 @@ tests/
   roundtrip.rkt   emitted programs reproduce the direct render
   fidelity.rkt    per-deck budgets against LibreOffice
   export.rkt      exported .pptx matches the picts it came from
+  corpus.rkt      the whole pipeline over several hundred real decks
   sync.rkt        a drag comes back as a literal, and computed layout does not
   watch.rkt       the loop, driven from both sides
 ```
@@ -404,7 +437,24 @@ raco test tests/all.rkt      # everything
 raco test tests/unit.rkt     # fast, no external tools
 ```
 
-`tests/fidelity.rkt` needs LibreOffice and poppler; the other two do not.
+`tests/fidelity.rkt` and `tests/export.rkt` need LibreOffice and poppler;
+`tests/unit.rkt` needs nothing.
+
+`tests/corpus.rkt` runs the whole pipeline -- import, render, draw, export,
+re-import -- over LibreOffice's own pptx regression suite, several hundred decks
+each aimed at one awkward corner of the format. It checks crash-freedom rather
+than fidelity, since those files are deliberately strange, and it prints an
+inventory of everything drawn approximately. The decks are not committed; fetch
+them with
+
+```console
+$ tools/fetch-corpus.sh
+399 decks present
+```
+
+and the test says so and passes when they are absent. It found two real bugs on
+its first run: a custom path that opens with a line rather than a move, and a
+picture whose relationship resolves to nothing.
 
 ## Where this is going
 

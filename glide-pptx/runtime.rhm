@@ -69,8 +69,8 @@ fun to_rkt_list_of_lists(v):
 fun slide_canvas(~width: w, ~height: h, ~background: bg = rt.#{white}, & elems):
   rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, & elems)
 
-fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false):
-  rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag)
+fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
+  rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~nudge: to_rkt_list(nudge))
 
 // --------------------------------------------------------------------- leaves
 

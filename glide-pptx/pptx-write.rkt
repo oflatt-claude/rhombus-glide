@@ -396,11 +396,13 @@
          (define k (add1 (length images)))
          (define rid (format "rId~a" (+ 1 k)))
          (define src (it:picture-src i))
-         (define ext (let ([e (bytes->string/utf-8
-                               (or (path-get-extension (if (path? src) src (string->path src)))
-                                   #".png"))])
-                       (if (member (string-downcase e) '(".png" ".jpg" ".jpeg" ".gif"))
-                           (string-downcase e) ".png")))
+         ;; A picture whose relationship resolved to nothing has no source and
+         ;; so no extension to read; a blank png stands in for it.
+         (define ext
+           (let* ([p (and src (if (path? src) src (string->path src)))]
+                  [e (and p (path-get-extension p))]
+                  [e* (if e (string-downcase (bytes->string/utf-8 e)) ".png")])
+             (if (member e* '(".png" ".jpg" ".jpeg" ".gif")) e* ".png")))
          (define name (format "ppt/media/pic~a-~a~a" index k ext))
          (set! images (cons (list name rid i) images))
          (picture-item-xml n i rid)]
@@ -621,7 +623,7 @@
   (cond
     [(it:picture? i)
      (define src (it:picture-src i))
-     (if (file-exists? src)
+     (if (and src (file-exists? src))
          (file->bytes src)
          (begin (warn! "image ~a is missing; a blank stands in" src)
                 (blank-png)))]

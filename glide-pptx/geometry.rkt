@@ -303,12 +303,22 @@
   (define p (new dc-path%))
   (for ([subpath (in-list (custom-geom-paths geom))])
     (define (X v) (* sx v)) (define (Y v) (* sy v))
+    ;; A path in the wild does not always open with a move, and dc-path%
+    ;; refuses a line before one. The first point opens the path whatever it
+    ;; claims to be.
+    (define open? (box #f))
+    (define (goto! x y)
+      (cond [(unbox open?) (send p line-to x y)]
+            [else (send p move-to x y) (set-box! open? #t)]))
     (for ([cmd (in-list subpath)])
       (case (car cmd)
-        [(move) (send p move-to (X (car (second cmd))) (Y (cdr (second cmd))))]
-        [(line) (send p line-to (X (car (second cmd))) (Y (cdr (second cmd))))]
+        [(move) (send p move-to (X (car (second cmd))) (Y (cdr (second cmd))))
+                (set-box! open? #t)]
+        [(line) (goto! (X (car (second cmd))) (Y (cdr (second cmd))))]
         [(curve) (let ([ps (rest cmd)])
                    (when (= 3 (length ps))
+                     (unless (unbox open?)
+                       (goto! (X (car (first ps))) (Y (cdr (first ps)))))
                      (send p curve-to
                            (X (car (first ps))) (Y (cdr (first ps)))
                            (X (car (second ps))) (Y (cdr (second ps)))
@@ -316,11 +326,13 @@
         ;; A quadratic segment promoted to a cubic with the standard 2/3 rule.
         [(quad) (let ([ps (rest cmd)])
                   (when (= 2 (length ps))
+                    (unless (unbox open?)
+                      (goto! (X (car (first ps))) (Y (cdr (first ps)))))
                     (send p curve-to
                           (X (car (first ps))) (Y (cdr (first ps)))
                           (X (car (first ps))) (Y (cdr (first ps)))
                           (X (car (second ps))) (Y (cdr (second ps))))))]
-        [(close) (send p close)]
+        [(close) (when (unbox open?) (send p close)) (set-box! open? #f)]
         [else (void)])))
   (cond
     [(or fh fv)

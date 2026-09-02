@@ -8,7 +8,7 @@
          racket/draw pict
          "ir.rkt" "geometry.rkt" "tagged.rkt")
 (provide ;; composition
-         (struct-out placed) at slide-canvas pin-placed
+         (struct-out placed) at slide-canvas pin-placed placed-position
          ;; structure carried on the pict, for export
          (all-from-out "tagged.rkt")
          ;; leaves
@@ -121,6 +121,11 @@
 
 (define bitmap-cache (make-hash))
 (define (load-bitmap path)
+  (cond
+    [(not path) (warn! "a picture has no image to draw") #f]
+    [else (load-bitmap* path)]))
+
+(define (load-bitmap* path)
   (hash-ref! bitmap-cache (if (path? path) (path->string path) path)
              (lambda ()
                (with-handlers ([exn:fail? (lambda (e)
@@ -604,14 +609,32 @@
 ;; `tag` names the element for export and for merging edits back. It is the
 ;; PowerPoint shape name, and it has to be a literal in the source for a merge
 ;; to be able to find it.
-(struct placed (x y rot pict tag) #:transparent)
+;;
+;; `nudge` is a `(list dx dy)` correction added to the position. It exists for
+;; the case where x and y are *computed* -- `(at margin (+ top 20) ...)` -- and
+;; so there is no number a merge could rewrite. Dragging such an element in
+;; PowerPoint records the correction here instead, which keeps the program's own
+;; layout logic intact and says plainly that a hand adjustment was made.
+;;
+;; Being one argument rather than a wrapper is deliberate: a second drag updates
+;; these two numbers, so corrections cannot stack up the way nested pads do.
+(struct placed (x y rot pict tag nudge) #:transparent)
 
-(define (at x y p #:rotate [rot 0.0] #:tag [tag #f]) (placed x y rot p tag))
+(define (at x y p #:rotate [rot 0.0] #:tag [tag #f] #:nudge [nudge #f])
+  (placed x y rot p tag nudge))
+
+;; The position an element actually draws at.
+(define (placed-position pl)
+  (define n (placed-nudge pl))
+  (if (and (list? n) (= 2 (length n)))
+      (values (+ (placed-x pl) (first n)) (+ (placed-y pl) (second n)))
+      (values (placed-x pl) (placed-y pl))))
 
 (define (pin-placed base pl [ox 0.0] [oy 0.0])
   (define p (placed-pict pl))
-  (define x (+ (placed-x pl) ox))
-  (define y (+ (placed-y pl) oy))
+  (define-values (px py) (placed-position pl))
+  (define x (+ px ox))
+  (define y (+ py oy))
   (cond
     [(zero? (placed-rot pl)) (pin-over base x y p)]
     [else
