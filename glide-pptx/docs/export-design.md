@@ -449,8 +449,17 @@ program.
 | rotate | patch `#:rotate` | reported for now |
 | text | patch the string literal | reported |
 
-A computed position has no number to change, but a drag is still expressible as a
-**local pad** that leaves the surrounding layout alone:
+A computed position has no number to change. **Built:** the drag is recorded as a
+`#:nudge` argument on `at`, which the runtime adds to the position. Being an
+argument rather than a wrapper is the point -- a second drag rewrites those two
+numbers, so corrections cannot nest. Measured: dragging twice leaves exactly one
+`#:nudge`, accumulated to the right total, with the program's own computed
+position untouched.
+
+For a pict composed *inside* an `at` -- one of several children of a
+`vc-append`, say -- there is no `at` to carry a correction, and there the wrapper
+form is still the answer. A drag is expressible as a **local pad** that leaves
+the surrounding layout alone:
 
 ```racket
 ;; move the drawing without changing the layout box

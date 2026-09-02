@@ -11,7 +11,7 @@
 (require racket/list racket/math racket/class pict
          "ir.rkt" "tagged.rkt" "draw-ir.rkt" "record-adapt.rkt"
          (only-in "runtime.rkt" placed placed? placed-x placed-y placed-rot
-                  placed-pict placed-tag pin-placed))
+                  placed-pict placed-tag placed-position pin-placed))
 (provide pict->page semantic-page?)
 
 ;; A pict is exported semantically when it says how it was built.
@@ -88,8 +88,9 @@
 (define (placed-items pl t page-w page-h)
   (define p (placed-pict pl))
   (define d (pict-desc p))
-  (define x (xf-x t (placed-x pl)))
-  (define y (xf-y t (placed-y pl)))
+  (define-values (local-x local-y) (placed-position pl))
+  (define x (xf-x t local-x))
+  (define y (xf-y t local-y))
   (define rot (placed-rot pl))
   (define f (xf-factor t))
   (define tag (placed-tag pl))

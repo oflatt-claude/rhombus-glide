@@ -9,7 +9,12 @@
          racket/port racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-racket glide-pptx/emit-rhombus
          glide-pptx/export
-         glide-pptx/sync glide-pptx/sync-state glide-pptx/runtime)
+         glide-pptx/sync glide-pptx/sync-state glide-pptx/runtime
+         (only-in glide-pptx/watch program-picts))
+
+;; Loads a program's slides the way the watcher does, in a fresh namespace, so
+;; a re-export after a patch sees the patched source.
+(define (program-picts-fresh path) (program-picts path))
 
 (define-runtime-path decks-dir "decks")
 
@@ -104,14 +109,16 @@
                 '()
                 "the sync converges: a second pass finds nothing"))
 
-;; ------------------------------------- a computed position is not patchable
+;; ------------------------------- a computed position becomes a correction
 
+;; `left` is a variable, so there is no literal to replace. The drag is recorded
+;; as a `#:nudge` on `at` instead, which keeps the program's own layout logic
+;; and -- because it is one argument rather than a wrapper -- cannot stack up
+;; when the element is dragged again.
 (let ()
   (define dir (build-path work "computed"))
   (make-directory* dir)
   (define program (build-path dir "deck.rkt"))
-  ;; `left` is a variable, so there is no literal to replace. The merge has to
-  ;; say so rather than overwrite a decision the code is making.
   (call-with-output-file program #:exists 'replace
     (lambda (o)
       (write-string (string-join
@@ -129,19 +136,53 @@
                        "")
                      "\n") o)))
   (define exported (build-path dir "deck.pptx"))
-  (define picts (parameterize ([current-media-base dir])
-                  (dynamic-require `(file ,(path->string program)) 'all-slides)))
-  (picts->pptx picts exported #:width 480.0 #:height 270.0)
+  (define (re-export!)
+    (define picts (parameterize ([current-media-base dir])
+                    (program-picts-fresh program)))
+    (picts->pptx picts exported #:width 480.0 #:height 270.0))
+  (re-export!)
   (sync-once program exported #:workdir (build-path dir "w"))
-  (define before (file->string program))
+
+  ;; First drag: a correction appears.
   (drag! exported 1 "Box" 200.0 100.0)
-  (define r (sync-once program exported #:workdir (build-path dir "w")))
-  (check-equal? (length (filter (lambda (a) (eq? 'moved (sync-action-kind a)))
-                                (sync-report-actions r)))
-                1 "the move was detected")
-  (check-equal? (sync-report-applied r) '() "but not applied")
-  (check-equal? (file->string program) before
-                "a computed position is left exactly as the author wrote it"))
+  (define before (file->string program))
+  (define r1 (sync-once program exported #:workdir (build-path dir "w")))
+  (check-equal? (length (sync-report-applied r1)) 1 "the drag was applied")
+  (define after1 (file->string program))
+  (check-true (regexp-match? #rx"#:nudge [(]list 160[.]0 40[.]0[)]" after1)
+              (format "a correction of the right size was recorded:\n~a" after1))
+  (check-equal? (length (regexp-match* #rx"#:nudge" after1)) 1 "exactly one correction")
+  (check-true (regexp-match? #rx"at left 60[.]0" after1)
+              "and the program's own computed position is untouched")
+  (check-equal? (length (string-split before "\n")) (length (string-split after1 "\n"))
+                "no lines were added or removed")
+
+  ;; The element now really draws where it was dragged to.
+  (define states (program-slide-states program))
+  (define box (findf (lambda (e) (equal? "Box" (el-state-tag e)))
+                     (slide-state-elements (first states))))
+  (check-true (and box #t) "the element is still found")
+  (when box
+    (check-= (el-state-x box) 200.0 0.01 "at the dragged x")
+    (check-= (el-state-y box) 100.0 0.01 "and the dragged y"))
+
+  ;; Second drag: the correction is updated in place, not nested.
+  (re-export!)
+  (sync-once program exported #:workdir (build-path dir "w"))
+  (drag! exported 1 "Box" 260.0 70.0)
+  (define r2 (sync-once program exported #:workdir (build-path dir "w")))
+  (check-equal? (length (sync-report-applied r2)) 1 "the second drag was applied too")
+  (define after2 (file->string program))
+  (check-equal? (length (regexp-match* #rx"#:nudge" after2)) 1
+                (format "still exactly one correction, not a stack of them:\n~a" after2))
+  (check-true (regexp-match? #rx"#:nudge [(]list 220[.]0 10[.]0[)]" after2)
+              (format "and it accumulated to the new offset:\n~a" after2))
+  (define states2 (program-slide-states program))
+  (define box2 (findf (lambda (e) (equal? "Box" (el-state-tag e)))
+                      (slide-state-elements (first states2))))
+  (when box2
+    (check-= (el-state-x box2) 260.0 0.01 "drawing at the second dragged x")
+    (check-= (el-state-y box2) 70.0 0.01 "and y")))
 
 ;; ------------------------------------------- the same thing, in Rhombus
 

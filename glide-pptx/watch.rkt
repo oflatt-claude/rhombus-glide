@@ -13,7 +13,7 @@
          racket/system racket/port file/sha1
          "export.rkt" "sync.rkt")
 (provide (struct-out app-adapter) adapters adapter-named
-         watch-loop watch-once
+         watch-loop watch-once program-picts
          current-watch-log)
 
 (define current-watch-log (make-parameter (lambda (fmt . args)

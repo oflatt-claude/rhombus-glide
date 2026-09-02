@@ -24,7 +24,10 @@
          base-path-for format-sync-report)
 
 ;; kind: 'moved, 'resized, 'retext, 'conflict, 'added, 'removed, 'unpatchable
-(struct sync-action (kind tag slide detail) #:transparent)
+;; `prior` is where the program currently draws the element, which is what a
+;; correction for a computed position is measured against. It is #f when the
+;; program has no element by that name.
+(struct sync-action (kind tag slide detail prior) #:transparent)
 (struct sync-report (actions applied base-written?) #:transparent)
 
 ;; ------------------------------------------------------- reading both sides
@@ -137,7 +140,8 @@
            (sync-action (if (and (< (abs (- (el-state-w d) (el-state-w b))) 0.05)
                                  (< (abs (- (el-state-h d) (el-state-h b))) 0.05))
                             'moved 'resized)
-                        tag index (el-geometry d))]
+                        tag index (el-geometry d)
+                        (and p (el-geometry p)))]
           [else #f])
         (cond
           ;; Text is the code's, so a program edit wins and a deck-only edit is
@@ -148,9 +152,9 @@
           [deck-retext? (sync-action 'retext tag index (el-state-text d))]
           [else #f])))))
    (for/list ([d (in-list deck-added)])
-     (sync-action 'added (or (el-state-tag d) "(unnamed)") index (el-geometry d)))
+     (sync-action 'added (or (el-state-tag d) "(unnamed)") index (el-geometry d) #f))
    (for/list ([b (in-list deck-removed)])
-     (sync-action 'removed (or (el-state-tag b) "(unnamed)") index (el-geometry b)))))
+     (sync-action 'removed (or (el-state-tag b) "(unnamed)") index (el-geometry b) #f))))
 
 (define (merge-states base prog deck)
   (append*
@@ -166,7 +170,7 @@
                      (slide-state-elements ds)
                      (max 1.0 (slide-state-width bs)))]
        [else (list (sync-action 'conflict (format "slide ~a" index) index
-                                '(slide-missing)))]))))
+                                '(slide-missing) #f))]))))
 
 ;; -------------------------------------------------------- patching the source
 
@@ -174,7 +178,9 @@
 ;; literals a merge is allowed to replace. A range is #f when the value is not a
 ;; literal -- `(at margin (+ top 20) ...)` is a decision the code is making, and
 ;; is reported rather than overwritten.
-(struct at-site (tag x y rot width height texts) #:transparent)
+;; `nudge` is (list range dx dy) for an existing `#:nudge` argument, and
+;; `insert-at` is the position a new one would go, just after the tag.
+(struct at-site (tag x y rot width height texts nudge insert-at) #:transparent)
 (struct rng (start end) #:transparent)
 
 ;; Shifts every recovered range, for a reader that was handed only part of the
@@ -311,7 +317,18 @@
                   (literal-range (hash-ref kws '#:rotate #f) real?)
                   (rhombus-child-kw child '#:width)
                   (rhombus-child-kw child '#:height)
-                  (rhombus-child-texts child)))))
+                  (rhombus-child-texts child)
+                  (rhombus-nudge (hash-ref kws '#:nudge #f))
+                  (let ([r (range-of tag-stx)]) (and r (rng-end r)))))))
+
+;; `~nudge: [12.0, -4.0]` -> (list range dx dy).
+(define (rhombus-nudge stx)
+  (define e (and stx (syntax? stx) (syntax-e stx)))
+  (and (list? e) (eq? 'brackets (syntax-e* (car e)))
+       (let ([gs (map rhombus-group-value (cdr e))])
+         (and (= 2 (length gs)) (andmap values gs)
+              (real? (syntax-e* (first gs))) (real? (syntax-e* (second gs)))
+              (list (range-of stx) (syntax-e* (first gs)) (syntax-e* (second gs)))))))
 
 ;; The child of an `at` is a group holding one call, so its keyword arguments
 ;; are found the same way.
@@ -356,7 +373,18 @@
                   (literal-range (hash-ref kws '#:rotate #f) real?)
                   (child-kw-range child '#:width)
                   (child-kw-range child '#:height)
-                  (child-text-ranges child)))))
+                  (child-text-ranges child)
+                  (racket-nudge (hash-ref kws '#:nudge #f))
+                  ;; A new correction goes right after the tag, which is on one
+                  ;; line, so nothing needs reindenting.
+                  (let ([r (range-of tag-stx)]) (and r (rng-end r)))))))
+
+;; `#:nudge (list 12.0 -4.0)` -> (list range dx dy).
+(define (racket-nudge stx)
+  (define l (and stx (syntax->list stx)))
+  (and l (= 3 (length l)) (eq? 'list (syntax-e (car l)))
+       (real? (syntax-e (cadr l))) (real? (syntax-e (caddr l)))
+       (list (range-of stx) (syntax-e (cadr l)) (syntax-e (caddr l)))))
 
 ;; A leaf's size lives on the leaf, not on `at`.
 (define (child-kw-range child kw)
@@ -386,6 +414,9 @@
 ;; Applies the actions a merge produced, editing only literals. Returns
 ;; (values applied skipped).
 (define (apply-actions! program-path actions)
+  (define rhombus? (regexp-match? #rx"[.]rhm$" (if (path? program-path)
+                                                   (path->string program-path)
+                                                   program-path)))
   (define sites (for/hash ([s (in-list (find-at-sites program-path))])
                   (values (at-site-tag s) s)))
   (define edits '())
@@ -400,8 +431,33 @@
        (define-values (x y w h rot) (apply values g))
        (cond
          [(not site) (set! skipped (cons (cons a "no tagged `at` form in the source") skipped))]
+         ;; A computed position has no number to rewrite, so the drag is
+         ;; recorded as a correction on `at` instead. Because it is one
+         ;; argument rather than a wrapper, a second drag updates these two
+         ;; numbers -- corrections cannot stack up the way nested pads do.
          [(not (and (at-site-x site) (at-site-y site)))
-          (set! skipped (cons (cons a "its position is computed, not a literal") skipped))]
+          (define prior (sync-action-prior a))
+          (cond
+            [(not prior)
+             (set! skipped (cons (cons a "its position is computed and the program has no such element")
+                                 skipped))]
+            [(not (at-site-insert-at site))
+             (set! skipped (cons (cons a "its position is computed and its tag is not a literal")
+                                 skipped))]
+            [else
+             (define existing (at-site-nudge site))
+             (define dx (+ (if existing (second existing) 0.0) (- x (first prior))))
+             (define dy (+ (if existing (third existing) 0.0) (- y (second prior))))
+             (cond
+               [existing (edit! (first existing) (nudge->source rhombus? dx dy))]
+               [else (edit! (rng (at-site-insert-at site) (at-site-insert-at site))
+                            (nudge-argument->source rhombus? dx dy))])
+             ;; The size may still be a literal even when the position is not.
+             (when (eq? 'resized (sync-action-kind a))
+               (when (and (at-site-width site) (at-site-height site))
+                 (edit! (at-site-width site) (num->source w))
+                 (edit! (at-site-height site) (num->source h))))
+             (set! applied (cons a applied))])]
          [else
           (edit! (at-site-x site) (num->source x))
           (edit! (at-site-y site) (num->source y))
@@ -429,6 +485,18 @@
       [else (set! skipped (cons (cons a "reported only") skipped))]))
   (when (pair? edits) (splice-file! program-path edits))
   (values (reverse applied) (reverse skipped)))
+
+;; The correction's value, in each language's list syntax.
+(define (nudge->source rhombus? dx dy)
+  (if rhombus?
+      (format "[~a, ~a]" (num->source dx) (num->source dy))
+      (format "(list ~a ~a)" (num->source dx) (num->source dy))))
+
+;; A whole `#:nudge`/`~nudge:` argument, inserted just after the tag.
+(define (nudge-argument->source rhombus? dx dy)
+  (if rhombus?
+      (format ", ~~nudge: ~a" (nudge->source #t dx dy))
+      (format " #:nudge ~a" (nudge->source #f dx dy))))
 
 ;; A number as it should read in source: the same rounding the emitter uses.
 (define (num->source v)

@@ -12,9 +12,12 @@
 ;; Where a picture's package-relative part name resolves against.
 (define current-media-root (make-parameter #f))
 
+;; A picture whose relationship could not be resolved has no source at all,
+;; which the parser already reported.
 (define (media-path src)
-  (define root (current-media-root))
-  (if root (build-path root src) src))
+  (and src
+       (let ([root (current-media-root)])
+         (if root (build-path root src) src))))
 
 (define (deck->picts d)
   (parameterize ([current-media-root (or (current-media-root) (deck-media-dir d))])
