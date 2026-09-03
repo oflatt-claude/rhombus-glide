@@ -5,4 +5,4 @@
 ;; failures explain the others, then emission, then fidelity, which needs
 ;; LibreOffice and takes the longest.
 (require "unit.rkt" "roundtrip.rkt" "fidelity.rkt" "export.rkt"
-         "sync.rkt" "watch.rkt" "corpus.rkt")
+         "sync.rkt" "watch.rkt" "flatten.rkt" "structural.rkt" "corpus.rkt")

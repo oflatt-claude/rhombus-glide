@@ -46,8 +46,10 @@
 ;; place the same glyphs.
 (struct it:text (x y w h rot str face size bold? italic? underline? ascent color)
   #:prefab)
-;; `argb` is raw premultiplied ARGB rows of `src-w` by `src-h`.
-(struct it:image (x y w h rot argb src-w src-h) #:prefab)
+;; `argb` is raw ARGB rows of `src-w` by `src-h`. `tag` is set when the image
+;; stands in for a whole element -- a subtree with no structure of its own,
+;; flattened so the editor shows one object instead of a pile of pieces.
+(struct it:image (x y w h rot argb src-w src-h tag) #:prefab)
 
 ;; --------------------------------------------------- items with known structure
 
@@ -65,8 +67,22 @@
 ;; `src` is a file path; the writer reads and embeds it.
 (struct it:picture (x y w h rot src crop flip-h? flip-v? pen opacity tag) #:prefab)
 
+;; An item that stands for one element of a slide, and so takes part in a sync.
+;; A flattened element counts: it is a picture rather than a shape, but it is
+;; still one object with one identity, and dragging it has somewhere to land.
 (define (semantic-item? i)
-  (or (it:preset? i) (it:textbox? i) (it:shape-path? i) (it:picture? i)))
+  (or (it:preset? i) (it:textbox? i) (it:shape-path? i) (it:picture? i)
+      (and (it:image? i) (it:image-tag i) #t)))
+
+;; The element name an item carries, or #f.
+(define (item-tag i)
+  (cond
+    [(it:preset? i) (it:preset-tag i)]
+    [(it:textbox? i) (it:textbox-tag i)]
+    [(it:shape-path? i) (it:shape-path-tag i)]
+    [(it:picture? i) (it:picture-tag i)]
+    [(it:image? i) (it:image-tag i)]
+    [else #f]))
 
 ;; A page of items in paint order, plus the size it was drawn at. `background`
 ;; is a fill for the whole page, kept apart from the items because a slide

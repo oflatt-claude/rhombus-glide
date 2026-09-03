@@ -6,7 +6,7 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/port
          racket/system racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-racket glide-pptx/export
-         glide-pptx/sync glide-pptx/watch glide-pptx/runtime)
+         glide-pptx/sync glide-pptx/watch glide-pptx/runtime "deck-edit.rkt")
 
 (define-runtime-path decks-dir "decks")
 
@@ -104,25 +104,8 @@
 ;; 2. The deck is saved with a shape moved: the program should be patched.
 (sleep 0.8)
 (define source-before (file->string program))
-(define drag-dir (build-path dir "drag"))
-(make-directory* drag-dir)
-(void (system* (find-executable-path "unzip") "-o" "-q" (path->string pptx)
-               "-d" (path->string drag-dir)))
-(let* ([part (build-path drag-dir "ppt" "slides" "slide1.xml")]
-       [d (file->string part)]
-       [m (regexp-match #px"(?s:<p:sp>(?:(?!</p:sp>).)*?descr=\"glide-pptx:Box\"(?:(?!</p:sp>).)*?</p:sp>)" d)])
-  (check-true (and m #t) "found the tagged shape in the generated deck")
-  (when m
-    (define moved (regexp-replace #px"<a:off x=\"\\d+\" y=\"\\d+\"/>" (first m)
-                                  (format "<a:off x=\"~a\" y=\"~a\"/>"
-                                          (* 12700 150) (* 12700 90))))
-    (call-with-output-file part #:exists 'replace
-      (lambda (o) (write-string (string-replace d (first m) moved) o)))
-    (delete-file pptx)
-    (parameterize ([current-directory drag-dir])
-      (apply system* (find-executable-path "zip") "-q" "-r"
-             (path->string (path->complete-path pptx))
-             (map path->string (directory-list))))))
+(void (check-true (drag-in-deck! pptx 1 "Box" 150.0 90.0)
+                  "the shape to drag was found in the generated deck"))
 
 (void (wait-for! "the program to be patched"
                  (lambda () (regexp-match? #rx"at 150[.]0 90[.]0" (file->string program)))))

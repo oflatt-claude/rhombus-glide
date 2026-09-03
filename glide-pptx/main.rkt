@@ -4,7 +4,8 @@
          racket/pretty racket/format
          "ir.rkt" "parse.rkt" "render.rkt" "runtime.rkt"
          "emit-racket.rkt" "emit-rhombus.rkt" "verify.rkt" "geometry.rkt"
-         "export.rkt" "sync.rkt" "watch.rkt")
+         "export.rkt" "sync.rkt" "watch.rkt"
+         (only-in "semantic.rkt" current-flatten-opaque?))
 (provide main)
 
 (define (default-workdir out) (build-path out ".glide-pptx"))
@@ -121,7 +122,7 @@
   (define height (box #f))
   (define binding (box #f))
   (define slideshow? (box #f))
-  (define condense? (box #f))
+  (define flatten? (box #t))
   (define files
     (parse-command-line
      "glide-pptx export" args
@@ -134,9 +135,9 @@
         [("--slides") ,(lambda (_ v) (set-box! binding v))
                       ("Name of the provided list of picts" "id")]
         [("--slideshow") ,(lambda (_) (set-box! slideshow? #t))
-                         ("Run as a slideshow program: one slide per step")]
-        [("--condense") ,(lambda (_) (set-box! condense? #t))
-                        ("With --slideshow, collapse each slide's steps into one")]))
+                         ("Run as a slideshow program: one slide per advance")]
+        [("--no-flatten") ,(lambda (_) (set-box! flatten? #f))
+                          ("Keep unsyncable elements as separate shapes")]))
      (lambda (_ . fs) fs)
      '("program.rkt")))
   (for ([f (in-list files)])
@@ -146,14 +147,15 @@
     ;; work out on its own when loaded this way.
     (define picts
       (if (unbox slideshow?)
-          (slideshow-slides full (unbox width) (unbox height) (unbox condense?))
+          (slideshow-slides full (unbox width) (unbox height))
           (parameterize ([current-media-base (path-only full)])
             (load-slides mod (unbox binding)))))
     (define target
       (or (unbox out)
           (path->string (path-replace-extension (file-name-from-path f) ".pptx"))))
     (define warnings (box '()))
-    (parameterize ([current-export-warnings warnings])
+    (parameterize ([current-export-warnings warnings]
+                   [current-flatten-opaque? (unbox flatten?)])
       (picts->pptx picts target #:width (unbox width) #:height (unbox height)))
     (printf "~a  (~a slide~a)\n" target (length picts) (if (= 1 (length picts)) "" "s"))
     (report-warnings warnings)))
@@ -168,7 +170,7 @@
 (define SLIDESHOW-W 1360.0)
 (define SLIDESHOW-H 766.0)
 
-(define (slideshow-slides path width height condense?)
+(define (slideshow-slides path width height)
   (define get
     (with-handlers ([exn:fail?
                      (lambda (e)
@@ -180,9 +182,11 @@
       (dynamic-require 'slideshow/slides-to-picts 'get-slides-as-picts)))
   (define w (or width 960.0))
   (define h (or height 540.0))
+  ;; Always condensed. An animated pict is many frames between advances, so
+  ;; without this a 291-slide talk comes out as 4869 slides and 135 MB.
   (define frames
     (parameterize ([current-directory (path-only path)])
-      (get (path->string path) SLIDESHOW-W SLIDESHOW-H (and condense? #t))))
+      (get (path->string path) SLIDESHOW-W SLIDESHOW-H #t)))
   ;; Slideshow renders at its own size, so the frames are scaled onto the page.
   (for/list ([p (in-list frames)])
     (scale p (/ w SLIDESHOW-W) (/ h SLIDESHOW-H))))

@@ -156,6 +156,19 @@ What the flattened path cannot do: text does not reflow (one box per `draw-text`
 call, `wrap="none"`), DrawingML has no arbitrary clipping, and sheared text has
 to rasterize.
 
+### The editor only offers what can be honored
+
+A pict with no descriptor -- `(vc-append 5 a b c)` inside an `at` -- has no
+structure to sync. Flattening its drawing would give a pile of separate shapes,
+every one draggable in Keynote and none of them movable back, because the only
+thing the source names is the enclosing `at`. So it is exported as **one
+picture** instead: one object per `at`, and dragging it lands on numbers that
+exist.
+
+The cost is that its text becomes pixels, which is why `--no-flatten` exists for
+a one-way export where nothing will be synced and separate shapes are strictly
+better. Each flattened element is reported.
+
 ### When the program's structure is known
 
 A pict built with this runtime carries a description of how it was built, so it
@@ -278,20 +291,15 @@ an animated pict is many frames. `--slideshow` runs it through the same entry
 point `raco slideshow --pdf` uses:
 
 ```console
-$ raco glide-pptx export --slideshow --condense talk.rhm -o talk.pptx
+$ raco glide-pptx export --slideshow talk.rhm -o talk.pptx
 talk.pptx  (291 slides)
 ```
 
-**Use `--condense`.** It is the difference between one slide per *advance* and
-one slide per *animation frame*. On a real 25-minute Rhombus talk:
-
-| | slides | time | size |
-| --- | --- | --- | --- |
-| `--condense` | **291** | 69 s | 3.5 MB |
-| without | 4869 | 737 s | 135 MB |
-
-291 is exactly the page count of that talk's own `talk-backup.pdf`, so condensed
-export agrees with what slideshow itself considers a slide. Across those 291
+One slide per *advance*, not per animation frame. That is not an option: an
+animated pict is many frames between advances, and on a real 25-minute Rhombus
+talk the difference is 291 slides in 69 s and 3.5 MB against 4869 slides in
+737 s and 135 MB. 291 is exactly the page count of that talk's own
+`talk-backup.pdf`, so this agrees with what slideshow itself considers a slide. Across those 291
 slides the exported deck renders at 2.36% mean error against our own render of
 the same picts, median 2.21%, with 4 slides above 5%.
 
@@ -316,6 +324,24 @@ compares pages pixel by pixel. It reports two numbers per page:
 
 It also writes, per page, a diff image (grey where the two agree, red where they
 do not) and a montage stacking reference, ours, and the diff.
+
+### The representation survives, field by field
+
+Pixels are a blunt instrument: a colour reverting to black on a small shape, a
+rotation lost on something square, or a run's boldness dropped can all hide
+under 0.3%. `tests/structural.rkt` imports, exports, imports again, and compares
+the two intermediate representations directly -- kind, geometry, text and paint
+for every named element. Across the fixtures it reports **0 differences**.
+
+That is only worth anything if it can detect loss, so it was checked against
+deliberate breakage. Removing rotation from the writer produces
+
+```
+slide 2: "Rectangle 3" geometry (576 64.8 216 100.8 20) -> (576 64.8 216 100.8 0)
+```
+
+and removing fill colours names all seven affected shapes with their before and
+after values.
 
 ### It converges rather than drifts
 
@@ -419,6 +445,9 @@ tests/
   roundtrip.rkt   emitted programs reproduce the direct render
   fidelity.rkt    per-deck budgets against LibreOffice
   export.rkt      exported .pptx matches the picts it came from
+  flatten.rkt     an unsyncable element is one draggable object, and syncs
+  structural.rkt  the IR survives a round trip, field by field
+  deck-edit.rkt   editing a .pptx from Racket, to simulate a drag
   corpus.rkt      the whole pipeline over several hundred real decks
   sync.rkt        a drag comes back as a literal, and computed layout does not
   watch.rkt       the loop, driven from both sides

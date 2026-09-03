@@ -49,6 +49,11 @@
      (el-state (it:picture-tag i) 'picture (it:picture-x i) (it:picture-y i)
                (it:picture-w i) (it:picture-h i) (it:picture-rot i)
                "" (format "~a" (it:picture-src i)) z)]
+    ;; A flattened element is a picture on both sides of the sync, so it is
+    ;; described as one here too and the signature matcher agrees.
+    [(it:image? i)
+     (el-state (it:image-tag i) 'picture (it:image-x i) (it:image-y i)
+               (it:image-w i) (it:image-h i) (it:image-rot i) "" "flattened" z)]
     [else
      (define-values (x y w h) (apply values (it:shape-path-box i)))
      (el-state (it:shape-path-tag i) 'shape x y w h 0.0
@@ -78,11 +83,15 @@
 
 ;; The importer's view of a .pptx, reduced to the same vocabulary. Inherited
 ;; layout and master shapes are left out: they are not the slide's to sync.
-(define (deck->slide-states d)
+;; `include-inherited?` folds in the shapes the layout and master paint behind
+;; the slide. A sync leaves those alone, but a structural comparison needs them:
+;; an export writes them as ordinary slide shapes, so they come back on the
+;; other side as the slide's own.
+(define (deck->slide-states d #:include-inherited? [include-inherited? #f])
   (for/list ([s (in-list (deck-slides d))])
     (define acc '())
     (define z 0)
-    (let walk ([es (slide-elements s)])
+    (let walk ([es (if include-inherited? (slide-all-elements s) (slide-elements s))])
       (for ([e (in-list es)])
         (cond
           [(group? e) (walk (group-children e))]

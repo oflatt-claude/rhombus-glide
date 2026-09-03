@@ -422,7 +422,7 @@
          [placed
           (define-values (px py pw ph prot) (apply values placed))
           (define-values (bytes cw ch) (crop-argb all-bytes bm-w bm-h sx sy sw sh))
-          (emit! (it:image px py pw ph prot bytes cw ch))]
+          (emit! (it:image px py pw ph prot bytes cw ch #f))]
          [else (warn! "a sheared bitmap cannot be placed")])]
       [else (warn! "ignored drawing operation ~a" (car op))]))
   (reverse items))

@@ -9,7 +9,7 @@
          racket/port racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-racket glide-pptx/emit-rhombus
          glide-pptx/export
-         glide-pptx/sync glide-pptx/sync-state glide-pptx/runtime
+         glide-pptx/sync glide-pptx/sync-state glide-pptx/runtime "deck-edit.rkt"
          (only-in glide-pptx/watch program-picts))
 
 ;; Loads a program's slides the way the watcher does, in a fresh namespace, so
@@ -21,36 +21,6 @@
 (define work (build-path (find-system-path 'temp-dir) "glide-pptx-sync"))
 (delete-directory/files work #:must-exist? #f)
 (make-directory* work)
-
-;; Moves a tagged shape in a .pptx by rewriting its offset, which is what
-;; dragging it in an editor amounts to.
-(define (drag! pptx slide tag x y)
-  (define dir (make-temporary-file "drag~a" 'directory))
-  (define unpacked (build-path dir "u"))
-  (make-directory* unpacked)
-  (system* (find-executable-path "unzip") "-o" "-q"
-           (path->string pptx) "-d" (path->string unpacked))
-  (define part (build-path unpacked "ppt" "slides" (format "slide~a.xml" slide)))
-  (define d (file->string part))
-  (define rx (pregexp (format "(?s:<p:sp>(?:(?!</p:sp>).)*?descr=\"glide-pptx:~a\"(?:(?!</p:sp>).)*?</p:sp>)"
-                              (regexp-quote tag))))
-  (define m (regexp-match rx d))
-  (check-true (and m #t) (format "found the shape tagged ~s to drag" tag))
-  (when m
-    (define sp (first m))
-    (define moved
-      (regexp-replace #px"<a:off x=\"\\d+\" y=\"\\d+\"/>" sp
-                      (format "<a:off x=\"~a\" y=\"~a\"/>"
-                              (inexact->exact (round (* 12700 x)))
-                              (inexact->exact (round (* 12700 y))))))
-    (call-with-output-file part #:exists 'replace
-      (lambda (o) (write-string (string-replace d sp moved) o)))
-    (delete-file pptx)
-    (parameterize ([current-directory unpacked])
-      (apply system* (find-executable-path "zip") "-q" "-r"
-             (path->string (path->complete-path pptx))
-             (map path->string (directory-list)))))
-  (delete-directory/files dir #:must-exist? #f))
 
 ;; Sets up a program and a deck exported from it, with a base recorded.
 (define (fixture name deck-name)
@@ -74,7 +44,7 @@
 (let ()
   (define-values (dir program exported) (fixture "drag" "05-realistic.pptx"))
   (define before (file->string program))
-  (drag! exported 3 "Rounded Rectangle 2" 100.0 200.0)
+  (check-true (drag-in-deck! exported 3 "Rounded Rectangle 2" 100.0 200.0) "the shape to drag was found")
   (define r (sync-once program exported #:workdir (build-path dir "syncwork")))
   (define moves (filter (lambda (a) (eq? 'moved (sync-action-kind a)))
                         (sync-report-actions r)))
@@ -144,7 +114,7 @@
   (sync-once program exported #:workdir (build-path dir "w"))
 
   ;; First drag: a correction appears.
-  (drag! exported 1 "Box" 200.0 100.0)
+  (check-true (drag-in-deck! exported 1 "Box" 200.0 100.0) "the shape to drag was found")
   (define before (file->string program))
   (define r1 (sync-once program exported #:workdir (build-path dir "w")))
   (check-equal? (length (sync-report-applied r1)) 1 "the drag was applied")
@@ -169,7 +139,7 @@
   ;; Second drag: the correction is updated in place, not nested.
   (re-export!)
   (sync-once program exported #:workdir (build-path dir "w"))
-  (drag! exported 1 "Box" 260.0 70.0)
+  (check-true (drag-in-deck! exported 1 "Box" 260.0 70.0) "the shape to drag was found")
   (define r2 (sync-once program exported #:workdir (build-path dir "w")))
   (check-equal? (length (sync-report-applied r2)) 1 "the second drag was applied too")
   (define after2 (file->string program))
@@ -203,7 +173,7 @@
   (picts->pptx picts exported #:width (deck-width d) #:height (deck-height d))
   (sync-once program exported #:workdir (build-path dir "w"))
   (define before (file->string program))
-  (drag! exported 3 "Rounded Rectangle 2" 111.0 222.0)
+  (check-true (drag-in-deck! exported 3 "Rounded Rectangle 2" 111.0 222.0) "the shape to drag was found")
   (define r (sync-once program exported #:workdir (build-path dir "w")))
   (check-equal? (length (sync-report-applied r)) 1 "the drag was applied to the .rhm")
   (define after (file->string program))

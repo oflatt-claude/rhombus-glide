@@ -8,14 +8,19 @@
 ;; rather than a reconstruction. Elements are emitted in paint order, and an
 ;; element with no descriptor is rendered on its own and spliced in at the right
 ;; point, so z-order is preserved either way.
-(require racket/list racket/math racket/class pict
-         "ir.rkt" "tagged.rkt" "draw-ir.rkt" "record-adapt.rkt"
+(require racket/list racket/math racket/class racket/draw pict
+         "ir.rkt" "tagged.rkt" "draw-ir.rkt"
+         (only-in "record-adapt.rkt" pict->display-page current-adapt-warnings)
          (only-in "runtime.rkt" placed placed? placed-x placed-y placed-rot
                   placed-pict placed-tag placed-position pin-placed))
-(provide pict->page semantic-page?)
+(provide pict->page semantic-page? current-flatten-opaque?)
 
 ;; A pict is exported semantically when it says how it was built.
 (define (semantic-page? p) (slide-desc? (pict-desc p)))
+
+(define (warn! fmt . args)
+  (define b (current-adapt-warnings))
+  (when b (set-box! b (cons (apply format fmt args) (unbox b)))))
 
 (define (pict->page p width height)
   (define d (pict-desc p))
@@ -107,9 +112,55 @@
                        (ir-line->pen (image-desc-line d) f)
                        (image-desc-opacity d) tag))]
     [(group-desc? d) (group-items d x y t page-w page-h)]
-    ;; A table or anything undescribed is rendered on its own and spliced in
-    ;; here, which keeps paint order exact.
-    [else (raw-items pl page-w page-h)]))
+    ;; A table is drawn rather than described, but it flattens into shapes and
+    ;; text that read correctly, so it keeps that treatment.
+    [(table-desc? d) (raw-items pl page-w page-h)]
+    [else (opaque-items pl t x y rot tag page-w page-h)]))
+
+;; How much of an element's structure the editor is allowed to see.
+;;
+;; A pict with no descriptor -- `(vc-append 5 a b c)` inside an `at`, say -- has
+;; no structure we can sync. Flattening its *drawing* gives a pile of separate
+;; shapes, every one of which can be dragged in Keynote and none of which can be
+;; moved back, because the only thing the source names is the enclosing `at`.
+;; Emitting one picture instead makes the file's affordances match what the tool
+;; can honor: one object per `at`, and dragging it lands on numbers that exist.
+;;
+;; The cost is that its text becomes pixels. That is why this is off for a
+;; one-way export, where nothing will be synced and separate shapes are strictly
+;; better.
+(define current-flatten-opaque? (make-parameter #t))
+
+;; Rendered at twice its final size, so it still looks sharp on a projector.
+(define FLATTEN-OVERSAMPLE 2.0)
+
+(define (opaque-items pl t x y rot tag page-w page-h)
+  (cond
+    [(not (current-flatten-opaque?)) (raw-items pl page-w page-h)]
+    [else
+     (define p (placed-pict pl))
+     (define w (* (abs (xf-sx t)) (pict-width p)))
+     (define h (* (abs (xf-sy t)) (pict-height p)))
+     (cond
+       [(or (< w 0.01) (< h 0.01)) '()]
+       [else
+        (define-values (argb iw ih)
+          (pict->argb p (* FLATTEN-OVERSAMPLE (max 1.0 (xf-factor t)))))
+        (warn! "~a has no structure to sync, so it is exported as one picture"
+               (or tag "an unnamed element"))
+        (list (it:image x y w h rot argb iw ih tag))])]))
+
+;; Draws `p` on its own and returns its pixels.
+(define (pict->argb p oversample)
+  (define iw (max 1 (exact-ceiling (* oversample (pict-width p)))))
+  (define ih (max 1 (exact-ceiling (* oversample (pict-height p)))))
+  (define bm (make-bitmap iw ih))
+  (define dc (new bitmap-dc% [bitmap bm]))
+  (send dc set-smoothing (quote smoothed))
+  (draw-pict (scale p (/ iw (pict-width p)) (/ ih (pict-height p))) dc 0 0)
+  (define bs (make-bytes (* 4 iw ih)))
+  (send bm get-argb-pixels 0 0 iw ih bs)
+  (values bs iw ih))
 
 (define (shape-items d x y rot t f tag)
   (define w (* (xf-sx t) (shape-desc-width d)))
