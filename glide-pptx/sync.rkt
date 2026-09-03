@@ -1264,8 +1264,16 @@
 
 ;; ------------------------------------------------------------------- driver
 
+;; The state both sides last agreed on. It is derived -- deleting it means the
+;; next pass just records where things stand -- so it lives in scratch with the
+;; deck rather than beside the program, which holds the program and its images
+;; and nothing else.
 (define (base-path-for program-path)
-  (path-replace-extension (path->complete-path program-path) ".sync.rktd"))
+  (define full (path->complete-path program-path))
+  (define dir (or (path-only full) (current-directory)))
+  (build-path dir ".glide-pptx"
+              (path->string (path-replace-extension (file-name-from-path full)
+                                                    ".sync.rktd"))))
 
 ;; One merge pass: read both sides, merge against the base, patch the source,
 ;; and record the new agreed state.

@@ -19,13 +19,17 @@
 
 (define racket-exe (find-system-path 'exec-file))
 
+;; Running the program itself opens a slideshow, which is what running a talk
+;; should do -- so the PDF comes from its `pdf` submodule.
 (define (run-program path)
   (define dir (path-only path))
   (define out (open-output-string))
   (define code
     (parameterize ([current-directory dir]
                    [current-output-port out] [current-error-port out])
-      (system*/exit-code racket-exe (path->string path))))
+      (system*/exit-code racket-exe "-l" "racket/base" "-e"
+                         (format "(require (submod (file ~s) pdf))"
+                                 (path->string path)))))
   (unless (zero? code)
     (error 'run-program "~a exited with ~a\n~a" path code (get-output-string out)))
   (build-path dir (path-replace-extension (file-name-from-path path) ".pdf")))
@@ -73,3 +77,43 @@
                (format "~a ~a page ~a: no visible residual difference" name lang i)))))
 
 (printf "roundtrip tests done (~a decks)\n" (length decks))
+
+;; ------------------------------------------- the program is a slideshow
+
+;; Running a talk should show it. The generated `module main` is a slideshow, so
+;; `racket talk.rhm` opens the slides -- it was reported as surprising when it
+;; wrote a PDF instead, which is what the PDF's own submodule is now for.
+(let ()
+  (define dir (build-path work "slideshow"))
+  (make-directory* dir)
+  (define pptx (build-path decks-dir "05-realistic.pptx"))
+  (define d (pptx->deck pptx #:workdir (build-path dir "unpacked")))
+  (define program (build-path dir "show.rhm"))
+  (write-rhombus-deck d program #:source-name (path->string pptx))
+  (define src (file->string program))
+
+  ;; What `racket show.rhm` runs.
+  (check-regexp-match #rx"module main:\n  import: slideshow open" src)
+  (check-regexp-match #rx"slide[(]~layout: #'center, Pict.from_handle" src
+                      "each slide is handed to slideshow, through the pict bridge")
+  (check-regexp-match #rx"module pdf:" src "and the PDF has its own submodule")
+
+  ;; Slideshow needs a display, so the real thing is only checked where there is
+  ;; one to borrow. It is the check that matters: the pages come out.
+  (define xvfb (find-executable-path "xvfb-run"))
+  (cond
+    [(not xvfb) (printf "no xvfb-run; skipping the slideshow render\n")]
+    [else
+     (define out (open-output-string))
+     (define code
+       (parameterize ([current-directory dir]
+                      [current-output-port out] [current-error-port out])
+         (system*/exit-code xvfb "-a" racket-exe (path->string program)
+                            "--widescreen" "--pdf" "-c" "-e" "-o" "show.pdf")))
+     (define pdf (build-path dir "show.pdf"))
+     (check-equal? code 0 (format "the slideshow ran:\n~a" (get-output-string out)))
+     (check-true (file-exists? pdf) "and wrote its pages")
+     (when (file-exists? pdf)
+       (check-equal? (length (rasterize-pdf pdf (build-path dir "pg") #:dpi 24))
+                     (length (deck-slides d))
+                     "one page per slide"))]))

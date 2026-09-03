@@ -100,6 +100,31 @@ is left alone until it is resolved.
 A `.key` is accepted anywhere a deck is: Keynote is asked to export a `.pptx`
 first, which needs macOS.
 
+Running the program shows the slides -- its `module main` is a
+[slideshow](https://docs.racket-lang.org/rhombus-slideshow/), and each slide
+reaches it through `Pict.from_handle`, which is also the bridge for refactoring
+generated code into `rhombus/pict`'s animated picts. The backup PDF is a
+submodule:
+
+```shell
+racket talk.rhm                                              # show the slides
+racket -l racket/base -e '(require (submod (file "talk.rhm") pdf))'   # write the PDF
+```
+
+## The workflow
+
+```shell
+raco glide-pptx talk.pptx -o talk.rhm   # once, to get a program
+raco glide-pptx talk.rhm                # then this, and edit either side
+```
+
+The second command exports the program to a deck, opens it in an editor
+(Keynote on macOS, `--app` to choose), and keeps the two in step: save the
+program and the deck is rewritten; save in the editor and the drag comes back as
+a literal in the source. The deck, the editor's own document and the agreed base
+are scratch, kept in `.glide-pptx/` -- what the folder holds is `talk.rhm` and
+its `media/`.
+
 
 Each element keeps the shape id and name PowerPoint gave it, as a comment. That
 is what a future write-back will match on, and in the meantime it is how you
@@ -109,6 +134,7 @@ find the thing you just clicked on in the editor.
 
 | Command | What it does |
 | --- | --- |
+| `program.rhm` | open it in an editor and keep the two in step (the default) |
 | `translate deck.pptx [-o dir\|file.rhm]` | emit a Rhombus program plus the images it uses |
 | `export program.rkt [-o out.pptx]` | write a `.pptx` from the program's slide picts |
 | `sync program.rkt deck.pptx [-n]` | merge the deck's edits back into the program |

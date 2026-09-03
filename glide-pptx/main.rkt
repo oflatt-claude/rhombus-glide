@@ -241,13 +241,27 @@
      `((once-each
         [("-n" "--dry-run") ,(lambda (_) (set-box! dry #t))
                             ("Report what would change without touching anything")]))
-     (lambda (_ program deck) (list program deck))
-     '("program.rkt" "deck.pptx")))
+     (lambda (_ program . deck) (cons program deck))
+     '("program.rhm" "[deck.pptx]")))
   (define program (first files))
+  ;; With no deck named, the one `glide-pptx <program>` keeps in scratch.
   ;; A `.key` is accepted here as well: Keynote writes the .pptx to merge from.
-  (define deck (as-pptx (second files)
-                        (let ([p (path-only (path->complete-path program))])
-                          (if p (path->string p) "."))))
+  (define deck
+    (cond
+      [(pair? (rest files))
+       (as-pptx (second files)
+                (let ([p (path-only (path->complete-path program))])
+                  (if p (path->string p) ".")))]
+      [else
+       (define d (scratch-deck program))
+       (unless (file-exists? d)
+         (error 'glide-pptx
+                (string-append
+                 "there is no deck to merge from yet.\n"
+                 "  `raco glide-pptx ~a` makes one and keeps the two in step;\n"
+                 "  or name a deck: `raco glide-pptx sync ~a deck.pptx`.")
+                (file-name-from-path program) (file-name-from-path program)))
+       d]))
   (define r
     (with-handlers ([exn:fail? (lambda (e)
                                  (printf "~a <-> ~a\n" program deck)
@@ -261,15 +275,28 @@
 
 ;; The parent process: regenerate the deck when the program is saved, and merge
 ;; the deck's geometry back when it is saved.
-(define (cmd-watch args)
+;; The deck and, for Keynote, the document made from it are scratch: the program
+;; is the artifact. So they go in a hidden directory beside it rather than in the
+;; way, and what the folder holds is the program and its images.
+(define (scratch-deck program)
+  (define full (path->complete-path program))
+  (define dir (or (path-only full) (current-directory)))
+  (build-path dir ".glide-pptx"
+              (path->string (path-replace-extension (file-name-from-path full) ".pptx"))))
+
+;; Keynote on a Mac, since that is what there is to drive there.
+(define (default-app)
+  (if (eq? 'macosx (system-type 'os)) 'keynote 'none))
+
+(define (cmd-edit args)
   (define out (box #f))
-  (define app (box 'none))
+  (define app (box #f))
   (define width (box #f))
   (define height (box #f))
   (define once (box #f))
   (define files
     (parse-command-line
-     "glide-pptx watch" args
+     "glide-pptx edit" args
      `((once-each
         [("-o" "--out") ,(lambda (_ v) (set-box! out v)) ("Deck to generate" "file")]
         [("--app") ,(lambda (_ v) (set-box! app (string->symbol v)))
@@ -278,20 +305,20 @@
                      ("Slide width in points" "pt")]
         [("--height") ,(lambda (_ v) (set-box! height (string->number v)))
                       ("Slide height in points" "pt")]
-        [("-1" "--once") ,(lambda (_) (set-box! once #t))
+        [("--once") ,(lambda (_) (set-box! once #t))
                          ("Regenerate once and exit, without watching")]))
      (lambda (_ program) (list program))
-     '("program.rkt")))
+     '("program.rhm")))
   (define program (first files))
-  (define pptx (or (unbox out)
-                   (path->string (path-replace-extension
-                                  (file-name-from-path program) ".pptx"))))
-  (define adapter (adapter-named (unbox app)))
-  (if (unbox once)
-      (watch-once program pptx #:adapter adapter
-                  #:width (unbox width) #:height (unbox height))
-      (watch-loop program pptx #:adapter adapter
-                  #:width (unbox width) #:height (unbox height))))
+  (define pptx (or (unbox out) (scratch-deck program)))
+  (make-directory* (path-only (path->complete-path pptx)))
+  (define adapter (adapter-named (or (unbox app) (default-app))))
+  (void
+   (if (unbox once)
+       (watch-once program pptx #:adapter adapter
+                   #:width (unbox width) #:height (unbox height))
+       (watch-loop program pptx #:adapter adapter
+                   #:width (unbox width) #:height (unbox height)))))
 
 (define (cmd-presets args)
   (printf "~a preset geometries drawn exactly:\n" (length (preset-names)))
@@ -302,14 +329,16 @@
   (list (list "translate" "emit a Pict program from a deck" cmd-translate)
         (list "export" "write a .pptx from a program's slide picts" cmd-export)
         (list "render" "render a deck straight to PDF" cmd-render)
-        (list "sync" "merge a deck's edits back into a program" cmd-sync)
-        (list "watch" "keep a program and a deck in step, both ways" cmd-watch)
+        (list "sync" "merge a deck's edits back into a program, once" cmd-sync)
+        (list "edit" "open a program in an editor and keep both in step" cmd-edit)
+        (list "watch" "the same thing, under its older name" cmd-edit)
         (list "verify" "compare our PDF against LibreOffice's" cmd-verify)
         (list "ir" "print the intermediate representation" cmd-ir)
         (list "presets" "list the shape geometries we draw exactly" cmd-presets)))
 
 (define (usage)
-  (printf "usage: raco glide-pptx <command> [options] deck.pptx ...\n\n")
+  (printf "usage: raco glide-pptx program.rhm         open it in an editor, keep both in step\n")
+  (printf "       raco glide-pptx <command> [options] ...\n\n")
   (for ([s (in-list subcommands)])
     (printf "  ~a~a\n" (~a (first s) #:min-width 12) (second s)))
   (printf "\nRun a command with --help for its options.\n")
@@ -327,15 +356,24 @@
   (set! args (remove "--allow-unsupported" args))
   (define keep? (and (member "--keep-work" args) #t))
   (set! args (remove "--keep-work" args))
+  (define (run! cmd rest)
+    (parameterize ([current-allow-unsupported? allow?]
+                   [keep-work? keep?]
+                   [current-keep-work? keep?])
+      (cmd (list->vector rest))))
   (cond
     [(or (null? args) (member (car args) '("-h" "--help" "help"))) (usage)]
-    [(assoc (car args) subcommands)
-     => (lambda (s)
-          (parameterize ([current-allow-unsupported? allow?]
-                         [keep-work? keep?]
-                         [current-keep-work? keep?])
-            ((third s) (list->vector (cdr args)))))]
-    [else (eprintf "unknown command: ~a\n\n" (car args)) (usage) (exit 2)]))
+    [(assoc (car args) subcommands) => (lambda (s) (run! (third s) (cdr args)))]
+    ;; `glide-pptx talk.rhm` is the whole workflow, so it needs no verb: a
+    ;; program named where a command would go means "edit this". The name moves
+    ;; to the end, since flag parsing stops at the first argument that is not a
+    ;; flag and `talk.rhm --once` is the natural way to write it.
+    [(regexp-match? #rx"[.]rhm$" (car args))
+     (run! cmd-edit (append (cdr args) (list (car args))))]
+    [else
+     (eprintf "~a is neither a command nor a .rhm program\n\n" (car args))
+     (usage)
+     (exit 2)]))
 
 ;; `raco` runs a registered command by requiring its module, so the dispatch
 ;; happens at module level rather than in a `main` submodule.

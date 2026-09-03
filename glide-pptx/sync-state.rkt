@@ -4,7 +4,7 @@
 ;; A sync needs one vocabulary that a program and a .pptx can both be reduced
 ;; to: what elements exist, where they are, and enough of what they look like to
 ;; recognize one after an editor has renamed it. That is this.
-(require racket/list racket/string racket/format racket/math
+(require racket/file racket/path racket/list racket/string racket/format racket/math
          "ir.rkt" "draw-ir.rkt")
 (provide (struct-out el-state) (struct-out slide-state)
          items->slide-state deck->slide-states
@@ -149,6 +149,9 @@
 ;; readable and belongs in version control next to the program, so a conflict is
 ;; a diff a person can read.
 (define (write-sync-base path states #:program program #:deck deck)
+  ;; The base sits in a scratch directory, which need not exist yet.
+  (let ([dir (path-only (path->complete-path path))])
+    (when dir (make-directory* dir)))
   (call-with-output-file path #:exists 'replace
     (lambda (o)
       (fprintf o ";; glide-pptx sync base -- what the program and the deck agreed\n")
