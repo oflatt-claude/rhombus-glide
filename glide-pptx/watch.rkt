@@ -84,12 +84,20 @@
                 "end tell"))
    (lambda (pptx)
      (define p (path->string (path->complete-path pptx)))
+     (define k (path->string (path-replace-extension (path->complete-path pptx) ".key")))
+     ;; Opening a .pptx gives Keynote an unsaved import, so the first Cmd-S would
+     ;; ask where to put it. Saving it here means Cmd-S just saves, and it saves
+     ;; where the watcher is looking. Wrapped, because a Keynote that refuses is
+     ;; not worth failing over -- the deck is still open and editable.
      (osascript "tell application \"Keynote\""
                 "  repeat with d in documents"
                 "    close d saving no"
                 "  end repeat"
-                (format "  open POSIX file \"~a\"" p)
+                (format "  set d to (open POSIX file \"~a\")" p)
                 "  activate"
+                "  try"
+                (format "    save d in POSIX file \"~a\"" k)
+                "  end try"
                 "end tell"))))
 
 ;; Testable here: LibreOffice has no reload either, so it is opened afresh.

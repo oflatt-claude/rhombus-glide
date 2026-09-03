@@ -20,6 +20,8 @@
 (define (open-package pptx-path #:into [into #f])
   (define dir (or into (make-temporary-file "pptx~a" 'directory)))
   (make-directory* dir)
+  (unless (file-exists? pptx-path)
+    (error 'glide-pptx "~a does not exist" pptx-path))
   (with-handlers ([exn:fail? (lambda (e) (not-a-pptx pptx-path "it is not a zip archive"))])
     (call-with-input-file pptx-path
       (lambda (in)

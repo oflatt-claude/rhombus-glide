@@ -64,12 +64,9 @@
   (check-equal? (length (string-split before "\n")) (length (string-split after "\n"))
                 "no lines were added or removed")
 
-  ;; And the result is still a program.
-  (define out (open-output-string))
-  (define code (parameterize ([current-output-port out] [current-error-port out]
-                              [current-directory dir])
-                 (system*/exit-code (find-system-path 'exec-file) (path->string program))))
-  (check-equal? code 0 (format "the patched program still runs\n~a" (get-output-string out)))
+  ;; And the result is still a program. Loading it is the check: running it
+  ;; opens a slideshow, which needs a display.
+  (check-true (pair? (load-program-picts program)) "the patched program still loads")
 
   ;; A second pass has nothing left to do, because the base moved with it.
   (define again (sync-once program exported #:workdir (build-path dir "syncwork")))
@@ -187,13 +184,9 @@
               "with its commas intact")
   (check-true (regexp-match? #rx"~tag: \"Rounded Rectangle 2\"" (cdr (first changed)))
               "and the rest of the line untouched")
-  ;; And it is still a Rhombus program.
-  (define out (open-output-string))
-  (define code (parameterize ([current-output-port out] [current-error-port out]
-                              [current-directory dir])
-                 (system*/exit-code (find-system-path 'exec-file) (path->string program))))
-  (check-equal? code 0 (format "the patched Rhombus program still runs\n~a"
-                               (get-output-string out))))
+  ;; And it is still a Rhombus program. Loading it is the check: running it
+  ;; opens a slideshow, which needs a display.
+  (check-true (pair? (load-program-picts program)) "the patched program still loads"))
 
 (printf "sync tests done; artifacts under ~a\n" work)
 

@@ -114,7 +114,8 @@
                            #:source-name [source-name #f]
                            #:media-subdir [media-subdir "media"]
                            #:media-names [media-names (hash)]
-                           #:pdf-name [pdf-name "slides.pdf"])
+                           #:pdf-name [pdf-name "slides.pdf"]
+                           #:program-name [program-name "slides.rhm"])
   (parameterize ([current-media-names media-names]
                  [current-deck-font (dominant-font d)])
     (line out 0 "#lang rhombus/and_meta")
@@ -157,7 +158,21 @@
                          (format "slide_~a" (slide-index s)))
                        ", "))
     (newline out)
+    ;; Running the program shows the slides, which is what running a talk should
+    ;; do. Each slide is a pict the size of the original deck, so it is scaled to
+    ;; fit slideshow's page: the two aspect ratios are close but not equal, and
+    ;; fitting letterboxes rather than cropping.
     (line out 0 "module main:")
+    (line out 2 "import: slideshow open")
+    (line out 2 "def page = blank_client()")
+    (line out 2 "def zoom = math.min(page.width / slide_width, page.height / slide_height)")
+    (line out 2 "for (s in all_slides):")
+    (line out 4 "slide(~~layout: #'center, Pict.from_handle(s).scale(zoom))")
+    (newline out)
+    (line out 0 "// The backup PDF, without opening a window:")
+    (line out 0 "//   racket -l racket/base -e '(require (submod (file \"~a\") pdf))'"
+          program-name)
+    (line out 0 "module pdf:")
     (line out 2 "deck_to_pdf(all_slides, ~s, ~~width: slide_width, ~~height: slide_height)"
           pdf-name)
     (line out 2 "println(\"wrote \" +& ~s)" pdf-name)))
@@ -173,5 +188,6 @@
                          #:source-name source-name
                          #:media-subdir media-subdir
                          #:media-names names
-                         #:pdf-name (or pdf-name (default-pdf-name path)))))
+                         #:pdf-name (or pdf-name (default-pdf-name path))
+                         #:program-name (path->string (file-name-from-path path)))))
   path)
