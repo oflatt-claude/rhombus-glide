@@ -196,3 +196,89 @@
                                (get-output-string out))))
 
 (printf "sync tests done; artifacts under ~a\n" work)
+
+;; ------------------------------------- a tag is per slide, not per program
+
+;; A real deck names shapes per slide, so "Title 1" exists on every slide. The
+;; merge has to patch the slide that moved: keying sites by tag alone silently
+;; rewrote slide 1 when slide 3 was dragged.
+(let ()
+  (define-values (dir program exported) (fixture "perslide" "01-placeholders.pptx"))
+  (define before (file->string program))
+  (define tags (for/list ([s (in-list (find-at-sites program))]) (at-site-tag s)))
+  (check-equal? (length (filter (lambda (t) (string=? t "Title 1")) tags)) 3
+                "the fixture does reuse one tag across slides")
+
+  (check-true (drag-in-deck! exported 3 "Title 1" 111.0 222.0) "the shape to drag was found")
+  (define r (sync-once program exported #:workdir (build-path dir "syncwork")))
+  (define moves (filter (lambda (a) (eq? 'moved (sync-action-kind a)))
+                        (sync-report-actions r)))
+  (check-equal? (length moves) 1 "one element moved")
+  (check-equal? (sync-action-slide (first moves)) 3 "on slide 3")
+  (check-equal? (length (sync-report-applied r)) 1 "and it was applied")
+
+  ;; The patched `at` is the one under `slide-3`, which is the last of the three.
+  (define (title-lines text)
+    (for/list ([l (in-list (string-split text "\n"))]
+               #:when (regexp-match? #rx"#:tag \"Title 1\"" l))
+      l))
+  (define b (title-lines before))
+  (define a (title-lines (file->string program)))
+  (check-equal? (length a) 3)
+  (check-equal? (first a) (first b) "slide 1's title is untouched")
+  (check-equal? (second a) (second b) "slide 2's title is untouched")
+  (check-not-equal? (third a) (third b) "slide 3's title moved")
+  (check-true (and (regexp-match? #rx"111" (third a)) (regexp-match? #rx"222" (third a)))
+              "to where it was dragged"))
+
+;; ------------------------------------------ what code shapes can be synced
+
+;; The floor: an element an edit cannot be traced back to is refused, not
+;; guessed at. One `at` in a loop draws several elements under one tag, and
+;; keying on that tag would land a drag on an arbitrary one of them.
+(let ()
+  (define dir (build-path work "loop"))
+  (make-directory* dir)
+  (define (write-loop! path tag-expr)
+    (display-to-file
+     (string-append
+      "#lang racket/base\n(require pict glide-pptx/runtime)\n"
+      "(provide all-slides slide-1)\n"
+      "(define slide-1\n"
+      "  (slide-canvas #:width 720.0 #:height 540.0 #:background (hex \"FFFFFF\")\n"
+      "    (for/list ([i (in-range 3)])\n"
+      "      (at (+ 20.0 (* i 120.0)) 60.0 #:tag " tag-expr "\n"
+      "          (shape-pict #:width 100.0 #:height 60.0 #:shape \"rect\"\n"
+      "                      #:fill (hex \"4472C4\"))))))\n"
+      "(define all-slides (list slide-1))\n")
+     path #:exists 'replace))
+
+  ;; `for/list` hands `slide-canvas` a list, which it splices -- so this is a
+  ;; program shape that runs, and the refusal below is about the tags, not the
+  ;; loop.
+  (define same (build-path dir "same.rkt"))
+  (write-loop! same "\"Box\"")
+  (define same-deck (build-path dir "same.pptx"))
+  (define picts (program-picts-fresh same))
+  (check-equal? (length picts) 1 "the loop program builds one slide")
+  (picts->pptx picts same-deck #:width 720.0 #:height 540.0)
+  (check-exn #rx"appears 3 times"
+             (lambda () (sync-once same same-deck #:workdir (build-path dir "w1")))
+             "three elements under one tag is refused")
+
+  ;; With a distinct tag each, the same loop syncs. The tag is computed, so a
+  ;; drag has no literal to rewrite -- which is reported, not silently dropped.
+  (define distinct (build-path dir "distinct.rkt"))
+  (write-loop! distinct "(format \"Box ~a\" i)")
+  (define distinct-deck (build-path dir "distinct.pptx"))
+  (picts->pptx (program-picts-fresh distinct) distinct-deck #:width 720.0 #:height 540.0)
+  (define r0 (sync-once distinct distinct-deck #:workdir (build-path dir "w2")))
+  (check-true (sync-report-base-written? r0) "distinct tags record a base")
+  (check-equal? (sync-report-actions r0) '() "with nothing to merge")
+
+  (check-true (drag-in-deck! distinct-deck 1 "Box 1" 300.0 300.0))
+  (define r (sync-once distinct distinct-deck #:workdir (build-path dir "w2")))
+  (check-equal? (length (sync-report-actions r)) 1 "the drag is seen")
+  (check-equal? (sync-report-applied r) '() "but cannot be applied")
+  (check-equal? (length (sync-report-skipped r)) 1 "and says so")
+  (check-regexp-match #rx"tagged `at` form" (cdr (first (sync-report-skipped r)))))

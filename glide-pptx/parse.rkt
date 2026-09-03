@@ -7,7 +7,7 @@
 (require racket/list racket/string racket/file racket/path
          "xml-util.rkt" "units.rkt" "ir.rkt" "opc.rkt" "theme.rkt"
          "drawing.rkt" "text.rkt" "shapes.rkt")
-(provide pptx->deck current-warnings)
+(provide pptx->deck current-warnings current-allow-unsupported?)
 
 ;; Collected diagnostics for things we render approximately.
 (define current-warnings (make-parameter #f))

@@ -21,6 +21,7 @@
          program-slide-states deck-slide-states
          match-elements merge-states
          apply-actions! sync-once
+         find-at-sites find-program-sites (struct-out at-site)
          base-path-for format-sync-report)
 
 ;; kind: 'moved, 'resized, 'retext, 'conflict, 'added, 'removed, 'unpatchable
@@ -28,7 +29,10 @@
 ;; correction for a computed position is measured against. It is #f when the
 ;; program has no element by that name.
 (struct sync-action (kind tag slide detail prior) #:transparent)
-(struct sync-report (actions applied base-written?) #:transparent)
+;; `skipped` pairs each action the merge could not make with the reason. Knowing
+;; an edit was refused, and why, is the whole difference between "nothing moved"
+;; and "your drag was thrown away".
+(struct sync-report (actions applied skipped base-written?) #:transparent)
 
 ;; ------------------------------------------------------- reading both sides
 
@@ -62,7 +66,11 @@
         [else (error 'sync "~a provides no all-slides" program-path)])))
   (for/list ([p (in-list picts)] [i (in-naturals 1)])
     (define w (pict-width p)) (define h (pict-height p))
-    (items->slide-state i w h (display-page-items (pict->page p w h)))))
+    (define st (items->slide-state i w h (display-page-items (pict->page p w h))))
+    (check-unique-tags (map el-state-tag (slide-state-elements st))
+                       (format "~a slide ~a" program-path i)
+                       TAG-HINT)
+    st))
 
 (define (deck-slide-states pptx-path #:workdir [workdir #f])
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
@@ -180,7 +188,12 @@
 ;; is reported rather than overwritten.
 ;; `nudge` is (list range dx dy) for an existing `#:nudge` argument, and
 ;; `insert-at` is the position a new one would go, just after the tag.
-(struct at-site (tag x y rot width height texts nudge insert-at) #:transparent)
+;; A tag names one element *within one slide*. That is what makes the deck's own
+;; shape names usable as tags: a real deck has "Title 1" on every slide. So each
+;; site remembers the top-level definition it sits in, and `all-slides` says
+;; which definition is which slide -- without that, dragging the title on slide 3
+;; would rewrite slide 1's coordinates.
+(struct at-site (tag x y rot width height texts nudge insert-at scope) #:transparent)
 (struct rng (start end) #:transparent)
 
 ;; Shifts every recovered range, for a reader that was handed only part of the
@@ -193,6 +206,31 @@
        (let ([start (+ (current-range-offset) (sub1 (syntax-position stx)))])
          (rng start (+ start (syntax-span stx))))))
 
+;; Two elements answering to one tag would mean an edit lands on an arbitrary one
+;; of them. That is refused rather than guessed at. The usual cause is an `at`
+;; that runs more than once -- inside a `for`, or in a helper called twice --
+;; which is fine code, just not code an editor's edit can be traced back to.
+(define (duplicate-tags tags)
+  (define counts
+    (for/fold ([h (hash)]) ([t (in-list tags)] #:when t)
+      (hash-update h t add1 0)))
+  (sort (for/list ([(t n) (in-hash counts)] #:when (> n 1)) (cons t n))
+        string<? #:key car))
+
+(define (check-unique-tags tags where hint)
+  (define dups (duplicate-tags tags))
+  (unless (null? dups)
+    (error 'glide-pptx
+           "~a uses one tag for more than one element, so a sync cannot tell them apart:\n~a  ~a"
+           where
+           (apply string-append
+                  (for/list ([d (in-list dups)])
+                    (format "    ~s appears ~a times\n" (car d) (cdr d))))
+           hint)))
+
+(define TAG-HINT
+  "Give each element its own tag -- an `at` inside a loop needs the index in its tag.")
+
 (define (literal-range stx pred)
   (and stx (pred (syntax-e stx)) (range-of stx)))
 
@@ -200,10 +238,18 @@
 ;; than as it was generated. That is what survives the user reformatting it: the
 ;; syntax tree is read to *find* things, and only the literals themselves are
 ;; overwritten, so no formatting is ever regenerated.
-(define (find-at-sites path)
+;; (values sites scopes). `scopes` names the definition that builds each slide,
+;; in order, or is #f when `all-slides` is not a literal list of names: a program
+;; that computes its slide list cannot have a slide traced back to source, and
+;; then tags have to be unique across the whole file instead of per slide.
+(define (find-program-sites path)
   (if (regexp-match? #rx"[.]rhm$" (if (path? path) (path->string path) path))
       (rhombus-at-sites path)
       (racket-at-sites path)))
+
+(define (find-at-sites path)
+  (define-values (sites _scopes) (find-program-sites path))
+  sites)
 
 (define (racket-at-sites path)
   (define forms
@@ -216,14 +262,52 @@
             (define s (read-syntax path in))
             (if (eof-object? s) (reverse acc) (loop (cons s acc))))))))
   (define sites '())
-  (let walk ([stx (datum->syntax #f forms)])
-    (define l (syntax->list stx))
-    (when l
-      (when (and (pair? l) (eq? 'at (syntax-e (car l))))
-        (define site (parse-at-form (cdr l)))
-        (when site (set! sites (cons site sites))))
-      (for-each walk l)))
-  (reverse sites))
+  ;; Each top-level form is walked under its own name, so a site knows which
+  ;; slide definition it belongs to.
+  (for ([form (in-list (module-body forms))])
+    (define scope (racket-define-name form))
+    (let walk ([stx form])
+      (define l (syntax->list stx))
+      (when l
+        (when (and (pair? l) (eq? 'at (syntax-e (car l))))
+          (define site (parse-at-form (cdr l)))
+          (when site (set! sites (cons (struct-copy at-site site [scope scope]) sites))))
+        (for-each walk l))))
+  (values (reverse sites) (racket-slide-scopes (module-body forms))))
+
+;; Reading a `#lang` file gives one `(module name lang (#%module-begin body ...))`
+;; form, so the definitions are two levels in.
+(define (module-body forms)
+  (cond
+    [(and (= 1 (length forms))
+          (let ([l (syntax->list (car forms))])
+            (and l (= 4 (length l)) (eq? 'module (syntax-e (car l)))
+                 (let ([mb (syntax->list (fourth l))])
+                   (and mb (eq? '#%module-begin (syntax-e (car mb))) (cdr mb))))))
+     => values]
+    [else forms]))
+
+;; `(define name ...)` -> name; `(define (name . args) ...)` -> name.
+(define (racket-define-name form)
+  (define l (syntax->list form))
+  (and l (>= (length l) 2) (eq? 'define (syntax-e (car l)))
+       (let ([target (syntax-e (second l))])
+         (cond
+           [(symbol? target) target]
+           [(pair? target) (and (symbol? (syntax-e (car target))) (syntax-e (car target)))]
+           [else #f]))))
+
+;; `(define all-slides (list slide-1 slide-2))` -> '(slide-1 slide-2).
+(define (racket-slide-scopes forms)
+  (for/or ([form (in-list forms)])
+    (define l (syntax->list form))
+    (and l (= 3 (length l)) (eq? 'define (syntax-e (car l)))
+         (memq (syntax-e (second l)) '(all-slides all_slides))
+         (let ([rhs (syntax->list (third l))])
+           (and rhs (pair? rhs)
+                (memq (syntax-e (car rhs)) '(list vector))
+                (andmap (lambda (e) (symbol? (syntax-e e))) (cdr rhs))
+                (map syntax-e (cdr rhs)))))))
 
 ;; ---------------------------------------------------------------- rhombus
 
@@ -249,19 +333,49 @@
       (port-count-lines! in)
       (parse-all in #:source path)))
   (define sites '())
+  ;; `parse-all` returns `(multi group ...)`, so the top-level groups -- one per
+  ;; `def` -- are the scopes.
+  (define groups
+    (let ([e (syntax-e stx)])
+      (if (and (list? e) (eq? 'multi (syntax-e* (car e)))) (cdr e) (list stx))))
   ;; The offset has to be in effect while the ranges are computed, which is
   ;; during the walk.
   (parameterize ([current-range-offset after-lang])
-    (let walk ([s stx])
-      (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
-      (when l
-        (define call (rhombus-call l))
-        (when (and call (eq? 'at (car call)))
-          (define site (parse-rhombus-at (cdr call)))
-          (when site (set! sites (cons site sites))))
-        (for-each walk l))
-      (void)))
-  (reverse sites))
+    (for ([g (in-list groups)])
+      (define scope (rhombus-def-name g))
+      (let walk ([s g])
+        (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+        (when l
+          (define call (rhombus-call l))
+          (when (and call (eq? 'at (car call)))
+            (define site (parse-rhombus-at (cdr call)))
+            (when site (set! sites (cons (struct-copy at-site site [scope scope]) sites))))
+          (for-each walk l))
+        (void))))
+  (values (reverse sites) (rhombus-slide-scopes groups)))
+
+;; `(group def slide_1 (op =) ...)` -> slide_1, and the same for `fun`.
+(define (rhombus-def-name g)
+  (define l (let ([e (syntax-e g)]) (and (list? e) e)))
+  (and l (>= (length l) 3) (eq? 'group (syntax-e* (first l)))
+       (memq (syntax-e* (second l)) '(def fun))
+       (symbol? (syntax-e* (third l)))
+       (syntax-e* (third l))))
+
+;; `def all_slides = [slide_1, slide_2]` -> '(slide_1 slide_2).
+(define (rhombus-slide-scopes groups)
+  (for/or ([g (in-list groups)])
+    (define l (let ([e (syntax-e g)]) (and (list? e) e)))
+    (and l (= 5 (length l)) (eq? 'group (syntax-e* (first l)))
+         (eq? 'def (syntax-e* (second l)))
+         (memq (syntax-e* (third l)) '(all_slides all-slides))
+         (let ([b (let ([e (syntax-e (fifth l))]) (and (list? e) e))])
+           (and b (eq? 'brackets (syntax-e* (car b)))
+                (let ([names (map (lambda (grp)
+                                    (let ([v (rhombus-group-value grp)])
+                                      (and v (symbol? (syntax-e* v)) (syntax-e* v))))
+                                  (cdr b))])
+                  (and (pair? names) (andmap values names) names)))))))
 
 ;; (cons name arg-groups) when `l` is a call, else #f.
 (define (rhombus-call l)
@@ -319,7 +433,8 @@
                   (rhombus-child-kw child '#:height)
                   (rhombus-child-texts child)
                   (rhombus-nudge (hash-ref kws '#:nudge #f))
-                  (let ([r (range-of tag-stx)]) (and r (rng-end r)))))))
+                  (let ([r (range-of tag-stx)]) (and r (rng-end r)))
+                  #f))))
 
 ;; `~nudge: [12.0, -4.0]` -> (list range dx dy).
 (define (rhombus-nudge stx)
@@ -377,7 +492,9 @@
                   (racket-nudge (hash-ref kws '#:nudge #f))
                   ;; A new correction goes right after the tag, which is on one
                   ;; line, so nothing needs reindenting.
-                  (let ([r (range-of tag-stx)]) (and r (rng-end r)))))))
+                  (let ([r (range-of tag-stx)]) (and r (rng-end r)))
+                  ;; The walker knows the enclosing definition; this does not.
+                  #f))))
 
 ;; `#:nudge (list 12.0 -4.0)` -> (list range dx dy).
 (define (racket-nudge stx)
@@ -413,18 +530,54 @@
 
 ;; Applies the actions a merge produced, editing only literals. Returns
 ;; (values applied skipped).
+;; Within one slide definition a tag has to be unique, because that is the only
+;; thing an edit is matched on. Across slides it need not be: "Title 1" on every
+;; slide is the normal case. When the slide list is computed there is no per-slide
+;; scope to speak of, so uniqueness has to hold file-wide.
+(define (check-site-tags sites scopes path)
+  (define where (format "~a" (if (path? path) (path->string path) path)))
+  (cond
+    [scopes
+     (for ([scope (in-list (remove-duplicates (map at-site-scope sites)))])
+       (check-unique-tags (for/list ([s (in-list sites)]
+                                    #:when (equal? scope (at-site-scope s)))
+                            (at-site-tag s))
+                          (if scope (format "~a: ~a" where scope) where)
+                          TAG-HINT))]
+    [else
+     (check-unique-tags (map at-site-tag sites)
+                        (format "~a (its slide list is computed, so tags have to be unique file-wide)"
+                                where)
+                        TAG-HINT)]))
+
 (define (apply-actions! program-path actions)
   (define rhombus? (regexp-match? #rx"[.]rhm$" (if (path? program-path)
                                                    (path->string program-path)
                                                    program-path)))
-  (define sites (for/hash ([s (in-list (find-at-sites program-path))])
-                  (values (at-site-tag s) s)))
+  (define-values (all-sites scopes) (find-program-sites program-path))
+  (check-site-tags all-sites scopes program-path)
+  ;; Keyed by the slide's definition, so "Title 1" on slide 3 finds slide 3's
+  ;; `at`. When the slide list is computed there is no definition to key on, and
+  ;; `check-site-tags` has already established that tags are unique file-wide.
+  (define by-scope (for/hash ([s (in-list all-sites)])
+                     (values (cons (at-site-scope s) (at-site-tag s)) s)))
+  (define by-tag
+    (let ([dups (map car (duplicate-tags (map at-site-tag all-sites)))])
+      (for/hash ([s (in-list all-sites)] #:unless (member (at-site-tag s) dups))
+        (values (at-site-tag s) s))))
+  (define (site-for a)
+    (define scope (and scopes
+                       (<= 1 (sync-action-slide a) (length scopes))
+                       (list-ref scopes (sub1 (sync-action-slide a)))))
+    (if scope
+        (hash-ref by-scope (cons scope (sync-action-tag a)) #f)
+        (hash-ref by-tag (sync-action-tag a) #f)))
   (define edits '())
   (define applied '())
   (define skipped '())
   (define (edit! r text) (when r (set! edits (cons (list r text) edits))))
   (for ([a (in-list actions)])
-    (define site (hash-ref sites (sync-action-tag a) #f))
+    (define site (site-for a))
     (case (sync-action-kind a)
       [(moved resized)
        (define g (sync-action-detail a))
@@ -543,11 +696,11 @@
        (write-sync-base base-file prog
                         #:program (path->string (path->complete-path program-path))
                         #:deck (path->string (path->complete-path pptx-path))))
-     (sync-report '() '() (not dry-run?))]
+     (sync-report '() '() '() (not dry-run?))]
     [else
      (define actions (merge-states base prog deck))
      (cond
-       [dry-run? (sync-report actions '() #f)]
+       [dry-run? (sync-report actions '() '() #f)]
        [else
         (define-values (applied skipped) (apply-actions! program-path actions))
         ;; The new base is the program as it now reads, so the next pass
@@ -556,7 +709,7 @@
         (write-sync-base base-file after
                          #:program (path->string (path->complete-path program-path))
                          #:deck (path->string (path->complete-path pptx-path)))
-        (sync-report actions applied #t)])]))
+        (sync-report actions applied skipped #t)])]))
 
 (define (format-sync-report r)
   (define o (open-output-string))
@@ -574,6 +727,8 @@
                               (~r (first g) #:precision 1) (~r (second g) #:precision 1)
                               (~r (third g) #:precision 1) (~r (fourth g) #:precision 1)))
                     "")))
+     (for ([sk (in-list (sync-report-skipped r))])
+       (fprintf o "    not applied: ~s -- ~a\n" (sync-action-tag (car sk)) (cdr sk)))
      (fprintf o "  ~a applied, ~a reported\n"
               (length (sync-report-applied r))
               (- (length as) (length (sync-report-applied r))))])
