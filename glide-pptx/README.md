@@ -519,46 +519,52 @@ picture whose relationship resolves to nothing.
 
 ## Where this is going
 
-The loop works: geometry and text merge back on literals, and a computed
-position gets a correction that cannot stack. What is left, roughly in the order
-it is worth doing.
+The loop works: geometry and text merge back on literals, a computed position
+gets a correction that cannot stack, every draggable object maps to something
+nameable, and the representation is checked field by field across a round trip.
+What is left, in the order it is worth doing.
 
-**Make the editor honest about what it can honor.** An element with no tag, or
-whose position is computed with no literal to patch, can be dragged and then not
-moved. Reporting that after the fact is worse than not offering it: such an
-element should be flattened into its parent so the editor shows one object
-rather than a piece that will not move. Export already has what it needs to
-decide -- whether a patchable source site exists.
+**Shapes added or deleted in the editor.** The only structural gap remaining.
+Both are detected and reported; neither is applied. Adding should insert a
+generated `at` form at the right z-position, and deleting should comment code
+out rather than remove it. Reordering is used as a matching signal but never
+applied either. How aggressive to be with someone's source is a judgement call
+more than a technical one.
 
-**Shapes added or deleted in the editor.** Reported now. Adding should insert a
-generated `at` form at the right z-position; deleting should comment code out
-rather than remove it. Reordering is detected as a signal but not applied.
+**Patch the original package** instead of synthesizing one. A deck with charts or
+SmartArt loses them on the first cycle today -- 62 of those in the corpus draw as
+empty boxes -- and patching keeps them untouched across the loop even though we
+cannot render them. This is what makes the round trip safe on a deck that uses
+features we do not model.
 
-**A structural round-trip check.** Fidelity is measured in pixels, and a dropped
-attribute can hide under 0.1%. Import, export, import again, and diff the two
-IRs: exact, fast, and it catches semantic loss that no image diff will.
+**Three gaps that are reported rather than right**, all found in real files:
 
-**Patch the original package** instead of synthesizing one, so a deck with charts
-or SmartArt keeps them across the loop even though we cannot render them. This is
-what makes the round trip safe on a deck that uses features we do not model.
+- `start-alpha`/`end-alpha`, the grouping ops that make nested transparency
+  composite correctly. Ignored, so a `cellophane`d group is drawn at full
+  strength.
+- arbitrary clipping, which DrawingML cannot express. The clip is dropped where
+  it should rasterize the clipped span.
+- sheared text, same.
 
-**A correction for picts composed inside an `at`.** The `#:nudge` argument covers
-an element that `at` places. One of several children of a `vc-append` has no
-`at` of its own, and there the wrapper form is still the answer:
-`(inset p dx dy (- dx) (- dy))`, measured to move the drawing exactly while
-leaving the enclosing combinator alone.
+**Coalescing adjacent `draw-text`.** On the flattened path a line is one box per
+drawn run. That path is now only reached by a one-way `--slideshow` export --
+everything in the round trip either has a real text body or is a single picture
+-- but for an exported talk it is the difference between editable paragraphs and
+a mosaic.
 
-**Fidelity gaps that real files exposed**, all currently reported rather than
-silently wrong:
-
-- `start-alpha`/`end-alpha` grouping, so nested transparency composites right
-- arbitrary clipping, which DrawingML cannot express and which should rasterize
-  the clipped span rather than drop the clip
-- sheared text, same
-- coalescing adjacent `draw-text` on the flattened path, so a line is one
-  paragraph rather than one box per drawn run
-- `a:sym`, the symbol font, which is read but not carried
-- charts and SmartArt, which draw as an empty box -- 62 of them in the corpus
+**Smaller known losses:** `a:sym` (the symbol font) is read but not carried;
+effects, vertical and rotated-90 text, right-to-left runs, and justified
+alignment are unhandled.
 
 **Testing the Keynote and PowerPoint adapters**, which needs a Mac. The
-AppleScript is written against their APIs but has never run.
+AppleScript is written against their APIs and has never run, and neither has the
+`.key` path end to end: export, AppleScript import, drag, AppleScript export,
+merge.
+
+### One item that flattening removed
+
+A pict composed inside an `at` used to need its own correction, since a drag on
+one of several `vc-append` children has no `at` to record against. That case is
+gone: such a subtree is now a single picture, so its pieces are not separately
+draggable, and there is nothing to record a correction for. It comes back only
+under `--no-flatten`.
