@@ -5,7 +5,8 @@
          "ir.rkt" "parse.rkt" "render.rkt" "runtime.rkt"
          "emit-racket.rkt" "emit-rhombus.rkt" "verify.rkt" "geometry.rkt"
          "export.rkt" "sync.rkt" "watch.rkt"
-         (only-in "semantic.rkt" current-flatten-opaque?))
+         (only-in "semantic.rkt" current-flatten-opaque?)
+         (only-in "parse.rkt" current-allow-unsupported?))
 (provide main)
 
 (define (default-workdir out) (build-path out ".glide-pptx"))
@@ -282,16 +283,24 @@
   (printf "usage: raco glide-pptx <command> [options] deck.pptx ...\n\n")
   (for ([s (in-list subcommands)])
     (printf "  ~a~a\n" (~a (first s) #:min-width 12) (second s)))
-  (printf "\nRun a command with --help for its options.\n"))
+  (printf "\nRun a command with --help for its options.\n")
+  (printf "\n  --allow-unsupported  draw charts and diagrams as empty boxes\n")
+  (printf "                       instead of refusing the deck\n"))
 
 (define (main . argv)
   (define args (if (and (= 1 (length argv)) (vector? (car argv)))
                    (vector->list (car argv))
                    argv))
+  ;; This one is not per-command: every command that reads a deck honours it,
+  ;; and it says "I am only looking", not "this deck is safe to round-trip".
+  (define allow? (and (member "--allow-unsupported" args) #t))
+  (set! args (remove "--allow-unsupported" args))
   (cond
     [(or (null? args) (member (car args) '("-h" "--help" "help"))) (usage)]
     [(assoc (car args) subcommands)
-     => (lambda (s) ((third s) (list->vector (cdr args))))]
+     => (lambda (s)
+          (parameterize ([current-allow-unsupported? allow?])
+            ((third s) (list->vector (cdr args)))))]
     [else (eprintf "unknown command: ~a\n\n" (car args)) (usage) (exit 2)]))
 
 ;; `raco` runs a registered command by requiring its module, so the dispatch

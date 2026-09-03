@@ -647,7 +647,13 @@
 
 ;; A whole slide: a background of the given size with elements pinned on top.
 (define (slide-canvas #:width w #:height h #:background [bg (solid-fill white)]
-                      . placeds)
+                      . args)
+  ;; A list argument is spliced, so a slide can be built with `for/list` without
+  ;; an `apply`. Generated code never does this, but hand-written code wants to.
+  (define placeds
+    (let flatten ([xs args])
+      (append* (for/list ([x (in-list xs)])
+                 (if (list? x) (flatten x) (list x))))))
   (define base
     (cond
       [(not bg) (blank w h)]

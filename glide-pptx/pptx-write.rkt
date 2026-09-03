@@ -379,38 +379,38 @@
 ;; Returns (values slide-xml image-parts) where each image part is
 ;; (list part-name relationship-id bytes-writer).
 (define (slide-xml page index)
+  ;; Ids are unique within a slide and start after 1, which the group frame
+  ;; takes. Images are collected as they are met so the relationship part can be
+  ;; written alongside.
   (define images '())
-  (define shapes
-    (for/list ([i (in-list (display-page-items page))] [n (in-naturals 2)])
-      (cond
-        [(it:rect? i) (rect-item-xml n i)]
-        [(it:ellipse? i) (ellipse-item-xml n i)]
-        [(it:path? i) (path-item-xml n i)]
-        [(it:text? i) (text-item-xml n i)]
-        [(it:image? i)
-         (define k (add1 (length images)))
-         (define rid (format "rId~a" (+ 1 k)))
-         (define name (format "ppt/media/image~a-~a.png" index k))
-         (set! images (cons (list name rid i) images))
-         (image-item-xml n i rid)]
-        [(it:preset? i) (preset-item-xml n i)]
-        [(it:textbox? i) (textbox-item-xml n i)]
-        [(it:shape-path? i) (shape-path-item-xml n i)]
-        [(it:picture? i)
-         (define k (add1 (length images)))
-         (define rid (format "rId~a" (+ 1 k)))
-         (define src (it:picture-src i))
-         ;; A picture whose relationship resolved to nothing has no source and
-         ;; so no extension to read; a blank png stands in for it.
-         (define ext
-           (let* ([p (and src (if (path? src) src (string->path src)))]
-                  [e (and p (path-get-extension p))]
-                  [e* (if e (string-downcase (bytes->string/utf-8 e)) ".png")])
-             (if (member e* '(".png" ".jpg" ".jpeg" ".gif")) e* ".png")))
-         (define name (format "ppt/media/pic~a-~a~a" index k ext))
-         (set! images (cons (list name rid i) images))
-         (picture-item-xml n i rid)]
-        [else ""])))
+  (define next-id (box 1))
+  (define (fresh-id!) (set-box! next-id (add1 (unbox next-id))) (unbox next-id))
+
+  (define (register-image! i stem ext)
+    (define k (add1 (length images)))
+    (define rid (format "rId~a" (+ 1 k)))
+    (define name (format "ppt/media/~a~a-~a~a" stem index k ext))
+    (set! images (cons (list name rid i) images))
+    rid)
+
+  ;; Recursive, so a group's children are written the same way its siblings are.
+  (define (item->xml i)
+    (define n (fresh-id!))
+    (cond
+      [(it:rect? i) (rect-item-xml n i)]
+      [(it:ellipse? i) (ellipse-item-xml n i)]
+      [(it:path? i) (path-item-xml n i)]
+      [(it:text? i) (text-item-xml n i)]
+      [(it:image? i) (image-item-xml n i (register-image! i "image" ".png"))]
+      [(it:group? i) (group-item-xml n i item->xml)]
+      [(it:preset? i) (preset-item-xml n i)]
+      [(it:textbox? i) (textbox-item-xml n i)]
+      [(it:shape-path? i) (shape-path-item-xml n i)]
+      [(it:picture? i)
+       (picture-item-xml n i (register-image! i "pic" (picture-extension i)))]
+      [else ""]))
+
+  (define shapes (for/list ([i (in-list (display-page-items page))]) (item->xml i)))
   (values
    (format (string-append xml-decl
                           "<p:sld xmlns:a=\"~a\" xmlns:r=\"~a\" xmlns:p=\"~a\">"
@@ -429,6 +429,37 @@
              (if bg (format "<p:bg><p:bgPr>~a<a:effectLst/></p:bgPr></p:bg>" (fill-xml bg)) ""))
            (apply string-append shapes))
    (reverse images)))
+
+;; A picture whose relationship resolved to nothing has no source and so no
+;; extension to read; a blank png stands in for it.
+(define (picture-extension i)
+  (define src (it:picture-src i))
+  (define p (and src (if (path? src) src (string->path src))))
+  (define e (and p (path-get-extension p)))
+  (define e* (if e (string-downcase (bytes->string/utf-8 e)) ".png"))
+  (if (member e* '(".png" ".jpg" ".jpeg" ".gif")) e* ".png"))
+
+;; A group, written as one. Its children are already in the slide's
+;; coordinates, so the child space is the group's own box.
+(define (group-item-xml id i emit-child)
+  (format (string-append "<p:grpSp><p:nvGrpSpPr>"
+                         "<p:cNvPr id=\"~a\" name=\"~a\"~a/><p:cNvGrpSpPr/><p:nvPr/>"
+                         "</p:nvGrpSpPr>"
+                         "<p:grpSpPr><a:xfrm~a>"
+                         "<a:off x=\"~a\" y=\"~a\"/><a:ext cx=\"~a\" cy=\"~a\"/>"
+                         "<a:chOff x=\"~a\" y=\"~a\"/><a:chExt cx=\"~a\" cy=\"~a\"/>"
+                         "</a:xfrm></p:grpSpPr>~a</p:grpSp>")
+          id
+          (xml-escape (or (it:group-tag i) (format "Group ~a" id)))
+          (if (it:group-tag i)
+              (format " descr=\"glide-pptx:~a\"" (xml-escape (it:group-tag i))) "")
+          (if (zero? (it:group-rot i)) ""
+              (format " rot=\"~a\"" (angle-60k (it:group-rot i))))
+          (emu (it:group-x i)) (emu (it:group-y i))
+          (max 1 (emu (it:group-w i))) (max 1 (emu (it:group-h i)))
+          (emu (it:group-x i)) (emu (it:group-y i))
+          (max 1 (emu (it:group-w i))) (max 1 (emu (it:group-h i)))
+          (apply string-append (map emit-child (it:group-items i)))))
 
 ;; ---------------------------------------------------------------- package
 

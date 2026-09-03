@@ -111,7 +111,7 @@
                        (image-desc-flip-h? d) (image-desc-flip-v? d)
                        (ir-line->pen (image-desc-line d) f)
                        (image-desc-opacity d) tag))]
-    [(group-desc? d) (group-items d x y t page-w page-h)]
+    [(group-desc? d) (list (group-item d x y rot t tag page-w page-h))]
     ;; A table is drawn rather than described, but it flattens into shapes and
     ;; text that read correctly, so it keeps that treatment.
     [(table-desc? d) (raw-items pl page-w page-h)]
@@ -205,6 +205,13 @@
                                   (X (car (second ps))) (Y (cdr (second ps))))
                        (seg:close)))]
          [else (seg:close)])))))
+
+;; A group stays a group: its children are laid out in the slide's coordinates,
+;; as they already were, and wrapped in one item.
+(define (group-item d gx gy rot t tag page-w page-h)
+  (define w (* (abs (xf-sx t)) (group-desc-width d)))
+  (define h (* (abs (xf-sy t)) (group-desc-height d)))
+  (it:group gx gy w h rot (group-items d gx gy t page-w page-h) tag))
 
 (define (group-items d gx gy t page-w page-h)
   (define cw (max 1e-9 (group-desc-child-width d)))

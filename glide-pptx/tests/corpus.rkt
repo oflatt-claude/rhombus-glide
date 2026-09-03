@@ -34,7 +34,11 @@
   [(null? decks)
    (printf "no corpus present; run tools/fetch-corpus.sh to fetch one\n")]
   [else
-   (define work (build-path (find-system-path 'temp-dir) "glide-pptx-corpus"))
+   ;; These decks include 62 with charts or SmartArt. Elsewhere that is an error,
+  ;; because an empty box would quietly replace the content on a round trip.
+  ;; Here nothing is round-tripped -- the question is only whether we crash.
+  (current-allow-unsupported? #t)
+  (define work (build-path (find-system-path 'temp-dir) "glide-pptx-corpus"))
    (delete-directory/files work #:must-exist? #f)
    (make-directory* work)
 

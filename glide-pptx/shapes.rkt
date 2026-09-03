@@ -9,7 +9,8 @@
          "xml-util.rkt" "units.rkt" "ir.rkt" "theme.rkt" "drawing.rkt" "text.rkt")
 (provide (struct-out shape-ctx) make-shape-ctx
          parse-sp-tree
-         placeholder-info)
+         placeholder-info
+         current-allow-unsupported?)
 
 ;; layout-phs / master-phs map a placeholder key to its <p:sp>.
 ;; tx-styles is the master's <p:txStyles>; default-text-style is the
@@ -35,6 +36,10 @@
       (values (string->symbol (or (attr ph 'type) "body"))
               (or (attr-num ph 'idx) 0))
       (values #f #f)))
+
+;; Whether content we cannot represent is a warning instead of an error. Off,
+;; because silently emptying a chart on a round trip loses the author's work.
+(define current-allow-unsupported? (make-parameter #f))
 
 (define title-types '(title ctrTitle))
 (define body-types '(body subTitle obj tbl chart dgm clipArt media pic))
@@ -318,6 +323,16 @@
   (cond
     [tbl-node (parse-table ctx id name b tbl-node)]
     [else
+     ;; A chart or a diagram would round-trip to an empty box, quietly losing
+     ;; the content. That is worse than refusing, so it refuses -- unless the
+     ;; caller has said it only wants to look at the deck, not to trust it.
+     (unless (current-allow-unsupported?)
+       (error 'glide-pptx
+              (string-append
+               "~s is a chart or diagram, which is not supported.\n"
+               "  It would come back as an empty box, losing the content.\n"
+               "  To read the deck anyway, allow unsupported content.")
+              name))
      ((shape-ctx-warn ctx)
       (format "graphicFrame ~a: unsupported content (chart or diagram), drawn as an empty bbox"
               name))

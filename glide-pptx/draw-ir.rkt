@@ -66,12 +66,17 @@
 (struct it:shape-path (segs fill pen box body tag) #:prefab)
 ;; `src` is a file path; the writer reads and embeds it.
 (struct it:picture (x y w h rot src crop flip-h? flip-v? pen opacity tag) #:prefab)
+;; A group, kept as one. Dissolving it into its children would lose the
+;; grouping the author made in the editor -- and anything attached to the group,
+;; an appear animation most of all, would have nothing left to attach to.
+(struct it:group (x y w h rot items tag) #:prefab)
 
 ;; An item that stands for one element of a slide, and so takes part in a sync.
 ;; A flattened element counts: it is a picture rather than a shape, but it is
 ;; still one object with one identity, and dragging it has somewhere to land.
 (define (semantic-item? i)
   (or (it:preset? i) (it:textbox? i) (it:shape-path? i) (it:picture? i)
+      (it:group? i)
       (and (it:image? i) (it:image-tag i) #t)))
 
 ;; The element name an item carries, or #f.
@@ -82,6 +87,7 @@
     [(it:shape-path? i) (it:shape-path-tag i)]
     [(it:picture? i) (it:picture-tag i)]
     [(it:image? i) (it:image-tag i)]
+    [(it:group? i) (it:group-tag i)]
     [else #f]))
 
 ;; A page of items in paint order, plus the size it was drawn at. `background`

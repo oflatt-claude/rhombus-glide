@@ -1,8 +1,12 @@
 #lang racket/base
 ;; Unit tests for the pieces that are pure functions of the file format.
 (require rackunit racket/list racket/class racket/draw
+         racket/file racket/string racket/runtime-path
          glide-pptx/units glide-pptx/xml-util glide-pptx/ir
-         glide-pptx/theme glide-pptx/geometry glide-pptx/opc)
+         glide-pptx/theme glide-pptx/geometry glide-pptx/opc
+         glide-pptx/parse "deck-edit.rkt")
+
+(define-runtime-path decks-dir "decks")
 
 ;; ------------------------------------------------------------------- units
 
@@ -181,5 +185,41 @@
                                     (at 10.0 10.0 struck)
                                     (at 10.0 50.0 outlined)))
               "and a whole slide"))
+
+;; ------------------------------------------------- charts and SmartArt refuse
+
+;; A chart or a SmartArt diagram has no representation here, so on a round trip
+;; it would come back as an empty box -- the content silently gone. Refusing is
+;; the only honest answer; `--allow-unsupported` is for looking, not syncing.
+(let ()
+  (define src (build-path decks-dir "03-shapes.pptx"))
+  (define deck (build-path (find-system-path 'temp-dir) "glide-pptx-chart.pptx"))
+  (copy-file src deck #t)
+  ;; A graphicFrame holding a diagram, which is what SmartArt is on disk.
+  (define frame
+    (string-append
+     "<p:graphicFrame><p:nvGraphicFramePr>"
+     "<p:cNvPr id=\"99\" name=\"Diagram 99\"/><p:cNvGraphicFramePr/><p:nvPr/>"
+     "</p:nvGraphicFramePr>"
+     "<p:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"1000000\" cy=\"1000000\"/></p:xfrm>"
+     "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/diagram\">"
+     "</a:graphicData></a:graphic></p:graphicFrame>"))
+  (with-unpacked-deck
+   deck
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" "slide1.xml"))
+     (define d (file->string part))
+     (display-to-file (string-replace d "</p:spTree>" (string-append frame "</p:spTree>"))
+                      part #:exists 'replace)))
+
+  (define work (make-temporary-file "chartwork~a" 'directory))
+  (check-exn #rx"chart or diagram"
+             (lambda () (pptx->deck deck #:workdir work))
+             "a diagram is refused by default")
+  (check-true (parameterize ([current-allow-unsupported? #t])
+                (deck? (pptx->deck deck #:workdir work)))
+              "and read as an empty box only when that is asked for")
+  (delete-directory/files work #:must-exist? #f)
+  (delete-file deck))
 
 (printf "unit tests done\n")
