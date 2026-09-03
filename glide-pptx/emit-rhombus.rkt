@@ -163,11 +163,8 @@
     ;; fit slideshow's page: the two aspect ratios are close but not equal, and
     ;; fitting letterboxes rather than cropping.
     (line out 0 "module main:")
-    (line out 2 "import: slideshow open")
-    (line out 2 "def page = blank_client()")
-    (line out 2 "def zoom = math.min(page.width / slide_width, page.height / slide_height)")
-    (line out 2 "for (s in all_slides):")
-    (line out 4 "slide(~~layout: #'center, Pict.from_handle(s).scale(zoom))")
+    (line out 2 "import: lib(\"glide-pptx/show.rhm\") open")
+    (line out 2 "show_slides(all_slides, ~~width: slide_width, ~~height: slide_height)")
     (newline out)
     (line out 0 "// The backup PDF, without opening a window:")
     (line out 0 "//   racket -l racket/base -e '(require (submod (file \"~a\") pdf))'"

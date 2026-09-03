@@ -521,10 +521,18 @@
                            (+ 1 i) REL i)))
           (+ n 2) REL))
 
-(define blank-sp-tree
-  (string-append "<p:cSld><p:spTree>"
+(define (blank-sp-tree [bg ""])
+  (string-append "<p:cSld>" bg "<p:spTree>"
                  "<p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
                  "<p:grpSpPr/></p:spTree></p:cSld>"))
+
+;; The master and the layout both say white. A slide writes its own background,
+;; so this is only what an unstated one inherits -- but "unstated" is not the
+;; same as "white", and a consumer that does not assume white paints the slide
+;; black. Saying it is one line and it removes the guess.
+(define white-background
+  (string-append "<p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill>"
+                 "<a:effectLst/></p:bgPr></p:bg>"))
 
 (define master-xml
   (format (string-append xml-decl
@@ -535,7 +543,7 @@
                          " hlink=\"hlink\" folHlink=\"folHlink\"/>"
                          "<p:sldLayoutIdLst><p:sldLayoutId id=\"2147483649\" r:id=\"rId1\"/>"
                          "</p:sldLayoutIdLst></p:sldMaster>")
-          NS-A NS-R NS-P blank-sp-tree))
+          NS-A NS-R NS-P (blank-sp-tree white-background)))
 
 (define master-rels
   (format (string-append xml-decl
@@ -550,7 +558,7 @@
                          "<p:sldLayout xmlns:a=\"~a\" xmlns:r=\"~a\" xmlns:p=\"~a\""
                          " type=\"blank\" preserve=\"1\">~a"
                          "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>")
-          NS-A NS-R NS-P blank-sp-tree))
+          NS-A NS-R NS-P (blank-sp-tree white-background)))
 
 (define layout-rels
   (format (string-append xml-decl

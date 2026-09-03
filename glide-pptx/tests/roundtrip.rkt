@@ -5,7 +5,7 @@
 ;; or garbled something -- a missing keyword, a default assumed wrongly, a
 ;; coordinate rounded away. Comparing rendered pages catches that where reading
 ;; the generated source would not.
-(require rackunit racket/list racket/file racket/path racket/system racket/port
+(require rackunit racket/list racket/string racket/class racket/draw racket/file racket/path racket/system racket/port
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
          glide-pptx/emit-rhombus glide-pptx/verify)
@@ -93,9 +93,9 @@
   (define src (file->string program))
 
   ;; What `racket show.rhm` runs.
-  (check-regexp-match #rx"module main:\n  import: slideshow open" src)
-  (check-regexp-match #rx"slide[(]~layout: #'center, Pict.from_handle" src
-                      "each slide is handed to slideshow, through the pict bridge")
+  (check-regexp-match #rx"module main:\n  import: lib[(]\"glide-pptx/show.rhm\"[)] open" src)
+  (check-regexp-match #rx"show_slides[(]all_slides, ~width: slide_width" src
+                      "each slide is handed to slideshow, which fills the page")
   (check-regexp-match #rx"module pdf:" src "and the PDF has its own submodule")
 
   ;; Slideshow needs a display, so the real thing is only checked where there is
@@ -117,3 +117,79 @@
        (check-equal? (length (rasterize-pdf pdf (build-path dir "pg") #:dpi 24))
                      (length (deck-slides d))
                      "one page per slide"))]))
+
+;; ------------------------------------- the slide fills slideshow's page
+
+;; Reported from a real talk: the first slide came out small, with white margins
+;; around it. slideshow lays content out inside the client area, which is the
+;; page less its margins, so a slide scaled to the client leaves those margins
+;; showing -- and a converted slide is a finished page, not content.
+;;
+;; The check that missed it counted pages. Three pages came out, so it passed.
+;; What matters is where the ink lands, so that is what this measures.
+(let ()
+  (define xvfb (find-executable-path "xvfb-run"))
+  (define dir (build-path work "fills"))
+  (make-directory* dir)
+  ;; A dark background, so the slide's own edges can be found in the render.
+  (define program (build-path dir "fills.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export:"
+          "  all_slides"
+          "  slide_width"
+          "  slide_height"
+          "def slide_width = 959.976"
+          "def slide_height = 540.0"
+          "def slide_1 = slide_canvas("
+          "  ~width: slide_width, ~height: slide_height, ~background: hex(\"1F3B63\"),"
+          "  at(40.0, 40.0, ~tag: \"Box\","
+          "     shape_pict(~width: 200.0, ~height: 100.0, ~fill: hex(\"ED7D31\")))"
+          ")"
+          "def all_slides = [slide_1]"
+          "module main:"
+          "  import: lib(\"glide-pptx/show.rhm\") open"
+          "  show_slides(all_slides, ~width: slide_width, ~height: slide_height)"
+          "")
+    "\n")
+   program #:exists 'replace)
+
+  (cond
+    [(not xvfb) (printf "no xvfb-run; skipping the slideshow geometry check\n")]
+    [else
+     (define pdf (build-path dir "fills.pdf"))
+     (define out (open-output-string))
+     (define code
+       (parameterize ([current-directory dir]
+                      [current-output-port out] [current-error-port out])
+         (system*/exit-code xvfb "-a" racket-exe (path->string program)
+                            "--widescreen" "--pdf" "-c" "-e" "-o" "fills.pdf")))
+     (check-equal? code 0 (format "the slideshow ran:\n~a" (get-output-string out)))
+     (when (file-exists? pdf)
+       (define pages (rasterize-pdf pdf (build-path dir "pg") #:dpi 50))
+       (check-equal? (length pages) 1 "one page")
+       (define bm (read-bitmap (first pages)))
+       (define w (send bm get-width))
+       (define h (send bm get-height))
+       (define px (make-bytes (* w h 4)))
+       (send bm get-argb-pixels 0 0 w h px)
+       ;; The navy background: a low blue channel is the slide, not the page.
+       (define-values (minx miny maxx maxy)
+         (for*/fold ([minx w] [miny h] [maxx 0] [maxy 0])
+                    ([y (in-range h)] [x (in-range w)])
+           (define i (* 4 (+ x (* y w))))
+           (if (< (bytes-ref px (+ i 3)) 200)
+               (values (min minx x) (min miny y) (max maxx x) (max maxy y))
+               (values minx miny maxx maxy))))
+       (define fill-w (/ (add1 (- maxx minx)) (exact->inexact w)))
+       (define fill-h (/ (add1 (- maxy miny)) (exact->inexact h)))
+       (printf "  slide covers ~a% of the page width, ~a% of its height\n"
+               (round (* 100 fill-w)) (round (* 100 fill-h)))
+       ;; It used to be 96% by 95%, with the margins showing on every side.
+       (check-true (> fill-w 0.99) (format "the slide fills the page width (~a)" fill-w))
+       (check-true (> fill-h 0.99) (format "and its height (~a)" fill-h))
+       (check-true (<= minx 1) (format "flush to the left edge (~a)" minx))
+       (check-true (<= miny 1) (format "and the top (~a)" miny)))]))

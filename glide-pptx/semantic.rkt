@@ -38,6 +38,12 @@
 
 (define (ir-fill->fill f)
   (cond
+    ;; A bare color is a solid fill. The drawing path has always taken one --
+    ;; `slide_canvas(~background: hex("FFFFFF"))` is what generated code
+    ;; writes -- so refusing it here silently dropped every generated deck's
+    ;; background on export, and a consumer that does not default to white then
+    ;; painted the slide black.
+    [(rgba? f) (fill:solid (ir-color->rgba f))]
     [(solid-fill? f) (fill:solid (ir-color->rgba (solid-fill-color f)))]
     [(gradient-fill? f)
      ;; Endpoints are resolved by the writer from the angle, so a unit span is

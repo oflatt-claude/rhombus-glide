@@ -27,6 +27,14 @@
   (delete-directory/files dir #:must-exist? #f)
   xml)
 
+(define (zip-part pptx name)
+  (define dir (make-temporary-file "zippart~a" 'directory))
+  (call-with-input-file pptx (lambda (in) (parameterize ([current-directory dir])
+                                            (unzip in (make-filesystem-entry-reader)))))
+  (define xml (file->string (build-path dir (string->path name))))
+  (delete-directory/files dir #:must-exist? #f)
+  xml)
+
 (define (zip-entry-names path)
   (for/list ([e (in-list (zip-directory-entries (read-zip-directory path)))])
     (bytes->string/utf-8 e)))
@@ -179,3 +187,53 @@
               "text is text, in runs"))
 
 (printf "export tests done; artifacts under ~a\n" work)
+
+;; ------------------------------------------------- the background is written
+
+;; Reported from a real deck opened in Keynote after a round trip: black
+;; backgrounds, nothing readable.
+;;
+;; Two causes, both about a background that was never stated. `hex("FFFFFF")` is
+;; a color, not a `solid-fill`, and that is exactly what generated code passes
+;; to `slide_canvas` -- so the fill conversion returned #f and the slide went out
+;; with no `<p:bg>` at all. The master had none either, so the whole inheritance
+;; chain said nothing, and a consumer that does not assume white is free to paint
+;; black. LibreOffice assumes white, which is why the pixel diffs never noticed.
+(let ()
+  (local-require glide-pptx/semantic glide-pptx/draw-ir glide-pptx/runtime
+                 (only-in glide-pptx/sync load-program-picts))
+  (define dir (build-path work "background"))
+  (make-directory* dir)
+
+  ;; The conversion itself: a bare color is a fill.
+  (define canvas
+    (slide-canvas #:width 480.0 #:height 270.0 #:background (hex "1F3B63")
+                  (at 10.0 10.0 (shape-pict #:width 40.0 #:height 20.0
+                                            #:fill (hex "ED7D31")))))
+  (define page (pict->page canvas 480.0 270.0))
+  (check-true (and (display-page-background page) #t)
+              "a slide built with a bare color has a background to write")
+
+  ;; And it reaches the file, at every level of the inheritance chain.
+  (define out (build-path dir "bg.pptx"))
+  (picts->pptx (list canvas) out #:width 480.0 #:height 270.0)
+  (define slide-xml (slide-part out 1))
+  (check-regexp-match #rx"<p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"1F3B63\"/>"
+                      slide-xml
+                      "the slide states its own background, first in cSld as the schema wants")
+  (for ([part (in-list '("ppt/slideMasters/slideMaster1.xml"
+                         "ppt/slideLayouts/slideLayout1.xml"))])
+    (check-regexp-match #rx"<p:bg><p:bgPr><a:solidFill>" (zip-part out part)
+                        (format "~a states a background too, so nothing has to guess" part)))
+
+  ;; White is a background like any other: it used to be indistinguishable from
+  ;; "unstated", which is the whole bug.
+  (define white-canvas
+    (slide-canvas #:width 480.0 #:height 270.0 #:background (hex "FFFFFF")
+                  (at 10.0 10.0 (shape-pict #:width 40.0 #:height 20.0
+                                            #:fill (hex "4472C4")))))
+  (define out2 (build-path dir "white.pptx"))
+  (picts->pptx (list white-canvas) out2 #:width 480.0 #:height 270.0)
+  (check-regexp-match #rx"<p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/>"
+                      (slide-part out2 1)
+                      "a white background is written, not left to a default"))
