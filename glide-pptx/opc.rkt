@@ -20,11 +20,38 @@
 (define (open-package pptx-path #:into [into #f])
   (define dir (or into (make-temporary-file "pptx~a" 'directory)))
   (make-directory* dir)
-  (call-with-input-file pptx-path
-    (lambda (in)
-      (parameterize ([current-directory dir])
-        (unzip in (make-filesystem-entry-reader #:exists 'replace)))))
-  (package dir (not into) (make-hash) (make-hash)))
+  (with-handlers ([exn:fail? (lambda (e) (not-a-pptx pptx-path "it is not a zip archive"))])
+    (call-with-input-file pptx-path
+      (lambda (in)
+        (parameterize ([current-directory dir])
+          (unzip in (make-filesystem-entry-reader #:exists 'replace))))))
+  (define pkg (package dir (not into) (make-hash) (make-hash)))
+  ;; Every OPC package has this, and a file that does not is not one -- most
+  ;; often a Keynote document, which is a zip of something else entirely. Saying
+  ;; so here beats a missing-part error from four frames down.
+  (unless (part-exists? pkg "[Content_Types].xml")
+    (not-a-pptx pptx-path "it has no [Content_Types].xml, so it is not an Office package"))
+  (unless (part-exists? pkg "ppt/presentation.xml")
+    (not-a-pptx pptx-path "it is an Office package but not a presentation"))
+  pkg)
+
+(define (not-a-pptx path why)
+  (define keynote?
+    (regexp-match? #rx"[.](key|keynote)$" (string-downcase (if (path? path)
+                                                               (path->string path)
+                                                               path))))
+  (error 'glide-pptx
+         (string-append
+          "~a cannot be read as a .pptx: ~a.~a")
+         path why
+         (if keynote?
+             (string-append
+              "\n  Keynote's own format is not PowerPoint's. Export it first:"
+              "\n    File > Export To > PowerPoint...,"
+              "\n  or from a script:"
+              "\n    osascript -e 'tell application \"Keynote\" to export document 1"
+              " to POSIX file \"/path/out.pptx\" as Microsoft PowerPoint'")
+             "")))
 
 (define (close-package pkg)
   (when (package-own? pkg)

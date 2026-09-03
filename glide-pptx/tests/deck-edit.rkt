@@ -6,7 +6,7 @@
 (require racket/list racket/string racket/file racket/path racket/format
          file/unzip file/zip)
 (provide with-unpacked-deck drag-in-deck! deck-part
-         add-shape-to-deck! delete-from-deck! nudge-family-in-deck!)
+         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -131,3 +131,103 @@
      (call-with-output-file part #:exists 'replace
        (lambda (o) (write-string out o)))
      moved)))
+
+;; Copies slide `from` of `src` into `pptx` at the end, the way pasting a slide
+;; in from another deck does: a new slide part, its relationships, a content-type
+;; override, and an entry in the slide id list.
+(define (paste-slide! pptx src from)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define n
+       (add1 (apply max 0 (for/list ([p (in-list (directory-list (build-path dir "ppt" "slides")))]
+                                     #:when (regexp-match #rx"^slide([0-9]+)[.]xml$"
+                                                          (path->string p)))
+                            (string->number
+                             (cadr (regexp-match #rx"^slide([0-9]+)[.]xml$"
+                                                 (path->string p))))))))
+     (define name (format "slide~a.xml" n))
+     ;; The slide's own XML and its relationships, taken from the other deck.
+     (define tmp (make-temporary-file "paste~a" 'directory))
+     (call-with-input-file src
+       (lambda (in) (parameterize ([current-directory tmp])
+                      (unzip in (make-filesystem-entry-reader)))))
+     (copy-file (build-path tmp "ppt" "slides" (format "slide~a.xml" from))
+                (build-path dir "ppt" "slides" name) #t)
+     ;; The pasted slide names a layout from the deck it came from, which the
+     ;; target does not have. PowerPoint either brings the layout along or
+     ;; remaps to one already there; remapping is enough here.
+     (make-directory* (build-path dir "ppt" "slides" "_rels"))
+     (define layout
+       (let ([ls (sort (for/list ([p (in-list (directory-list
+                                               (build-path dir "ppt" "slideLayouts")))]
+                                  #:when (regexp-match? #rx"[.]xml$" (path->string p)))
+                         (path->string p))
+                       string<?)])
+         (if (pair? ls) (first ls) "slideLayout1.xml")))
+     (display-to-file
+      (format (string-append
+               "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+               "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/"
+               "relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas."
+               "openxmlformats.org/officeDocument/2006/relationships/slideLayout\""
+               " Target=\"../slideLayouts/~a\"/></Relationships>")
+              layout)
+      (build-path dir "ppt" "slides" "_rels" (format "~a.rels" name))
+      #:exists 'replace)
+     (delete-directory/files tmp #:must-exist? #f)
+
+     ;; A relationship from the presentation, and an id list entry that uses it.
+     (define prels (build-path dir "ppt" "_rels" "presentation.xml.rels"))
+     (define prels-text (file->string prels))
+     (define rid (format "rId~a" (+ 900 n)))
+     (display-to-file
+      (string-replace prels-text "</Relationships>"
+                      (format (string-append
+                               "<Relationship Id=\"~a\" Type=\"http://schemas.openxmlformats.org"
+                               "/officeDocument/2006/relationships/slide\" Target=\"slides/~a\"/>"
+                               "</Relationships>")
+                              rid name))
+      prels #:exists 'replace)
+
+     (define pres (build-path dir "ppt" "presentation.xml"))
+     (define pres-text (file->string pres))
+     (display-to-file
+      (string-replace pres-text "</p:sldIdLst>"
+                      (format "<p:sldId id=\"~a\" r:id=\"~a\"/></p:sldIdLst>" (+ 500 n) rid))
+      pres #:exists 'replace)
+
+     (define ct (build-path dir "[Content_Types].xml"))
+     (define ct-text (file->string ct))
+     (display-to-file
+      (string-replace ct-text "</Types>"
+                      (format (string-append
+                               "<Override PartName=\"/ppt/slides/~a\" ContentType="
+                               "\"application/vnd.openxmlformats-officedocument"
+                               ".presentationml.slide+xml\"/></Types>")
+                              name))
+      ct #:exists 'replace)
+     n)))
+
+;; Replaces the text of the shape tagged `tag` on slide `slide`, which is what
+;; retyping it in the editor amounts to. Returns #t when it was found.
+(define (retext-in-deck! pptx slide tag text)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     (define m (regexp-match (shape-rx tag) d))
+     (cond
+       [(not m) #f]
+       [else
+        (define once (box #f))
+        (define retexted
+          (regexp-replace* #px"<a:t>[^<]*</a:t>" (first m)
+                           (lambda (_w)
+                             (cond [(unbox once) ""]
+                                   [else (set-box! once #t)
+                                         (format "<a:t>~a</a:t>" text)]))))
+        (call-with-output-file part #:exists 'replace
+          (lambda (o) (write-string (string-replace d (first m) retexted) o)))
+        #t]))))

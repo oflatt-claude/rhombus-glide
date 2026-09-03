@@ -89,6 +89,14 @@ several elements under one tag. Dragging all of them the same way is one
 correction on the one `at`; dragging or deleting only some of them is refused,
 with the reason, because no single correction produces it.
 
+The program decides which slides exist. Slides added or deleted in the editor
+are not merged back -- the merge pairs slides by index, and a changed slide set
+means it refuses rather than comparing one slide against another. Add a slide by
+adding a `def slide_N` and putting it in `all_slides`.
+
+A `.key` is accepted anywhere a deck is: Keynote is asked to export a `.pptx`
+first, which needs macOS.
+
 
 Each element keeps the shape id and name PowerPoint gave it, as a comment. That
 is what a future write-back will match on, and in the meantime it is how you
@@ -98,7 +106,7 @@ find the thing you just clicked on in the editor.
 
 | Command | What it does |
 | --- | --- |
-| `translate deck.pptx [-o dir]` | emit a Rhombus program plus the images it uses |
+| `translate deck.pptx [-o dir\|file.rhm]` | emit a Rhombus program plus the images it uses |
 | `export program.rkt [-o out.pptx]` | write a `.pptx` from the program's slide picts |
 | `sync program.rkt deck.pptx [-n]` | merge the deck's edits back into the program |
 | `watch program.rkt [--app keynote]` | keep both in step, in both directions |

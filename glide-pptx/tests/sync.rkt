@@ -387,3 +387,46 @@
   (check-equal? (length (load-program-picts program)) 3 "the patched program still runs")
   (check-true (> (length (string-split after "\n")) 0))
   (check-not-equal? before after))
+
+;; --------------------------------------- slides added or deleted in the editor
+
+;; The merge pairs slides by index, so it can only run against the same slides
+;; the base recorded. Pasting slides in from another deck shifts every later
+;; index, and taking the difference for edits was actively destructive: one slide
+;; pasted at the front of a three-slide deck produced 28 "edits" and deleted
+;; eight real elements from the program. It refuses now.
+(let ()
+  (define-values (dir program exported) (fixture "slideset" "05-realistic.pptx"))
+  (define before (file->string program))
+  (define other (build-path decks-dir "03-shapes.pptx"))
+
+  (check-equal? (paste-slide! exported other 1) 4 "a slide was pasted in")
+  (check-exn #rx"cannot be matched up"
+             (lambda () (sync-once program exported #:workdir (build-path dir "w2")))
+             "a deck with a slide pasted in is refused")
+  (check-equal? (file->string program) before "and the program is untouched")
+
+  ;; The message has to say what to do about it, because the program is the one
+  ;; that decides what slides exist.
+  (define msg
+    (with-handlers ([exn:fail? exn-message])
+      (sync-once program exported #:workdir (build-path dir "w2"))))
+  (check-regexp-match #rx"all_slides" msg "the message says how to add a slide")
+  (check-regexp-match #rx"4 slides" msg "and what it found"))
+
+;; A conflict and a text edit both used to raise an arity error rather than being
+;; reported: `sync-action` takes five fields and those two calls passed four.
+;; Nothing exercised them, so editing text in PowerPoint always crashed.
+(let ()
+  (define-values (dir program exported) (fixture "retext" "05-realistic.pptx"))
+  (check-true (retext-in-deck! exported 3 "TextBox 1" "Rewritten") "the text was changed")
+  (define r (sync-once program exported #:workdir (build-path dir "w2")))
+  (define texts (filter (lambda (a) (eq? 'retext (sync-action-kind a)))
+                        (sync-report-actions r)))
+  (check-equal? (length texts) 1 "a text edit is reported, not raised")
+  (check-equal? (sync-action-tag (first texts)) "TextBox 1")
+  (check-equal? (length (sync-report-applied r)) 1 "and applied")
+  (check-regexp-match #rx"\"Rewritten\"" (file->string program)
+                      "the string literal in the source was replaced")
+  (define again (sync-once program exported #:workdir (build-path dir "w2")))
+  (check-equal? (sync-report-actions again) '() "and it converged"))
