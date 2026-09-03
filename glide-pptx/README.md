@@ -271,6 +271,38 @@ decks we export contain no placeholders, and it is placeholder shapes that get
 renamed to "PlaceHolder 1" and stripped. Shape ids are renumbered either way, so
 they are never a key.
 
+## Animated slideshows
+
+A `slideshow` program does not provide a list of slides; it *calls* `slide`, and
+an animated pict is many frames. `--slideshow` runs it through the same entry
+point `raco slideshow --pdf` uses:
+
+```console
+$ raco glide-pptx export --slideshow --condense talk.rhm -o talk.pptx
+talk.pptx  (291 slides)
+```
+
+**Use `--condense`.** It is the difference between one slide per *advance* and
+one slide per *animation frame*. On a real 25-minute Rhombus talk:
+
+| | slides | time | size |
+| --- | --- | --- | --- |
+| `--condense` | **291** | 69 s | 3.5 MB |
+| without | 4869 | 737 s | 135 MB |
+
+291 is exactly the page count of that talk's own `talk-backup.pdf`, so condensed
+export agrees with what slideshow itself considers a slide. Across those 291
+slides the exported deck renders at 2.36% mean error against our own render of
+the same picts, median 2.21%, with 4 slides above 5%.
+
+A slideshow talk builds picts with `pict` rather than this runtime, so it takes
+the flattened path: shapes and text come out as real PowerPoint objects, but text
+does not reflow, and a font given only as a *family* is exported as the
+conventional face for it (Arial, Times New Roman, Courier New) since the generic
+names a family resolves to locally mean nothing to PowerPoint. Not yet handled
+there: `start-alpha`/`end-alpha` grouping, arbitrary clipping, and sheared text,
+all of which are reported.
+
 ## How verification works
 
 `verify` converts the deck to PDF with headless LibreOffice, renders our own
