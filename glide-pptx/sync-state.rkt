@@ -67,11 +67,21 @@
     [(it:image? i)
      (el-state (it:image-tag i) 'picture (it:image-x i) (it:image-y i)
                (it:image-w i) (it:image-h i) (it:image-rot i) "" "flattened" z)]
-    [else
+    ;; A group is one element to drag, whatever it holds.
+    [(it:group? i)
+     (el-state (it:group-tag i) 'group (it:group-x i) (it:group-y i)
+               (it:group-w i) (it:group-h i) (it:group-rot i) "" "group" z)]
+    [(it:shape-path? i)
      (define-values (x y w h) (apply values (it:shape-path-box i)))
-     (el-state (it:shape-path-tag i) 'shape x y w h 0.0
+     (el-state (it:shape-path-tag i) 'shape x y w h (it:shape-path-rot i)
                (body-text (it:shape-path-body i))
-               (fill-digest (it:shape-path-fill i)) z)]))
+               (fill-digest (it:shape-path-fill i)) z)]
+    ;; Not a fall-through: a new kind of semantic item should say so here rather
+    ;; than be read as whatever the last branch happened to be. This branch used
+    ;; to be the shape-path one, and a group -- which became a semantic item when
+    ;; groups started exporting as groups -- was read as a shape-path and
+    ;; crashed.
+    [else (error 'sync "no state for ~a" i)]))
 
 (define (body-text body)
   (if (not body)
@@ -100,20 +110,27 @@
 ;; the slide. A sync leaves those alone, but a structural comparison needs them:
 ;; an export writes them as ordinary slide shapes, so they come back on the
 ;; other side as the slide's own.
-(define (deck->slide-states d #:include-inherited? [include-inherited? #f])
+;; `descend-groups?` says whether a group is its children or one element. For a
+;; sync it is one element -- that is what a program's `group_pict` draws and what
+;; the editor drags -- and the two sides have to agree, or a slide's tags do not
+;; overlap and the merge reads it as a different slide. A structural comparison
+;; wants the children, since that is where a lost field would hide.
+(define (deck->slide-states d #:include-inherited? [include-inherited? #f]
+                            #:descend-groups? [descend-groups? #f])
   (for/list ([s (in-list (deck-slides d))])
     (define acc '())
     (define z 0)
     (let walk ([es (if include-inherited? (slide-all-elements s) (slide-elements s))])
       (for ([e (in-list es)])
         (cond
-          [(group? e) (walk (group-children e))]
+          [(and (group? e) descend-groups?) (walk (group-children e))]
           [else
            (define b (element-bbox e))
            (define tag (let ([n (element-name e)]) (and (not (string=? "" n)) n)))
            (set! acc
                  (cons (el-state tag
-                                 (cond [(tbl? e) 'table]
+                                 (cond [(group? e) 'group]
+                                       [(tbl? e) 'table]
                                        [(picture? e) 'picture]
                                        [(shape? e) (if (and (shape-body e)
                                                             (not (shape-fill e))

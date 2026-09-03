@@ -105,8 +105,8 @@
          (phase 'structure
                 (lambda ()
                   (define again (pptx->deck out #:workdir (build-path work (format "s~a" i))))
-                  (define bs (deck->slide-states deck #:include-inherited? #t))
-                  (define as (deck->slide-states again #:include-inherited? #t))
+                  (define bs (deck->slide-states deck #:include-inherited? #t #:descend-groups? #t))
+                  (define as (deck->slide-states again #:include-inherited? #t #:descend-groups? #t))
                   (define ds
                     (append*
                      (for/list ([b (in-list bs)] [a (in-list as)])

@@ -40,28 +40,42 @@
    (lambda (dir)
      (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
      (define d (file->string part))
-     ;; The tag is in the alt text, and the shape is the element containing it.
-     (define rx
-       (pregexp (format "(?s:<p:(?:sp|pic)>(?:(?!</p:(?:sp|pic)>).)*?descr=\"glide-pptx:~a\"(?:(?!</p:(?:sp|pic)>).)*?</p:(?:sp|pic)>)"
-                        (regexp-quote tag))))
-     (define m (regexp-match rx d))
+     ;; The tag is in the alt text, and the offset that follows it is the
+     ;; element's own -- which holds for a group too. Matching the whole element
+     ;; instead does not: a group contains shapes, so a closing tag inside it
+     ;; ends the match early.
+     (define at (find-tag d tag))
      (cond
-       [(not m) #f]
+       [(not at) #f]
        [else
-        (define moved
-          (regexp-replace #px"<a:off x=\"-?\\d+\" y=\"-?\\d+\"/>" (first m)
-                          (format "<a:off x=\"~a\" y=\"~a\"/>"
-                                  (inexact->exact (round (* 12700 x)))
-                                  (inexact->exact (round (* 12700 y))))))
-        (call-with-output-file part #:exists 'replace
-          (lambda (o) (write-string (string-replace d (first m) moved) o)))
-        #t]))))
+        (define m (regexp-match-positions #px"<a:off x=\"-?\\d+\" y=\"-?\\d+\"/>" d at))
+        (cond
+          [(not m) #f]
+          [else
+           (define-values (s e) (values (caar m) (cdar m)))
+           (call-with-output-file part #:exists 'replace
+             (lambda (o)
+               (write-string
+                (string-append (substring d 0 s)
+                               (format "<a:off x=\"~a\" y=\"~a\"/>"
+                                       (inexact->exact (round (* 12700 x)))
+                                       (inexact->exact (round (* 12700 y))))
+                               (substring d e))
+                o)))
+           #t])]))))
+
+;; Where the alt text naming `tag` sits, so what follows is that element's.
+(define (find-tag d tag)
+  (define m (regexp-match-positions
+             (pregexp (format "descr=\"glide-pptx:~a\"" (regexp-quote tag))) d))
+  (and m (cdar m)))
 
 ;; The regexp that finds one tagged shape, which is how an editor's edits are
 ;; located in a part: the tag is in the alt text and the shape is the element
 ;; that contains it.
+;; A group is draggable too, so `grpSp` belongs here with `sp` and `pic`.
 (define (shape-rx tag)
-  (pregexp (format "(?s:<p:(?:sp|pic)>(?:(?!</p:(?:sp|pic)>).)*?descr=\"glide-pptx:~a\"(?:(?!</p:(?:sp|pic)>).)*?</p:(?:sp|pic)>)"
+  (pregexp (format "(?s:<p:(?:sp|pic|grpSp)>(?:(?!</p:(?:sp|pic|grpSp)>).)*?descr=\"glide-pptx:~a\"(?:(?!</p:(?:sp|pic|grpSp)>).)*?</p:(?:sp|pic|grpSp)>)"
                    (regexp-quote tag))))
 
 ;; Adds a rectangle to slide `slide`, last in the tree, which is what drawing
