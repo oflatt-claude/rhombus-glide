@@ -388,31 +388,26 @@
   (check-true (> (length (string-split after "\n")) 0))
   (check-not-equal? before after))
 
-;; --------------------------------------- slides added or deleted in the editor
+;; --------------------------------------- the merge does not pair slides by index
 
-;; The merge pairs slides by index, so it can only run against the same slides
-;; the base recorded. Pasting slides in from another deck shifts every later
-;; index, and taking the difference for edits was actively destructive: one slide
-;; pasted at the front of a three-slide deck produced 28 "edits" and deleted
-;; eight real elements from the program. It refuses now.
+;; It used to, and taking the difference between two unrelated slides for edits
+;; was actively destructive: one slide pasted at the front of a three-slide deck
+;; produced 28 "edits" and deleted eight real elements from the program. Slides
+;; are matched on their contents now, so an inserted slide does not shift the
+;; ones after it.
 (let ()
   (define-values (dir program exported) (fixture "slideset" "05-realistic.pptx"))
-  (define before (file->string program))
   (define other (build-path decks-dir "03-shapes.pptx"))
-
   (check-equal? (paste-slide! exported other 1) 4 "a slide was pasted in")
-  (check-exn #rx"cannot be matched up"
-             (lambda () (sync-once program exported #:workdir (build-path dir "w2")))
-             "a deck with a slide pasted in is refused")
-  (check-equal? (file->string program) before "and the program is untouched")
+  (check-true (move-slide! exported 4 1) "at the front, so every later index shifts")
 
-  ;; The message has to say what to do about it, because the program is the one
-  ;; that decides what slides exist.
-  (define msg
-    (with-handlers ([exn:fail? exn-message])
-      (sync-once program exported #:workdir (build-path dir "w2"))))
-  (check-regexp-match #rx"all_slides" msg "the message says how to add a slide")
-  (check-regexp-match #rx"4 slides" msg "and what it found"))
+  (define r (sync-once program exported #:workdir (build-path dir "w2")))
+  ;; The one thing that changed, and nothing else.
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(added-slide)
+                "only the new slide is reported")
+  (define removed (filter (lambda (a) (eq? 'removed (sync-action-kind a)))
+                          (sync-report-actions r)))
+  (check-equal? removed '() "no element is thought to have been deleted"))
 
 ;; A conflict and a text edit both used to raise an arity error rather than being
 ;; reported: `sync-action` takes five fields and those two calls passed four.
@@ -430,3 +425,97 @@
                       "the string literal in the source was replaced")
   (define again (sync-once program exported #:workdir (build-path dir "w2")))
   (check-equal? (sync-report-actions again) '() "and it converged"))
+
+;; ------------------------------------------------ slides added in the editor
+
+;; Pasting slides in from another deck. The program is where slides live, so a
+;; pasted slide has to become a `def slide_N` and an entry in `all_slides` --
+;; and the deck it came from has to survive a re-export unchanged, which is the
+;; whole point of the round trip.
+(define (deck-shape pptx dir tag)
+  (for/list ([s (in-list (deck-slide-states pptx #:workdir (build-path dir tag)))])
+    (map el-state-tag (slide-state-elements s))))
+
+(let ()
+  (define-values (dir program exported) (fixture "addslide" "05-realistic.pptx"))
+  (define other (build-path decks-dir "03-shapes.pptx"))
+
+  (check-equal? (paste-slide! exported other 1) 4 "a slide was pasted in at the end")
+  (define shape-after-paste (deck-shape exported dir "s1"))
+  (check-equal? (length shape-after-paste) 4 "the deck has four slides")
+
+  (define r (sync-once program exported #:workdir (build-path dir "w2")))
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(added-slide)
+                "the new slide is the only thing to merge")
+  (check-equal? (length (sync-report-applied r)) 1 "and it was applied")
+
+  ;; It reads like the rest of the file: a rule, a name, a canvas.
+  (define src (file->string program))
+  (check-regexp-match #rx"def slide_4 = slide_canvas[(]" src)
+  (check-regexp-match #rx"all_slides = [[]slide_1, slide_2, slide_3, slide_4[]]" src)
+  (check-regexp-match #rx"\n  slide_4\n" src "and it is exported like the others")
+
+  ;; The program now draws four slides, and re-exporting reproduces the deck
+  ;; the editor holds -- same elements, same order.
+  (check-equal? (length (load-program-picts program)) 4 "the program builds four slides")
+  (define again (build-path dir "again.pptx"))
+  (picts->pptx (load-program-picts program) again #:width 959.976 #:height 540.0)
+  (check-equal? (deck-shape again dir "s2") shape-after-paste
+                "the re-exported deck holds what the editor held")
+
+  ;; And a second pass has nothing to do.
+  (check-equal? (sync-report-actions
+                 (sync-once program exported #:workdir (build-path dir "w2")))
+                '()
+                "the merge converged"))
+
+;; Where it lands matters: a slide pasted at the front belongs at the front of
+;; `all_slides`. The definition itself goes after the last one -- `all_slides`
+;; carries the order, so nothing has to be renumbered or reflowed.
+(let ()
+  (define-values (dir program exported) (fixture "addfront" "05-realistic.pptx"))
+  (check-equal? (paste-slide! exported (build-path decks-dir "03-shapes.pptx") 1) 4)
+  (check-true (move-slide! exported 4 1) "and moved to the front")
+  (define shape (deck-shape exported dir "s1"))
+
+  (define r (sync-once program exported #:workdir (build-path dir "w2")))
+  (check-equal? (length (sync-report-applied r)) 1 "the paste was applied")
+  (check-regexp-match #rx"all_slides = [[]slide_4, slide_1, slide_2, slide_3[]]"
+                      (file->string program)
+                      "the new slide is first in the order")
+
+  (define again (build-path dir "again.pptx"))
+  (picts->pptx (load-program-picts program) again #:width 959.976 #:height 540.0)
+  (check-equal? (deck-shape again dir "s2") shape
+                "and the re-export has the slides in that order"))
+
+;; Two at once, and one of them carrying an image, which has to be copied next
+;; to the program or the program cannot draw it.
+(let ()
+  (define-values (dir program exported) (fixture "addtwo" "05-realistic.pptx"))
+  (check-equal? (paste-slide! exported (build-path decks-dir "03-shapes.pptx") 1) 4)
+  (check-equal? (paste-slide! exported (build-path decks-dir "04-pictures-groups.pptx") 1) 5)
+  (define shape (deck-shape exported dir "s1"))
+  (check-equal? (length shape) 5 "five slides now")
+
+  (define r (sync-once program exported #:workdir (build-path dir "w2")))
+  (check-equal? (length (sync-report-applied r)) 2 "both were applied")
+  (define src (file->string program))
+  (check-regexp-match #rx"all_slides = [[]slide_1, slide_2, slide_3, slide_4, slide_5[]]" src)
+
+  (check-equal? (length (load-program-picts program)) 5 "the program builds five slides")
+  (define again (build-path dir "again.pptx"))
+  (picts->pptx (load-program-picts program) again #:width 959.976 #:height 540.0)
+  (check-equal? (deck-shape again dir "s2") shape "and the deck round-trips"))
+
+;; Deleting a slide is not merged back yet, and it says so rather than taking
+;; the difference for edits.
+(let ()
+  (define-values (dir program exported) (fixture "delslide" "05-realistic.pptx"))
+  (define before (file->string program))
+  (check-true (delete-slide! exported 2) "a slide was deleted in the editor")
+  (define msg (with-handlers ([exn:fail? exn-message])
+                (sync-once program exported #:workdir (build-path dir "w2"))))
+  (check-regexp-match #rx"not in the deck any more" msg)
+  (check-regexp-match #rx"all_slides" msg "and says what to do about it")
+  (check-equal? (file->string program) before "the program is untouched"))

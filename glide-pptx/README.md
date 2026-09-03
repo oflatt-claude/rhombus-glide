@@ -89,10 +89,13 @@ several elements under one tag. Dragging all of them the same way is one
 correction on the one `at`; dragging or deleting only some of them is refused,
 with the reason, because no single correction produces it.
 
-The program decides which slides exist. Slides added or deleted in the editor
-are not merged back -- the merge pairs slides by index, and a changed slide set
-means it refuses rather than comparing one slide against another. Add a slide by
-adding a `def slide_N` and putting it in `all_slides`.
+Slides are matched on their contents, not by index, so pasting one in from
+another deck does not shift the ones after it. A pasted slide becomes a
+`def slide_N = slide_canvas(...)` and an entry in `all_slides` at the position it
+sits in the deck -- the definition goes after the last existing one, since
+`all_slides` is what carries the order and nothing else has to be renumbered.
+Deleting a slide in the editor is not merged back yet: it says so, and the deck
+is left alone until it is resolved.
 
 A `.key` is accepted anywhere a deck is: Keynote is asked to export a `.pptx`
 first, which needs macOS.

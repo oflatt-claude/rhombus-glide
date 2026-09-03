@@ -151,6 +151,9 @@
 ;; and then the obvious next move -- fixing the program as the message asks --
 ;; regenerated the deck and threw those edits away. So a refusal latches: while
 ;; it stands the deck is not rewritten, and a change on either side retries.
+;;
+;; Deleting a slide is the refusal used here, since it is one that stands: a
+;; slide *added* in the editor is merged back.
 (let ()
   (define dir (build-path work "stuck"))
   (make-directory* dir)
@@ -171,7 +174,12 @@
                 "  at(40.0, 60.0, ~tag: \"Box\","
                 (format "     shape_pict(~~width: 100.0, ~~height: 40.0, ~~fill: hex(~s)))" color)
                 ")"
-                "def all_slides = [slide_1]"
+                "def slide_2 = slide_canvas("
+                "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+                "  at(60.0, 90.0, ~tag: \"Other\","
+                "     shape_pict(~width: 80.0, ~height: 30.0, ~fill: hex(\"70AD47\")))"
+                ")"
+                "def all_slides = [slide_1, slide_2]"
                 "")
           "\n") o))))
   (write-program! "4472C4")
@@ -179,19 +187,15 @@
   ;; One pass to lay the deck down and record a base.
   (watch-once program pptx #:width 480.0 #:height 270.0)
   (sync-once program pptx #:workdir (build-path dir "w"))
-  (check-equal? (deck-slide-count pptx) 1 "the deck starts with the program's one slide")
+  (check-equal? (deck-slide-count pptx) 2 "the deck starts with the program's two slides")
 
-  ;; A slide pasted in from elsewhere: the merge refuses it.
-  (check-equal? (paste-slide! pptx (build-path decks-dir "03-shapes.pptx") 1) 2
-                "a slide was pasted in")
-  (check-equal? (deck-slide-count pptx) 2 "the deck now has two")
+  ;; A slide deleted in the editor: the merge refuses it, and the whole message
+  ;; comes through, because what to do about it is not on the first line.
+  (check-true (delete-slide! pptx 2) "a slide was deleted")
   (check-false (merge-back-once program pptx (build-path dir "w"))
-               "and merging it back is refused")
-
-  ;; The whole message has to come through, because what to do about it is not
-  ;; on the first line.
+               "and merging that back is refused")
   (define msg (merge-back-message program pptx (build-path dir "w")))
-  (check-regexp-match #rx"cannot be matched up" msg)
+  (check-regexp-match #rx"not in the deck any more" msg)
   (check-regexp-match #rx"all_slides" msg "the message keeps its later lines")
 
   ;; Now the trap, with the loop actually running: the refusal has to happen
@@ -204,8 +208,12 @@
       (cond [(pred) #t]
             [(>= waited limit) (fail (format "timed out waiting for ~a" what)) #f]
             [else (sleep 0.1) (loop (+ waited 0.1))])))
-  (check-true (delete-slide! pptx 2) "back to one slide to start the run clean")
-  (check-true (merge-back-once program pptx (build-path dir "w")) "and agreed")
+
+  ;; Back to agreement first: the loop refuses to start on a deck it cannot
+  ;; merge, which is right but is not what this is testing.
+  (watch-once program pptx #:width 480.0 #:height 270.0)
+  (void (sync-once program pptx #:workdir (build-path dir "w")))
+  (check-equal? (deck-slide-count pptx) 2 "the deck is whole again")
 
   (define runner
     (thread (lambda ()
@@ -218,18 +226,13 @@
   ;; worth writing -- so wait for it to say it wrote the deck.
   (wait! "the loop to finish starting" (lambda () (said? #rx"slides written")))
   (sleep 0.3)
-  ;; Paste a slide in while the loop is watching.
-  (check-equal? (paste-slide! pptx (build-path decks-dir "03-shapes.pptx") 1) 2)
+  ;; Delete a slide while the loop is watching.
+  (check-true (delete-slide! pptx 2) "the second slide was deleted again")
   (wait! "the merge to be refused" (lambda () (said? #rx"merge refused")))
   ;; Then save the program, which is what the message asks for.
   (write-program! "70AD47")
   (wait! "the loop to notice the program" (lambda () (said? #rx"not being rewritten")))
   (sleep 0.4)
-  (check-equal? (deck-slide-count pptx) 2
-                "the pasted slide survived a program save -- the deck was not regenerated")
-  (kill-thread runner)
-
-  ;; Resolve it in the editor, and the merge goes through again.
-  (check-true (delete-slide! pptx 2) "the pasted slide was removed")
-  (check-true (merge-back-once program pptx (build-path dir "w"))
-              "the merge goes through once the slide sets agree"))
+  (check-equal? (deck-slide-count pptx) 1
+                "the deletion survived a program save -- the deck was not regenerated")
+  (kill-thread runner))
