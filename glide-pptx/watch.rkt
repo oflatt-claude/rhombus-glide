@@ -12,7 +12,7 @@
 (require racket/list racket/string racket/format racket/file racket/path
          racket/system racket/port file/sha1
          "export.rkt" "sync.rkt")
-(provide (struct-out app-adapter) adapters adapter-named
+(provide (struct-out app-adapter) adapters adapter-named scratch-dir-of
          watch-loop watch-once program-picts
          current-watch-log)
 
@@ -27,7 +27,29 @@
 ;; the same file for an app whose native format is .pptx, and a .key bundle for
 ;; Keynote. `harvest!` turns that document back into a .pptx we can read, and
 ;; `reload!` makes the app show a deck we just regenerated.
-(struct app-adapter (name document harvest! reload!) #:transparent)
+;; `open?` says whether the editor still has the deck open, so closing it can end
+;; the session and clear the scratch away. An adapter that cannot tell says #t
+;; and the session runs until it is interrupted.
+(struct app-adapter (name document harvest! reload! open?) #:transparent)
+
+;; An adapter that cannot tell whether its editor is still open says #t, and the
+;; session then runs until it is interrupted.
+(define (always-open) #t)
+
+;; Asked through System Events, which reports on a running process without
+;; starting one -- `application "Keynote" is running` can launch it.
+(define (process-running? name)
+  (define exe (find-executable-path "osascript"))
+  (and exe
+       (let ([out (open-output-string)])
+         (define code
+           (parameterize ([current-output-port out] [current-error-port out])
+             (system*/exit-code
+              exe "-e"
+              (format "tell application \"System Events\" to (name of processes) contains \"~a\""
+                      name))))
+         (and (zero? code)
+              (regexp-match? #rx"true" (get-output-string out))))))
 
 (define (osascript . lines)
   (define exe (find-executable-path "osascript"))
@@ -45,7 +67,8 @@
 ;; Nothing outside the files. Used by the tests, and by anyone who would rather
 ;; drive their editor themselves.
 (define none-adapter
-  (app-adapter 'none (lambda (pptx) pptx) (lambda (doc pptx) #t) (lambda (pptx) #t)))
+  (app-adapter 'none (lambda (pptx) pptx) (lambda (doc pptx) #t) (lambda (pptx) #t)
+               always-open))
 
 ;; PowerPoint edits .pptx natively, so the document *is* the deck and there is
 ;; nothing to harvest -- the easiest case, and the one to prefer if the choice
@@ -64,7 +87,8 @@
                 "  end repeat"
                 "  open target"
                 "  activate"
-                "end tell"))))
+                "end tell"))
+   (lambda () (process-running? "Microsoft PowerPoint"))))
 
 ;; Keynote's own format is a .key bundle and it never saves .pptx, so the deck
 ;; has to be exported out of it before a merge can read it, and a regenerated
@@ -98,7 +122,8 @@
                 "  try"
                 (format "    save d in POSIX file \"~a\"" k)
                 "  end try"
-                "end tell"))))
+                "end tell"))
+   (lambda () (process-running? "Keynote"))))
 
 ;; Testable here: LibreOffice has no reload either, so it is opened afresh.
 (define libreoffice-adapter
@@ -111,7 +136,8 @@
      (and exe (begin (process/ports (open-output-nowhere) #f (open-output-nowhere)
                                     (format "~a --norestore ~a" exe
                                             (path->string (path->complete-path pptx))))
-                     #t)))))
+                     #t)))
+   always-open))
 
 (define adapters
   (hash 'none none-adapter 'powerpoint powerpoint-adapter
@@ -195,6 +221,35 @@
     (for ([l (in-list (string-split text "\n"))]) (log! "~a\n" l))
     #t))
 
+;; Closing the editor ends the session, and so does Ctrl-C. Either way the last
+;; edits are merged first and the scratch is cleared -- but only if that merge
+;; went through. A refusal means the deck still holds something the program does
+;; not, and deleting it would throw that away.
+(define (finish! program pptx document adapter workdir why)
+  (log! "~a\n" why)
+  (define merged?
+    (cond
+      [(not (file-exists? document))
+       (log! "  nothing left to merge\n")
+       #t]
+      [else (merge-back! program pptx document adapter workdir)]))
+  (define scratch (scratch-dir-of program))
+  (cond
+    [(not merged?)
+     (log! "  keeping ~a: the deck has edits this could not merge\n"
+           (file-name-from-path scratch))]
+    [(not (directory-exists? scratch)) (void)]
+    [else
+     (delete-directory/files scratch #:must-exist? #f)
+     (log! "  cleared ~a\n" (file-name-from-path scratch))])
+  merged?)
+
+;; The scratch beside a program, which is where the deck, the editor's document
+;; and the agreed base live.
+(define (scratch-dir-of program)
+  (define full (path->complete-path program))
+  (build-path (or (path-only full) (current-directory)) ".glide"))
+
 ;; ------------------------------------------------------------------- loop
 
 ;; One pass, for tests and for a single shot from the command line.
@@ -209,6 +264,7 @@
                     #:width [w #f] #:height [h #f]
                     #:workdir [workdir #f]
                     #:interval [interval 0.4]
+                    #:open-check [open-check 10.0]
                     #:ticks [ticks #f])
   (define document ((app-adapter-document adapter) pptx))
   (log! "watching\n  program ~a\n  deck    ~a\n  app     ~a\n"
@@ -229,12 +285,24 @@
   ;; fixing the program as the message asks, would overwrite the very slides the
   ;; refusal was protecting. While stuck, a change on either side retries the
   ;; merge: the fix can be in the editor or in the program.
-  (let loop ([prog-hash (content-hash program)]
+  ;; Asking the editor whether it is still open costs a subprocess, so it is
+  ;; asked on a timer rather than every tick.
+  (define open-every (max 1 (inexact->exact (round (/ open-check (max interval 0.01))))))
+  (with-handlers ([exn:break? (lambda (_e)
+                                (newline)
+                                (finish! program pptx document adapter workdir
+                                         "interrupted"))])
+   (let loop ([prog-hash (content-hash program)]
              [doc-hash (content-hash document)]
              [stuck? start-stuck?]
              [n 0])
     (cond
       [(and ticks (>= n ticks)) (log! "done\n")]
+      ;; The editor was closed, so the session is over.
+      [(and (zero? (modulo n open-every)) (positive? n)
+            (not ((app-adapter-open? adapter))))
+       (finish! program pptx document adapter workdir
+                (format "~a closed" (app-adapter-name adapter)))]
       [else
        (sleep interval)
        (define ph (content-hash program))
@@ -274,4 +342,4 @@
             (log! "    and save, and this will try again.
 "))
           (loop (content-hash program) (content-hash document) (not ok?) (add1 n))]
-         [else (loop prog-hash doc-hash #f (add1 n))])])))
+         [else (loop prog-hash doc-hash #f (add1 n))])]))))

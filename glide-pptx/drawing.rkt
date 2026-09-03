@@ -88,7 +88,23 @@
                     (and d (hash-ref dash-map (or (attr d 'val) "") 'solid))))
      (define cap (case (attr ln 'cap)
                    [("rnd") 'round] [("sq") 'projecting] [("flat") 'flat] [else #f]))
-     (stroke color w (or dash 'inherit) (or cap 'inherit))]))
+     (stroke color w (or dash 'inherit) (or cap 'inherit)
+             (parse-line-end (child ln 'headEnd))
+             (parse-line-end (child ln 'tailEnd)))]))
+
+;; `<a:headEnd type="arrow" w="med" len="med"/>`. Only the shape matters here;
+;; the two size words are kept so the writer can hand them back.
+(define (parse-line-end e)
+  (define kind (case (or (and e (attr e 'type)) "none")
+                 [("triangle") 'triangle]
+                 [("stealth") 'stealth]
+                 [("diamond") 'diamond]
+                 [("oval") 'oval]
+                 [("arrow") 'arrow]
+                 [else #f]))
+  (and kind (line-end kind
+                      (or (and e (attr e 'w)) "med")
+                      (or (and e (attr e 'len)) "med"))))
 
 ;; ------------------------------------------------------- format-scheme refs
 
@@ -132,8 +148,11 @@
        ;; the shape has no outline at all. Defaulting to black instead puts a
        ;; visible box around every such shape.
        [(eq? 'inherit color) #f]
+       ;; A line end is not inherited through the chain the way a width is: the
+       ;; shape that draws an arrow is the one that says so.
        [else (stroke color (pick stroke-width 1.0)
-                     (pick stroke-dash 'solid) (pick stroke-cap 'flat))])]))
+                     (pick stroke-dash 'solid) (pick stroke-cap 'flat)
+                     (stroke-head winner) (stroke-tail winner))])]))
 
 ;; ---------------------------------------------------------------- transform
 

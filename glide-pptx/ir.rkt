@@ -53,10 +53,15 @@
 (struct pattern-fill (name fg bg) #:prefab)
 
 ;; A line is #f (none) or a stroke. dash is 'solid, 'dash, 'dot or 'dash-dot.
-(struct stroke (color width dash cap) #:prefab)
+;; `head` and `tail` are the decorations at the two ends of a line -- an arrow on
+;; a connector, most often -- as (line-end kind width length) or #f for none.
+;; PowerPoint calls the start of the path the head.
+(struct stroke (color width dash cap head tail) #:prefab)
+(struct line-end (kind width length) #:prefab)
 
-(define (make-stroke color #:width [w 1.0] #:dash [d 'solid] #:cap [c 'flat])
-  (stroke color w d c))
+(define (make-stroke color #:width [w 1.0] #:dash [d 'solid] #:cap [c 'flat]
+                     #:head [head #f] #:tail [tail #f])
+  (stroke color w d c head tail))
 
 ;; -------------------------------------------------------------------- text
 

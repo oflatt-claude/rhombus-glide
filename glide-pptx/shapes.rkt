@@ -345,7 +345,7 @@
      ;; the content. That is worse than refusing, so it refuses -- unless the
      ;; caller has said it only wants to look at the deck, not to trust it.
      (unless (current-allow-unsupported?)
-       (error 'glide-pptx
+       (error 'glide
               (string-append
                "~s is a chart or diagram, which is not supported.\n"
                "  It would come back as an empty box, losing the content.\n"

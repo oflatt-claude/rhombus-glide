@@ -6,7 +6,8 @@
 (require racket/list racket/string racket/file racket/path racket/format
          file/unzip file/zip)
 (provide with-unpacked-deck drag-in-deck! deck-part
-         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!)
+         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!
+         resize-in-deck! rotate-in-deck!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -64,10 +65,14 @@
                 o)))
            #t])]))))
 
-;; Where the alt text naming `tag` sits, so what follows is that element's.
+;; Where the element named `tag` is named, so what follows is that element's. The
+;; alt text is how a deck we wrote names things, and the shape name is how an
+;; editor's own new shape does -- the importer reads either, so this does too.
 (define (find-tag d tag)
-  (define m (regexp-match-positions
-             (pregexp (format "descr=\"glide-pptx:~a\"" (regexp-quote tag))) d))
+  (define m (or (regexp-match-positions
+                 (pregexp (format "descr=\"glide-pptx:~a\"" (regexp-quote tag))) d)
+                (regexp-match-positions
+                 (pregexp (format "name=\"~a\"" (regexp-quote tag))) d)))
   (and m (cdar m)))
 
 ;; The regexp that finds one tagged shape, which is how an editor's edits are
@@ -75,8 +80,11 @@
 ;; that contains it.
 ;; A group is draggable too, so `grpSp` belongs here with `sp` and `pic`.
 (define (shape-rx tag)
-  (pregexp (format "(?s:<p:(?:sp|pic|grpSp)>(?:(?!</p:(?:sp|pic|grpSp)>).)*?descr=\"glide-pptx:~a\"(?:(?!</p:(?:sp|pic|grpSp)>).)*?</p:(?:sp|pic|grpSp)>)"
-                   (regexp-quote tag))))
+  (pregexp (format (string-append
+                    "(?s:<p:(?:sp|pic|grpSp)>(?:(?!</p:(?:sp|pic|grpSp)>).)*?"
+                    "(?:descr=\"glide-pptx:~a\"|name=\"~a\")"
+                    "(?:(?!</p:(?:sp|pic|grpSp)>).)*?</p:(?:sp|pic|grpSp)>)")
+                   (regexp-quote tag) (regexp-quote tag))))
 
 ;; Adds a rectangle to slide `slide`, last in the tree, which is what drawing
 ;; one in PowerPoint or Keynote amounts to. Returns the name it was given.
@@ -286,3 +294,62 @@
                                         "</p:sldIdLst>"))
          pres #:exists 'replace)
         #t]))))
+
+;; Resizes the element tagged `tag` on slide `slide`, which is what dragging a
+;; handle amounts to. Returns #t when it was there.
+(define (resize-in-deck! pptx slide tag w h)
+  (edit-after-tag! pptx slide tag #px"<a:ext cx=\"-?\\d+\" cy=\"-?\\d+\"/>"
+                   (format "<a:ext cx=\"~a\" cy=\"~a\"/>"
+                           (inexact->exact (round (* 12700 w)))
+                           (inexact->exact (round (* 12700 h))))))
+
+;; Rotates it, the way the rotation handle does. `deg` is degrees clockwise.
+(define (rotate-in-deck! pptx slide tag deg)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     (define at (find-tag d tag))
+     (cond
+       [(not at) #f]
+       [else
+        ;; The rotation is an attribute of the transform, so it is added to the
+        ;; <a:xfrm> that follows the tag rather than replacing anything.
+        (define m (regexp-match-positions #px"<a:xfrm( rot=\"-?\\d+\")?" d at))
+        (cond
+          [(not m) #f]
+          [else
+           (call-with-output-file part #:exists 'replace
+             (lambda (o)
+               (write-string
+                (string-append (substring d 0 (caar m))
+                               (format "<a:xfrm rot=\"~a\""
+                                       (inexact->exact (round (* 60000 deg))))
+                               (substring d (cdar m)))
+                o)))
+           #t])]))))
+
+;; Replaces the first thing matching `rx` after the element's alt text, which is
+;; where that element's own properties begin.
+(define (edit-after-tag! pptx slide tag rx replacement)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     (define at (find-tag d tag))
+     (cond
+       [(not at) #f]
+       [else
+        (define m (regexp-match-positions rx d at))
+        (cond
+          [(not m) #f]
+          [else
+           (call-with-output-file part #:exists 'replace
+             (lambda (o)
+               (write-string (string-append (substring d 0 (caar m))
+                                            replacement
+                                            (substring d (cdar m)))
+                             o)))
+           #t])]))))

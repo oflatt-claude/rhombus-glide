@@ -1,5 +1,5 @@
 #lang racket/base
-;; Command line entry point: `raco glide-pptx <subcommand> ...`.
+;; Command line entry point: `raco glide <subcommand> ...`.
 (require racket/cmdline racket/list racket/string racket/file racket/path racket/treelist pict
          racket/pretty racket/format
          "ir.rkt" "parse.rkt" "render.rkt" "runtime.rkt"
@@ -13,7 +13,7 @@
 ;; while the slides draw -- so there is a scratch directory for the length of a
 ;; command. It goes next to the output rather than in the system temp dir so that
 ;; `--keep-work` can leave it somewhere findable.
-(define (default-workdir out) (build-path out ".glide-pptx"))
+(define (default-workdir out) (build-path out ".glide"))
 
 (define keep-work? (make-parameter #f))
 
@@ -38,7 +38,7 @@
      (printf "exporting ~a from Keynote\n" (file-name-from-path full))
      ((app-adapter-harvest! (adapter-named 'keynote)) full exported)
      (unless (file-exists? exported)
-       (error 'glide-pptx
+       (error 'glide
               (string-append "Keynote did not write ~a.\n"
                              "  Export it by hand -- File > Export To > PowerPoint -- and"
                              " pass the .pptx.")
@@ -72,7 +72,7 @@
   (define out-dir (box "out"))
   (define files
     (parse-command-line
-     "glide-pptx translate" args
+     "glide translate" args
      `((once-each
         [("-o" "--out") ,(lambda (_ v) (set-box! out-dir v)) ("Output directory" "dir")]))
      (lambda (_ . fs) fs)
@@ -100,7 +100,7 @@
   (define out-dir (box "out"))
   (define files
     (parse-command-line
-     "glide-pptx render" args
+     "glide render" args
      `((once-each
         [("-o" "--out") ,(lambda (_ v) (set-box! out-dir v)) ("Output directory" "dir")]))
      (lambda (_ . fs) fs)
@@ -115,7 +115,7 @@
 
 (define (cmd-ir args)
   (define files
-    (parse-command-line "glide-pptx ir" args '() (lambda (_ . fs) fs) '("deck.pptx")))
+    (parse-command-line "glide ir" args '() (lambda (_ . fs) fs) '("deck.pptx")))
   (for ([f (in-list files)])
     (with-deck f "out"
       (lambda (d _w)
@@ -128,7 +128,7 @@
   (define bad (box 0.06))
   (define files
     (parse-command-line
-     "glide-pptx verify" args
+     "glide verify" args
      `((once-each
         [("-o" "--out") ,(lambda (_ v) (set-box! out-dir v)) ("Where to put images" "dir")]
         [("--dpi") ,(lambda (_ v) (set-box! dpi (string->number v))) ("Raster resolution" "n")]
@@ -167,7 +167,7 @@
   (define flatten? (box #t))
   (define files
     (parse-command-line
-     "glide-pptx export" args
+     "glide export" args
      `((once-each
         [("-o" "--out") ,(lambda (_ v) (set-box! out v)) ("Output .pptx" "file")]
         [("--width") ,(lambda (_ v) (set-box! width (string->number v)))
@@ -237,14 +237,14 @@
   (define dry (box #f))
   (define files
     (parse-command-line
-     "glide-pptx sync" args
+     "glide sync" args
      `((once-each
         [("-n" "--dry-run") ,(lambda (_) (set-box! dry #t))
                             ("Report what would change without touching anything")]))
      (lambda (_ program . deck) (cons program deck))
      '("program.rhm" "[deck.pptx]")))
   (define program (first files))
-  ;; With no deck named, the one `glide-pptx <program>` keeps in scratch.
+  ;; With no deck named, the one `glide <program>` keeps in scratch.
   ;; A `.key` is accepted here as well: Keynote writes the .pptx to merge from.
   (define deck
     (cond
@@ -255,11 +255,11 @@
       [else
        (define d (scratch-deck program))
        (unless (file-exists? d)
-         (error 'glide-pptx
+         (error 'glide
                 (string-append
                  "there is no deck to merge from yet.\n"
-                 "  `raco glide-pptx ~a` makes one and keeps the two in step;\n"
-                 "  or name a deck: `raco glide-pptx sync ~a deck.pptx`.")
+                 "  `raco glide ~a` makes one and keeps the two in step;\n"
+                 "  or name a deck: `raco glide sync ~a deck.pptx`.")
                 (file-name-from-path program) (file-name-from-path program)))
        d]))
   (define r
@@ -279,10 +279,10 @@
 ;; is the artifact. So they go in a hidden directory beside it rather than in the
 ;; way, and what the folder holds is the program and its images.
 (define (scratch-deck program)
-  (define full (path->complete-path program))
-  (define dir (or (path-only full) (current-directory)))
-  (build-path dir ".glide-pptx"
-              (path->string (path-replace-extension (file-name-from-path full) ".pptx"))))
+  (build-path (scratch-dir-of program)
+              (path->string (path-replace-extension
+                             (file-name-from-path (path->complete-path program))
+                             ".pptx"))))
 
 ;; Keynote on a Mac, since that is what there is to drive there.
 (define (default-app)
@@ -296,7 +296,7 @@
   (define once (box #f))
   (define files
     (parse-command-line
-     "glide-pptx edit" args
+     "glide edit" args
      `((once-each
         [("-o" "--out") ,(lambda (_ v) (set-box! out v)) ("Deck to generate" "file")]
         [("--app") ,(lambda (_ v) (set-box! app (string->symbol v)))
@@ -337,8 +337,8 @@
         (list "presets" "list the shape geometries we draw exactly" cmd-presets)))
 
 (define (usage)
-  (printf "usage: raco glide-pptx program.rhm         open it in an editor, keep both in step\n")
-  (printf "       raco glide-pptx <command> [options] ...\n\n")
+  (printf "usage: raco glide program.rhm         open it in an editor, keep both in step\n")
+  (printf "       raco glide <command> [options] ...\n\n")
   (for ([s (in-list subcommands)])
     (printf "  ~a~a\n" (~a (first s) #:min-width 12) (second s)))
   (printf "\nRun a command with --help for its options.\n")
@@ -364,7 +364,7 @@
   (cond
     [(or (null? args) (member (car args) '("-h" "--help" "help"))) (usage)]
     [(assoc (car args) subcommands) => (lambda (s) (run! (third s) (cdr args)))]
-    ;; `glide-pptx talk.rhm` is the whole workflow, so it needs no verb: a
+    ;; `glide talk.rhm` is the whole workflow, so it needs no verb: a
     ;; program named where a command would go means "edit this". The name moves
     ;; to the end, since flag parsing stops at the first argument that is not a
     ;; flag and `talk.rhm --once` is the natural way to write it.

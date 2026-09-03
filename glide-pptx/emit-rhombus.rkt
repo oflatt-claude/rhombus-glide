@@ -130,7 +130,7 @@
     (line out 2 "lib(\"glide-pptx/runtime.rhm\") open")
     (newline out)
     ;; Exported so the deck can be composed from another module, and so
-    ;; `raco glide-pptx export` can find the slides.
+    ;; `raco glide export` can find the slides.
     (line out 0 "export:")
     (line out 2 "slide_width")
     (line out 2 "slide_height")

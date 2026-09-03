@@ -126,7 +126,17 @@
                      (if (eq? 'solid (stroke-dash l)) '()
                          (list (kwv "dash" (v:sym (stroke-dash l)))))
                      (if (eq? 'flat (stroke-cap l)) '()
-                         (list (kwv "cap" (v:sym (stroke-cap l)))))))]))
+                         (list (kwv "cap" (v:sym (stroke-cap l)))))
+                     (end-args "head" (stroke-head l))
+                     (end-args "tail" (stroke-tail l))))]))
+
+(define (end-args name e)
+  (if (not e)
+      '()
+      (list (kwv name (v:call "line-end"
+                              (list (v:sym (line-end-kind e))
+                                    (v:str (line-end-width e))
+                                    (v:str (line-end-length e))))))))
 
 (define (geom-args g)
   (cond

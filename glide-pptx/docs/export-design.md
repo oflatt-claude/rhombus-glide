@@ -1,7 +1,7 @@
 # Design: export to .pptx
 
 Status: steps 1 to 7 below are **built** -- the display list, the writer,
-`picts->pptx` with a `raco glide-pptx export` front end, and the export fidelity
+`picts->pptx` with a `raco glide export` front end, and the export fidelity
 test. Everything from step 5 on is still design. Every claim about `pict`,
 `racket/draw` and `rhombus/pict` was probed against the installed versions.
 
@@ -258,7 +258,7 @@ layout, one theme, everything explicit on the slide. No placeholders and no
 inheritance machinery, which also means our own importer can read back what we
 write — the export is self-testing.
 
-A `raco glide-pptx export program.rkt` front end can require the module and use a
+A `raco glide export program.rkt` front end can require the module and use a
 provided `all-slides`, the same convention the generated programs already follow.
 Hooking `slideshow`'s own `slide` function, so that `#lang slideshow` decks export
 directly, is a later addition.
@@ -672,7 +672,7 @@ The existing image-diff harness applies directly. Add:
 1. **Done** — `draw-ir.rkt` and `record-adapt.rkt`: the display list, matrix
    tracking, pen/brush/font state, path conversion, text metrics.
 2. **Done** — `pptx-write.rkt`: DrawingML and the OPC package.
-3. **Done** — `export.rkt` and `raco glide-pptx export`.
+3. **Done** — `export.rkt` and `raco glide export`.
 4. **Done** — `tests/export.rkt`, with per-deck budgets.
 5. Quality passes: coalesce text runs, group per element, dedup state. Not done,
    and less pressing now that structured picts skip the flattened path entirely.

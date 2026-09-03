@@ -69,7 +69,7 @@
     [(treelist? found) (treelist->list found)]
     [(pict? found) (list found)]
     [else
-     (error 'glide-pptx
+     (error 'glide
             (string-append "~a provides no list of slide picts.\n"
                            "  Expected a provided `all_slides` (or `all-slides`),"
                            " or a name passed with --slides.")
@@ -333,7 +333,7 @@
 ;; difference for edits would delete the program's real elements.
 (define (check-slides-removed removed program-path)
   (unless (null? removed)
-    (error 'glide-pptx
+    (error 'glide
            (string-append
             "~a slide~a in ~a ~a not in the deck any more.\n"
             "  Deleting a slide in the editor is not merged back yet: the program\n"
@@ -437,7 +437,7 @@
 (define (check-unique-tags tags where hint)
   (define dups (duplicate-tags tags))
   (unless (null? dups)
-    (error 'glide-pptx
+    (error 'glide
            "~a uses one tag for more than one element, so a sync cannot tell them apart:\n~a  ~a"
            where
            (apply string-append
@@ -566,7 +566,7 @@
 (define (find-program-sites path)
   (define s (if (path? path) (path->string path) path))
   (unless (regexp-match? #rx"[.]rhm$" s)
-    (error 'glide-pptx
+    (error 'glide
            (string-append "~a is not Rhombus source, so edits cannot be merged into it.\n"
                           "  Rendering and export work on any program; syncing needs a .rhm.")
            s))
@@ -1271,7 +1271,7 @@
 (define (base-path-for program-path)
   (define full (path->complete-path program-path))
   (define dir (or (path-only full) (current-directory)))
-  (build-path dir ".glide-pptx"
+  (build-path dir ".glide"
               (path->string (path-replace-extension (file-name-from-path full)
                                                     ".sync.rktd"))))
 
@@ -1333,8 +1333,33 @@
                               (~r (first g) #:precision 1) (~r (second g) #:precision 1)
                               (~r (third g) #:precision 1) (~r (fourth g) #:precision 1)))
                     "")))
-     (for ([sk (in-list (sync-report-skipped r))])
-       (fprintf o "    not applied: ~s -- ~a\n" (sync-action-tag (car sk)) (cdr sk)))
+     ;; Grouped by reason. A deck can have thirty shapes the merge refuses for
+     ;; one structural reason, and thirty identical lines bury the edits that
+     ;; did apply.
+     (define by-reason
+       (let loop ([sks (sync-report-skipped r)] [order '()] [h (hash)])
+         (cond
+           [(null? sks) (for/list ([why (in-list (reverse order))])
+                          (cons why (reverse (hash-ref h why))))]
+           [else
+            (define why (cdr (car sks)))
+            (loop (cdr sks)
+                  (if (hash-has-key? h why) order (cons why order))
+                  (hash-update h why (lambda (v) (cons (sync-action-tag (car (car sks))) v))
+                               '()))])))
+     (for ([g (in-list by-reason)])
+       (define tags (cdr g))
+       (cond
+         [(= 1 (length tags))
+          (fprintf o "    not applied: ~s -- ~a\n" (first tags) (car g))]
+         [else
+          (fprintf o "    not applied, ~a of them -- ~a\n" (length tags) (car g))
+          (fprintf o "      ~a~a\n"
+                   (string-join (map (lambda (t) (format "~s" t)) (take tags (min 4 (length tags))))
+                                ", ")
+                   (if (> (length tags) 4)
+                       (format " and ~a more" (- (length tags) 4))
+                       ""))]))
      (fprintf o "  ~a applied, ~a reported\n"
               (length (sync-report-applied r))
               (- (length as) (length (sync-report-applied r))))])

@@ -21,7 +21,7 @@
   (define dir (or into (make-temporary-file "pptx~a" 'directory)))
   (make-directory* dir)
   (unless (file-exists? pptx-path)
-    (error 'glide-pptx "~a does not exist" pptx-path))
+    (error 'glide "~a does not exist" pptx-path))
   (with-handlers ([exn:fail? (lambda (e) (not-a-pptx pptx-path "it is not a zip archive"))])
     (call-with-input-file pptx-path
       (lambda (in)
@@ -42,7 +42,7 @@
     (regexp-match? #rx"[.](key|keynote)$" (string-downcase (if (path? path)
                                                                (path->string path)
                                                                path))))
-  (error 'glide-pptx
+  (error 'glide
          (string-append
           "~a cannot be read as a .pptx: ~a.~a")
          path why
