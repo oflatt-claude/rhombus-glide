@@ -293,13 +293,29 @@
     (define nat-h (if (null? segs) eh (apply max (map seg-h segs))))
     (define desc (if (null? segs) ed (apply max (map seg-desc segs))))
     (define spacing (para-line-spacing p))
+    ;; A percentage is a percentage of *single* spacing, and single spacing is
+    ;; 1.2 times the largest font size on the line -- not the font's own
+    ;; bounding box, which measures about 1.12 times the size. The two are 7%
+    ;; apart, and that only shows once a paragraph has a second line for the
+    ;; first to push down: every fixture here is one line per paragraph, which
+    ;; is why the fixtures agreed with LibreOffice while a real deck's wrapped
+    ;; title sat 8pt tight per line.
+    (define single (* 1.2 (line-font-size p segs)))
     (define height (if (eq? 'points (car spacing))
                        (cdr spacing)
-                       (* (cdr spacing) nat-h)))
-    ;; With percentage spacing the extra room goes above the line, as in
-    ;; PowerPoint, so the first baseline does not move for 100%.
-    (line-box segs height (+ (- nat-h desc) (- height nat-h)) (line-width segs)
+                       (* (cdr spacing) single)))
+    ;; The extra room goes above the line, as in PowerPoint, so the baseline
+    ;; sits a descent up from the bottom of the line box.
+    (line-box segs height (- height desc) (line-width segs)
               (zero? i))))
+
+;; The size single spacing is reckoned from: the largest run on the line, or the
+;; paragraph's own first run when the line is empty.
+(define (line-font-size p segs)
+  (cond
+    [(pair? segs) (apply max (map (lambda (s) (trun-size (seg-run s))) segs))]
+    [(pair? (para-runs p)) (trun-size (first (para-runs p)))]
+    [else 18.0]))
 
 ;; The full vertical layout of a text body inside w x h.
 ;; Returns (listof (list para line-box y)) plus the total height.
