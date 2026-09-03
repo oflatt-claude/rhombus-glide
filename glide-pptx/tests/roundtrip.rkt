@@ -8,7 +8,7 @@
 (require rackunit racket/list racket/file racket/path racket/system racket/port
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/emit-racket glide-pptx/emit-rhombus glide-pptx/verify)
+         glide-pptx/emit-rhombus glide-pptx/verify)
 
 (define-runtime-path decks-dir "decks")
 (define-runtime-path here ".")
@@ -52,12 +52,9 @@
               #:width (deck-width d) #:height (deck-height d))
   (define direct-pages (rasterize-pdf direct-pdf (build-path dir "direct") #:dpi 96))
 
-  (for ([lang (in-list '(racket rhombus))])
-    (define ext (if (eq? lang 'racket) ".rkt" ".rhm"))
-    (define program (build-path dir (string-append name ext)))
-    (if (eq? lang 'racket)
-        (write-racket-deck d program #:source-name (path->string pptx))
-        (write-rhombus-deck d program #:source-name (path->string pptx)))
+  (let ([lang 'rhombus])
+    (define program (build-path dir (string-append name ".rhm")))
+    (write-rhombus-deck d program #:source-name (path->string pptx))
     (check-true (file-exists? program) (format "~a ~a was emitted" name lang))
 
     (define pdf (run-program program))
@@ -75,4 +72,4 @@
       (check-= mae 0.0 0.0005
                (format "~a ~a page ~a: no visible residual difference" name lang i)))))
 
-(printf "roundtrip tests done (~a decks x 2 languages)\n" (length decks))
+(printf "roundtrip tests done (~a decks)\n" (length decks))

@@ -69,29 +69,28 @@
 (let ()
   (define dir (build-path work "sync"))
   (make-directory* dir)
-  (define program (build-path dir "deck.rkt"))
+  (define program (build-path dir "deck.rhm"))
   (call-with-output-file program #:exists 'replace
     (lambda (o)
       (write-string
        (string-join
-        (list "#lang racket/base"
-              "(require pict glide-pptx/runtime)"
-              "(provide all-slides)"
-              "(define slide-1"
-              "  (slide-canvas"
-              "   #:width 480.0 #:height 270.0 #:background (hex \"FFFFFF\")"
-              "   (at 200.0 20.0 #:tag \"Diagram\""
-              "       (vc-append 6"
-              "                  (shape-pict #:width 100.0 #:height 40.0"
-              "                              #:fill (hex \"ED7D31\"))"
-              "                  (shape-pict #:width 100.0 #:height 40.0"
-              "                              #:fill (hex \"70AD47\"))))))"
-              "(define all-slides (list slide-1))"
+        (list "#lang rhombus/and_meta"
+              "import:"
+              "  lib(\"glide-pptx/runtime.rhm\") open"
+              "export:"
+              "  all_slides"
+              "def slide_1 = slide_canvas("
+              "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+              "  at(200.0, 20.0, ~tag: \"Diagram\","
+              "     vstack(~sep: 6,"
+              "            shape_pict(~width: 100.0, ~height: 40.0, ~fill: hex(\"ED7D31\")),"
+              "            shape_pict(~width: 100.0, ~height: 40.0, ~fill: hex(\"70AD47\"))))"
+              ")"
+              "def all_slides = [slide_1]"
               "")
         "\n") o)))
   (define deck (build-path dir "deck.pptx"))
-  (define picts (parameterize ([current-media-base dir])
-                  (dynamic-require `(file ,(path->string program)) 'all-slides)))
+  (define picts (load-program-picts program))
   (picts->pptx picts deck #:width 480.0 #:height 270.0)
   (check-equal? (count #rx"<p:pic>" (slide-part deck 1)) 1
               "the whole element is one object in the deck")
@@ -103,7 +102,7 @@
   (define r (sync-once program deck #:workdir (build-path dir "w")))
   (check-equal? (length (sync-report-applied r)) 1
                 "dragging the flattened object merged back")
-  (check-true (regexp-match? #rx"at 300[.]0 90[.]0" (file->string program))
+  (check-true (regexp-match? #rx"at[(]300[.]0, 90[.]0" (file->string program))
               (format "onto the `at` numbers:\n~a" (file->string program))))
 
 (printf "flatten tests done\n")

@@ -10,7 +10,8 @@
 ;; cannot express and code can.
 (require racket/list racket/string racket/format racket/path racket/file
          "ir.rkt" "emit-common.rkt")
-(provide rhombus-flavor emit-rhombus-deck write-rhombus-deck)
+(provide rhombus-flavor emit-rhombus-deck write-rhombus-deck
+         rhombus-element-source)
 
 (define LINE-WIDTH 88)
 
@@ -57,6 +58,21 @@
     ;; Arguments of the enclosing slide_canvas call are comma-separated.
     (when (and (= i (sub1 (length ls))) (not last?)) (write-string "," out))
     (newline out)))
+
+;; The source for one element, as an editor's addition needs it: exactly the
+;; text a fresh emit would have written for it, at the indentation it will sit
+;; at. `font` is the deck font, which decides whether a run has to name its
+;; typeface at all.
+(define (rhombus-element-source e ind #:media-names [names (hash)] #:font [font #f])
+  (parameterize ([current-media-names names]
+                 [current-deck-font (or font (current-deck-font))])
+    (define head
+      (if (string=? "" (element-name e))
+          '()
+          (list (string-append (make-string (max 0 ind) #\space)
+                               (format "// ~a (id ~a)" (element-name e) (element-id e))))))
+    (string-join (append head (render-lines (element->value e) rhombus-flavor ind LINE-WIDTH))
+                 "\n")))
 
 (define (emit-rhombus-deck d out
                            #:source-name [source-name #f]

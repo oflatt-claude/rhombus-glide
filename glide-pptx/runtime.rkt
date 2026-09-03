@@ -4,7 +4,7 @@
 ;; Everything here works in points with a top-left origin, matching the IR, and
 ;; produces ordinary picts -- so emitted code can be edited, composed with the
 ;; rest of `pict`, and animated, without knowing anything about pptx.
-(require racket/class racket/list racket/math racket/string racket/promise
+(require racket/treelist racket/class racket/list racket/math racket/string racket/promise
          racket/draw pict
          "ir.rkt" "geometry.rkt" "tagged.rkt")
 (provide ;; composition
@@ -648,12 +648,17 @@
 ;; A whole slide: a background of the given size with elements pinned on top.
 (define (slide-canvas #:width w #:height h #:background [bg (solid-fill white)]
                       . args)
-  ;; A list argument is spliced, so a slide can be built with `for/list` without
-  ;; an `apply`. Generated code never does this, but hand-written code wants to.
+  ;; A list argument is spliced, so a slide can be built with `for List` or
+  ;; `for/list` without an `apply`. Generated code never does this; hand-written
+  ;; code, which is what the generated code is there to become, wants to. A
+  ;; Rhombus `List` is a treelist rather than a list.
   (define placeds
     (let flatten ([xs args])
       (append* (for/list ([x (in-list xs)])
-                 (if (list? x) (flatten x) (list x))))))
+                 (cond
+                   [(list? x) (flatten x)]
+                   [(treelist? x) (flatten (treelist->list x))]
+                   [else (list x)])))))
   (define base
     (cond
       [(not bg) (blank w h)]

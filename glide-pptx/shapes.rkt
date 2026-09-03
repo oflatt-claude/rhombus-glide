@@ -10,7 +10,8 @@
 (provide (struct-out shape-ctx) make-shape-ctx
          parse-sp-tree
          placeholder-info
-         current-allow-unsupported?)
+         current-allow-unsupported?
+         current-tag-names)
 
 ;; layout-phs / master-phs map a placeholder key to its <p:sp>.
 ;; tx-styles is the master's <p:txStyles>; default-text-style is the
@@ -146,12 +147,29 @@
                                     (and (pair? kids) (parse-node ctx (first kids))))))]
     [else #f]))
 
+;; A shape we wrote carries its tag in the alt text as well as the name, and the
+;; alt text is what survives being renamed in the editor -- so it wins. It also
+;; says something the name cannot: several shapes with one tag came from one
+;; place in the code, and are not several things that happen to share a name.
+(define TAG-PREFIX "glide-pptx:")
+
+;; The names that came from alt text on this slide. `uniquify-names` leaves these
+;; alone, and there is nowhere on `element` to record it -- the IR is the format,
+;; not the provenance.
+(define current-tag-names (make-parameter #f))
+
 (define (shape-id-name node)
   (define nv (or (xpath node 'nvSpPr 'cNvPr) (xpath node 'nvPicPr 'cNvPr)
                  (xpath node 'nvCxnSpPr 'cNvPr) (xpath node 'nvGrpSpPr 'cNvPr)
                  (xpath node 'nvGraphicFramePr 'cNvPr)))
+  (define descr (and nv (attr nv 'descr)))
+  (define tag
+    (and descr (string-prefix? descr TAG-PREFIX)
+         (substring descr (string-length TAG-PREFIX))))
+  (when (and tag (current-tag-names))
+    (hash-set! (current-tag-names) tag #t))
   (values (or (and nv (attr-num nv 'id)) 0)
-          (or (and nv (attr nv 'name)) "")))
+          (or tag (and nv (attr nv 'name)) "")))
 
 ;; Geometry, walking up to the layout and master placeholder when the slide
 ;; shape states none.
