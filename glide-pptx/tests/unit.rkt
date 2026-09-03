@@ -223,3 +223,62 @@
   (delete-file deck))
 
 (printf "unit tests done\n")
+
+;; ------------------------------------------- generated code has to reparse
+
+;; A sync reads the program's source to find the literals it may rewrite, so
+;; every program we emit has to be readable by the shrubbery reader. That is not
+;; implied by the program *running*: Rhombus compiled these files fine while the
+;; reader rejected them, and the sync failed with `wrong indentation` on a file
+;; the emitter had just written.
+;;
+;; The shape that broke it: an argument column deeper than 48 makes the printer
+;; outdent the continuation lines, and it used to leave the first argument up at
+;; the aligned column -- so the rest of the arguments sat at a shallower column
+;; than the one that set the standard. In Racket that was only ugly. Shrubbery
+;; reads indentation, so it was a syntax error.
+(let ()
+  (local-require glide-pptx/emit-common glide-pptx/emit-rhombus
+                 (only-in glide-pptx/sync find-at-sites at-site-tag)
+                 (only-in shrubbery/parse parse-all))
+  (define (reparses? text)
+    (with-handlers ([exn:fail? (lambda (_e) #f)])
+      (void (parse-all (open-input-string text)))
+      #t))
+
+  ;; Nested calls, indented far enough in to cross the threshold.
+  (define deep
+    (v:call "at" (list (v:num 0.0) (v:num 96.35)
+                       (kwv "tag" (v:str "Line 5"))
+                       (v:call "shape_pict"
+                               (list (kwv "width" (v:num 196.75))
+                                     (kwv "shape" (v:str "line"))
+                                     (kwv "line"
+                                          (v:call "make_stroke"
+                                                  (list (v:call "hex" (list (v:str "000000")))
+                                                        (kwv "width" (v:num 0.5))
+                                                        (kwv "dash" (v:sym "dash-dot"))))))))))
+  (for ([ind (in-list '(0 2 8 16 17 18 19 20 24 32 40))])
+    (define text (string-join (render-lines deep rhombus-flavor ind 88) "\n"))
+    (check-true (reparses? text)
+                (format "an `at` printed at column ~a reparses:\n~a" ind text)))
+
+  ;; And the whole of every fixture, read the way a sync reads it -- which also
+  ;; says the reader understood the structure, not merely that it did not choke:
+  ;; every `at` in the file has to come back as a site with its tag.
+  (for ([name (in-list '("01-placeholders" "02-text" "03-shapes"
+                         "04-pictures-groups" "05-realistic"))])
+    (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
+                          #:workdir (make-temporary-file "rp~a" 'directory)))
+    (define out (make-temporary-file "rp~a.rhm"))
+    (write-rhombus-deck d out #:source-name name)
+    (define sites
+      (with-handlers ([exn:fail? (lambda (e) (exn-message e))])
+        (find-at-sites out)))
+    (check-true (list? sites)
+                (format "~a emits a program the reader accepts: ~a" name sites))
+    (when (list? sites)
+      (define written (length (regexp-match* #rx"~tag:" (file->string out))))
+      (check-equal? (length sites) written
+                    (format "~a: every `at` written was found again" name)))
+    (delete-file out)))

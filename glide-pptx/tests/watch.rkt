@@ -130,3 +130,106 @@
             "and reported merging back")
 
 (printf "watch tests done; artifacts under ~a\n" work)
+
+;; The pieces the latch test needs, kept out of the test body.
+(define (deck-slide-count pptx)
+  (length (deck-slides (pptx->deck pptx #:workdir (make-temporary-file "wc~a" 'directory)))))
+
+(define (merge-back-once program pptx workdir)
+  (with-handlers ([exn:fail? (lambda (_e) #f)])
+    (sync-once program pptx #:workdir workdir)
+    #t))
+
+(define (merge-back-message program pptx workdir)
+  (with-handlers ([exn:fail? exn-message])
+    (sync-once program pptx #:workdir workdir)
+    ""))
+
+;; ------------------------------------- a refused merge protects the deck
+
+;; The trap this closes: a refused merge left the editor's edits sitting there,
+;; and then the obvious next move -- fixing the program as the message asks --
+;; regenerated the deck and threw those edits away. So a refusal latches: while
+;; it stands the deck is not rewritten, and a change on either side retries.
+(let ()
+  (define dir (build-path work "stuck"))
+  (make-directory* dir)
+  (define program (build-path dir "deck.rhm"))
+  (define pptx (build-path dir "deck.pptx"))
+  (define (write-program! color)
+    (call-with-output-file program #:exists 'replace
+      (lambda (o)
+        (write-string
+         (string-join
+          (list "#lang rhombus/and_meta"
+                "import:"
+                "  lib(\"glide-pptx/runtime.rhm\") open"
+                "export:"
+                "  all_slides"
+                "def slide_1 = slide_canvas("
+                "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+                "  at(40.0, 60.0, ~tag: \"Box\","
+                (format "     shape_pict(~~width: 100.0, ~~height: 40.0, ~~fill: hex(~s)))" color)
+                ")"
+                "def all_slides = [slide_1]"
+                "")
+          "\n") o))))
+  (write-program! "4472C4")
+
+  ;; One pass to lay the deck down and record a base.
+  (watch-once program pptx #:width 480.0 #:height 270.0)
+  (sync-once program pptx #:workdir (build-path dir "w"))
+  (check-equal? (deck-slide-count pptx) 1 "the deck starts with the program's one slide")
+
+  ;; A slide pasted in from elsewhere: the merge refuses it.
+  (check-equal? (paste-slide! pptx (build-path decks-dir "03-shapes.pptx") 1) 2
+                "a slide was pasted in")
+  (check-equal? (deck-slide-count pptx) 2 "the deck now has two")
+  (check-false (merge-back-once program pptx (build-path dir "w"))
+               "and merging it back is refused")
+
+  ;; The whole message has to come through, because what to do about it is not
+  ;; on the first line.
+  (define msg (merge-back-message program pptx (build-path dir "w")))
+  (check-regexp-match #rx"cannot be matched up" msg)
+  (check-regexp-match #rx"all_slides" msg "the message keeps its later lines")
+
+  ;; Now the trap, with the loop actually running: the refusal has to happen
+  ;; inside a run and a program save has to follow it in the same run.
+  (define lines '())
+  (define (note fmt . args) (set! lines (cons (apply format fmt args) lines)))
+  (define (said? rx) (ormap (lambda (l) (regexp-match? rx l)) lines))
+  (define (wait! what pred [limit 20.0])
+    (let loop ([waited 0.0])
+      (cond [(pred) #t]
+            [(>= waited limit) (fail (format "timed out waiting for ~a" what)) #f]
+            [else (sleep 0.1) (loop (+ waited 0.1))])))
+  (check-true (delete-slide! pptx 2) "back to one slide to start the run clean")
+  (check-true (merge-back-once program pptx (build-path dir "w")) "and agreed")
+
+  (define runner
+    (thread (lambda ()
+              (parameterize ([current-watch-log note])
+                (watch-loop program pptx #:width 480.0 #:height 270.0
+                            #:adapter (adapter-named 'none)
+                            #:workdir (build-path dir "w")
+                            #:interval 0.05 #:ticks 400)))))
+  ;; Startup unzips, merges and regenerates, which is slower than any sleep
+  ;; worth writing -- so wait for it to say it wrote the deck.
+  (wait! "the loop to finish starting" (lambda () (said? #rx"slides written")))
+  (sleep 0.3)
+  ;; Paste a slide in while the loop is watching.
+  (check-equal? (paste-slide! pptx (build-path decks-dir "03-shapes.pptx") 1) 2)
+  (wait! "the merge to be refused" (lambda () (said? #rx"merge refused")))
+  ;; Then save the program, which is what the message asks for.
+  (write-program! "70AD47")
+  (wait! "the loop to notice the program" (lambda () (said? #rx"not being rewritten")))
+  (sleep 0.4)
+  (check-equal? (deck-slide-count pptx) 2
+                "the pasted slide survived a program save -- the deck was not regenerated")
+  (kill-thread runner)
+
+  ;; Resolve it in the editor, and the merge goes through again.
+  (check-true (delete-slide! pptx 2) "the pasted slide was removed")
+  (check-true (merge-back-once program pptx (build-path dir "w"))
+              "the merge goes through once the slide sets agree"))

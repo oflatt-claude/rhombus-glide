@@ -9,7 +9,18 @@
          (only-in "parse.rkt" current-allow-unsupported?))
 (provide main)
 
+;; A deck has to be unzipped to be read, and the images are read from there
+;; while the slides draw -- so there is a scratch directory for the length of a
+;; command. It goes next to the output rather than in the system temp dir so that
+;; `--keep-work` can leave it somewhere findable.
 (define (default-workdir out) (build-path out ".glide-pptx"))
+
+(define keep-work? (make-parameter #f))
+
+(define (clean-work! dir)
+  (if (keep-work?)
+      (printf "scratch kept in ~a\n" dir)
+      (delete-directory/files dir #:must-exist? #f)))
 
 ;; A Keynote document is not a .pptx, but Keynote will write one -- and the
 ;; watcher already knows how to ask it to. So a `.key` is accepted anywhere a
@@ -41,7 +52,9 @@
               (pptx->deck pptx #:workdir (build-path (default-workdir out)
                                                      (deck-stem pptx)))))
   (begin0 (parameterize ([runtime-warnings warnings]) (proc d warnings))
-          (report-warnings warnings)))
+          (report-warnings warnings)
+          ;; Everything the output needs has been copied out by now.
+          (clean-work! (default-workdir out))))
 
 (define (deck-stem pptx)
   (path->string (path-replace-extension (file-name-from-path pptx) "")))
@@ -231,8 +244,16 @@
      (lambda (_ program deck) (list program deck))
      '("program.rkt" "deck.pptx")))
   (define program (first files))
-  (define deck (second files))
-  (define r (sync-once program deck #:dry-run? (unbox dry)))
+  ;; A `.key` is accepted here as well: Keynote writes the .pptx to merge from.
+  (define deck (as-pptx (second files)
+                        (let ([p (path-only (path->complete-path program))])
+                          (if p (path->string p) "."))))
+  (define r
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (printf "~a <-> ~a\n" program deck)
+                                 (eprintf "~a\n" (exn-message e))
+                                 (exit 1))])
+      (sync-once program deck #:dry-run? (unbox dry))))
   (printf "~a <-> ~a\n" program deck)
   (display (format-sync-report r))
   (when (sync-report-base-written? r)
@@ -293,7 +314,8 @@
     (printf "  ~a~a\n" (~a (first s) #:min-width 12) (second s)))
   (printf "\nRun a command with --help for its options.\n")
   (printf "\n  --allow-unsupported  draw charts and diagrams as empty boxes\n")
-  (printf "                       instead of refusing the deck\n"))
+  (printf "                       instead of refusing the deck\n")
+  (printf "  --keep-work          leave the unzipped deck behind for inspection\n"))
 
 (define (main . argv)
   (define args (if (and (= 1 (length argv)) (vector? (car argv)))
@@ -303,11 +325,15 @@
   ;; and it says "I am only looking", not "this deck is safe to round-trip".
   (define allow? (and (member "--allow-unsupported" args) #t))
   (set! args (remove "--allow-unsupported" args))
+  (define keep? (and (member "--keep-work" args) #t))
+  (set! args (remove "--keep-work" args))
   (cond
     [(or (null? args) (member (car args) '("-h" "--help" "help"))) (usage)]
     [(assoc (car args) subcommands)
      => (lambda (s)
-          (parameterize ([current-allow-unsupported? allow?])
+          (parameterize ([current-allow-unsupported? allow?]
+                         [keep-work? keep?]
+                         [current-keep-work? keep?])
             ((third s) (list->vector (cdr args)))))]
     [else (eprintf "unknown command: ~a\n\n" (car args)) (usage) (exit 2)]))
 

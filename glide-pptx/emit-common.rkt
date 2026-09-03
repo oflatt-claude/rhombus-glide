@@ -367,9 +367,17 @@
      ;; deep enough that a plain indent reads better.
      (define aligned (+ ind (string-length open)
                         (string-length (flavor-first-arg-prefix fl))))
-     (define col (if (<= aligned 48) aligned (+ ind 2)))
+     (define outdent? (> aligned 48))
+     (define col (if outdent? (+ ind 2) aligned))
      (define sep (flavor-arg-continue fl))
-     (define acc (list (string-append (spaces ind) open)))
+     ;; Outdenting has to take the *first* argument down with it. Shrubbery reads
+     ;; indentation, and the arguments of one call all have to start at the same
+     ;; column: leaving the first at the aligned column and putting the rest at a
+     ;; shallower one is not deep code, it is a syntax error.
+     (define acc
+       (if outdent?
+           (list (spaces col) (string-append (spaces ind) open))
+           (list (string-append (spaces ind) open))))
      (for ([a (in-list args)] [i (in-naturals)])
        (define sub (render-lines a fl col width))
        (define head (string-trim (car sub) #:right? #f))

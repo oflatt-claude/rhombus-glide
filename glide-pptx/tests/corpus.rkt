@@ -19,7 +19,8 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          racket/class racket/draw racket/runtime-path pict
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/export)
+         glide-pptx/export glide-pptx/emit-rhombus
+         (only-in glide-pptx/sync find-at-sites))
 
 (define-runtime-path corpus-dir "corpus")
 
@@ -85,6 +86,16 @@
        (when wrote
          (phase 'reimport
                 (lambda () (pptx->deck out #:workdir (build-path work (format "r~a" i)))))))
+     ;; The emitted program has to be readable by the reader a sync uses. This
+     ;; is where the printer's outdenting was caught writing indentation
+     ;; shrubbery rejects -- on 8 of these decks, in files Rhombus itself
+     ;; compiled without complaint.
+     (when deck
+       (define prog (build-path work (format "p~a.rhm" i)))
+       (when (phase 'emit (lambda () (write-rhombus-deck deck prog
+                                                         #:source-name name)
+                                     #t))
+         (phase 'reparse (lambda () (find-at-sites prog) #t))))
      ;; Note kinds, with names and numbers folded out so they group.
      (for ([w (in-list (remove-duplicates (unbox warns)))])
        (hash-update! notes (regexp-replace* #px"[0-9]+|\"[^\"]*\"" w "_") add1 0)))
