@@ -1,0 +1,31 @@
+#lang rhombus/and_meta
+// Showing a converted deck as a slideshow.
+//
+// A slide here is a finished page, not content to be laid out: it carries its
+// own background and its elements are placed against the deck's own geometry.
+// slideshow puts content inside the client area, so a slide scaled to fit the
+// client leaves the page's margins showing as a border -- which reads as a small
+// slide with white edges. Scaling to the whole page and padding the margin back
+// off puts it where it belongs.
+//
+// This is a module of its own because importing slideshow starts the GUI, and
+// translating, exporting and syncing a deck all have to work with no display.
+
+import:
+  slideshow open
+  lib("slideshow/main.rkt") as ss
+
+export:
+  show_slides
+
+fun show_slides(slides, ~width: w :: Real, ~height: h :: Real):
+  def page = blank_client()
+  def m = ss.margin
+  // The page, not the client area.
+  def page_w = page.width + 2 * m
+  def page_h = page.height + 2 * m
+  // A deck's aspect ratio and slideshow's are close but not equal, so the slide
+  // fits rather than being cropped.
+  def zoom = math.min(page_w / w, page_h / h)
+  for (s in slides):
+    slide(~layout: #'center, Pict.from_handle(s).scale(zoom).pad(-m))
