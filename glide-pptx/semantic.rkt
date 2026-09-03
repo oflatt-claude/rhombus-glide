@@ -8,7 +8,7 @@
 ;; rather than a reconstruction. Elements are emitted in paint order, and an
 ;; element with no descriptor is rendered on its own and spliced in at the right
 ;; point, so z-order is preserved either way.
-(require racket/list racket/math racket/class racket/draw pict
+(require "units.rkt" racket/list racket/math racket/class racket/draw pict
          "ir.rkt" "tagged.rkt" "draw-ir.rkt"
          (only-in "record-adapt.rkt" pict->display-page current-adapt-warnings)
          (only-in "runtime.rkt" placed placed? placed-x placed-y placed-rot
@@ -184,14 +184,18 @@
     ;; still travels with it.
     [else
      (define segs (custom-geom->segs geom x y w h))
-     (list (it:shape-path segs fill pen (list x y w h) body tag))]))
+     (list (it:shape-path segs fill pen (list x y w h) rot body tag))]))
 
 ;; Custom geometry arrives in its own coordinate space; scale it onto the box.
 (define (custom-geom->segs g x y w h)
-  (define gw (max 1 (custom-geom-w g)))
-  (define gh (max 1 (custom-geom-h g)))
-  (define (X v) (+ x (* w (/ (exact->inexact v) gw))))
-  (define (Y v) (+ y (* h (/ (exact->inexact v) gh))))
+  (define gw (custom-geom-w g))
+  (define gh (custom-geom-h g))
+  ;; A path space of 0 -- which is what an omitted `w` or `h` means -- says the
+  ;; coordinates are EMU within the shape, not a space to stretch onto the box.
+  ;; Clamping the divisor to 1 instead multiplied them by the box's size, which
+  ;; is a 21600-fold blow-up on the decks that write paths this way.
+  (define (X v) (if (zero? gw) (+ x (emu->pt v)) (+ x (* w (/ (exact->inexact v) gw)))))
+  (define (Y v) (if (zero? gh) (+ y (emu->pt v)) (+ y (* h (/ (exact->inexact v) gh)))))
   (append*
    (for/list ([path (in-list (custom-geom-paths g))])
      (for/list ([cmd (in-list path)])

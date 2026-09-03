@@ -23,9 +23,22 @@
   (list (el-state-x e) (el-state-y e) (el-state-w e) (el-state-h e) (el-state-rot e)))
 
 ;; PowerPoint rounds to EMU, so a sync must not treat that as an edit.
+;; A rotation is an angle, so 360 and 0 are the same rotation and so are -45 and
+;; 315. Comparing them as plain numbers reported differences that were not.
+(define (turn-same? a b)
+  (define d (- (modulo* a 360.0) (modulo* b 360.0)))
+  (or (< (abs d) GEOM-EPSILON) (< (abs (- 360.0 (abs d))) GEOM-EPSILON)))
+
+(define (modulo* v m)
+  (define r (- v (* m (floor (/ v m)))))
+  (if (< r 0) (+ r m) r))
+
 (define (el-geometry-same? a b)
-  (for/and ([p (in-list (el-geometry a))] [q (in-list (el-geometry b))])
-    (< (abs (- p q)) GEOM-EPSILON)))
+  (define ga (el-geometry a))
+  (define gb (el-geometry b))
+  (and (for/and ([p (in-list (take ga 4))] [q (in-list (take gb 4))])
+         (< (abs (- p q)) GEOM-EPSILON))
+       (turn-same? (last ga) (last gb))))
 
 ;; ------------------------------------------------------- from a display list
 
@@ -100,7 +113,8 @@
            (define tag (let ([n (element-name e)]) (and (not (string=? "" n)) n)))
            (set! acc
                  (cons (el-state tag
-                                 (cond [(picture? e) 'picture]
+                                 (cond [(tbl? e) 'table]
+                                       [(picture? e) 'picture]
                                        [(shape? e) (if (and (shape-body e)
                                                             (not (shape-fill e))
                                                             (not (shape-line e)))

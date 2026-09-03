@@ -19,7 +19,7 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          racket/class racket/draw racket/runtime-path pict
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/export glide-pptx/emit-rhombus
+         glide-pptx/export glide-pptx/emit-rhombus glide-pptx/sync-state
          (only-in glide-pptx/sync find-at-sites))
 
 (define-runtime-path corpus-dir "corpus")
@@ -42,6 +42,15 @@
   (define work (build-path (find-system-path 'temp-dir) "glide-pptx-corpus"))
    (delete-directory/files work #:must-exist? #f)
    (make-directory* work)
+
+;; What the round-trip comparison still finds, named so it stays visible. Each
+;; is a bug rather than a tolerance: they are here so the sweep can guard the
+;; other 398 decks in the meantime.
+(define known-round-trip-gaps
+  (hash "tdf149865.pptx"
+        (string-append
+         "a `userDrawn` layout shape comes in at the wrong box and loses its "
+         "scheme-colour fill")))
 
    (define failures '())
    (define notes (make-hash))
@@ -85,7 +94,66 @@
                                                   #:height (deck-height deck))))))
        (when wrote
          (phase 'reimport
-                (lambda () (pptx->deck out #:workdir (build-path work (format "r~a" i)))))))
+                (lambda () (pptx->deck out #:workdir (build-path work (format "r~a" i))))))
+       ;; The round trip has to preserve the elements. Both sides go through the
+       ;; same renderer, so unlike a pixel diff there is nothing here that a
+       ;; difference could legitimately be: anything that moves, grows, changes
+       ;; colour or loses its rotation is a bug. This is where a dropped rotation
+       ;; on a rotated freeform was found, and a box taken from a curve's control
+       ;; points instead of the shape.
+       (when wrote
+         (phase 'structure
+                (lambda ()
+                  (define again (pptx->deck out #:workdir (build-path work (format "s~a" i))))
+                  (define bs (deck->slide-states deck #:include-inherited? #t))
+                  (define as (deck->slide-states again #:include-inherited? #t))
+                  (define ds
+                    (append*
+                     (for/list ([b (in-list bs)] [a (in-list as)])
+                       ;; Matched by tag, so only an element that has one and
+                       ;; whose name is its alone can take part. An inherited
+                       ;; shape's name is not made unique -- uniquifying runs
+                       ;; over a slide's own elements -- so a repeated name is
+                       ;; this comparison's blind spot, not a difference.
+                       (define counts
+                         (for/fold ([h (hash)]) ([e (in-list (slide-state-elements b))])
+                           (hash-update h (el-state-tag e) add1 0)))
+                       (define by-tag
+                         (for/hash ([e (in-list (slide-state-elements a))]
+                                    #:when (el-state-tag e))
+                           (values (el-state-tag e) e)))
+                       (append*
+                        ;; A table is drawn on export but not written back as a
+                        ;; table -- it becomes the shapes and text it is made of,
+                        ;; so it keeps its appearance and loses its identity.
+                        ;; That is the one difference this sweep still finds, on
+                        ;; 33 of these decks, and it is a gap rather than a
+                        ;; mistake: `<a:tbl>` is not written yet.
+                        (for/list ([e (in-list (slide-state-elements b))]
+                                   #:when (and (el-state-tag e)
+                                               (not (eq? 'table (el-state-kind e)))
+                                               (= 1 (hash-ref counts (el-state-tag e) 0))))
+                          (define hit (hash-ref by-tag (el-state-tag e) #f))
+                          (cond
+                            [(not hit) (list (format "~s is gone" (el-state-tag e)))]
+                            [(not (el-geometry-same? e hit))
+                             (list (format "~s geometry ~a -> ~a" (el-state-tag e)
+                                           (map (lambda (v) (~r v #:precision 2))
+                                                (el-geometry e))
+                                           (map (lambda (v) (~r v #:precision 2))
+                                                (el-geometry hit))))]
+                            [else '()]))))))
+                  (unless (null? ds)
+                    (cond
+                      [(hash-ref known-round-trip-gaps name #f)
+                       => (lambda (why)
+                            (hash-update! notes
+                                          (format "round trip: ~a (~a)" why name)
+                                          add1 0))]
+                      [else
+                       (error 'structure "~a"
+                              (string-join (take ds (min 3 (length ds))) "; "))]))
+                  #t))))
      ;; The emitted program has to be readable by the reader a sync uses. This
      ;; is where the printer's outdenting was caught writing indentation
      ;; shrubbery rejects -- on 8 of these decks, in files Rhombus itself
