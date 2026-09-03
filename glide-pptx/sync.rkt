@@ -18,13 +18,14 @@
          "ir.rkt" "draw-ir.rkt" "parse.rkt" "semantic.rkt" "sync-state.rkt"
          (only-in "runtime.rkt" current-media-base)
          (only-in "emit-common.rkt" media-names-for dominant-font)
-         (only-in "emit-rhombus.rkt" rhombus-element-source))
+         (only-in "emit-rhombus.rkt" rhombus-element-source rhombus-slide-source))
 (provide (struct-out sync-action) (struct-out sync-report)
          program-slide-states deck-slide-states load-program-picts
          match-elements merge-states
          apply-actions! sync-once
          find-at-sites find-program-sites
          (struct-out at-site) (struct-out slide-site) (struct-out rng)
+         (struct-out program-layout) (struct-out name-list) (struct-out name-entry)
          base-path-for format-sync-report current-keep-work?)
 
 ;; Whether scratch directories are left behind for inspection.
@@ -270,36 +271,56 @@
       [deck-retext? (sync-action 'retext tag index (el-state-text d) #f)]
       [else #f]))))
 
-;; The merge pairs slides by index, so it can only run when the deck holds the
-;; same slides the base does. Adding or removing slides in the editor -- pasting
-;; some in from another deck, say -- shifts every later index, and then the merge
-;; would compare slide 3 against slide 2 and take the difference for edits: on a
-;; three-slide deck with one slide pasted at the front, that was 28 "edits" and
-;; eight elements deleted from the program. So it refuses instead.
+;; Which deck slide is which of the base's. The merge pairs slides so that
+;; adding one in the editor does not shift every later one: it used to pair by
+;; index, and a slide pasted at the front made every following slide compare
+;; against its neighbour -- 28 "edits" and eight elements deleted.
 ;;
-;; The program is the source of truth for what slides exist. Add a slide by
-;; adding a `def slide_N` and putting it in `all_slides`; the next export puts it
-;; in the deck.
-(define (check-slide-sets base deck program-path)
-  (define nb (length base))
-  (define nd (length deck))
-  (unless (= nb nd)
-    (error 'glide-pptx
-           (string-append
-            "the deck now has ~a slide~a and ~a has ~a, so edits cannot be matched up.\n"
-            "  Slides added or deleted in the editor are not merged back: the program\n"
-            "  says which slides exist. Add a `def slide_N`, put it in `all_slides`,\n"
-            "  and export again.\n"
-            "  To start over from the deck as it now stands, delete ~a and translate it.")
-           nd (if (= 1 nd) "" "s")
-           (if (path? program-path) (file-name-from-path program-path) program-path)
-           nb
-           (file-name-from-path (base-path-for program-path)))))
+;; Slides are matched on their elements' tags, which is a strong fingerprint: an
+;; untouched slide keeps all of them, and a slide pasted in from another deck
+;; shares none. Best pair first, one base slide to one deck slide, so a
+;; duplicated slide claims its original once and the copy is left over as new.
+(define SLIDE-MATCH 0.5)
 
-;; Even with the counts equal the slides can have been swapped around -- one
-;; pasted in and one deleted. A slide whose elements mostly do not match is not
-;; the slide the base recorded, and calling the difference an edit would delete
-;; the program's real elements.
+(define (slide-affinity a b)
+  (define ta (filter values (map el-state-tag (slide-state-elements a))))
+  (define tb (filter values (map el-state-tag (slide-state-elements b))))
+  (cond
+    [(and (null? ta) (null? tb)) 1.0]
+    [(or (null? ta) (null? tb)) 0.0]
+    [else
+     (define-values (shared _left)
+       (for/fold ([n 0] [h (for/fold ([h (hash)]) ([t (in-list tb)])
+                             (hash-update h t add1 0))])
+                 ([t (in-list ta)])
+         (if (positive? (hash-ref h t 0))
+             (values (add1 n) (hash-update h t sub1))
+             (values n h))))
+     (/ (* 2.0 shared) (+ (length ta) (length tb)))]))
+
+;; (values pairs added removed), pairs as (deck . base), in deck order.
+(define (match-slides base deck)
+  (define costs
+    (sort (for*/list ([d (in-list deck)] [b (in-list base)])
+            (list (slide-affinity d b) d b))
+          > #:key first))
+  (define used-d (make-hasheq))
+  (define used-b (make-hasheq))
+  (for ([c (in-list costs)])
+    (when (and (>= (first c) SLIDE-MATCH)
+               (not (hash-ref used-d (second c) #f))
+               (not (hash-ref used-b (third c) #f)))
+      (hash-set! used-d (second c) (third c))
+      (hash-set! used-b (third c) #t)))
+  (values (for/list ([d (in-list deck)] #:when (hash-ref used-d d #f))
+            (cons d (hash-ref used-d d)))
+          (for/list ([d (in-list deck)] #:unless (hash-ref used-d d #f)) d)
+          (for/list ([b (in-list base)] #:unless (hash-ref used-b b #f)) b)))
+
+;; Even with every slide matched, a slide can have been swapped for a different
+;; one that happens to look alike. A slide whose elements mostly do not match is
+;; not the slide the base recorded, and calling the difference an edit would
+;; delete the program's real elements.
 (define WHOLESALE 0.5)
 
 (define (wholesale-change? base-elements actions)
@@ -308,30 +329,68 @@
                          #:when (memq (sync-action-kind a) '(removed))) 1))
   (and (> n 1) (> gone (* WHOLESALE n))))
 
-(define (merge-states base prog deck)
-  (append*
-   (for/list ([bs (in-list base)])
-     (define index (slide-state-index bs))
-     (define (slide-for l) (for/first ([s (in-list l)]
-                                       #:when (= index (slide-state-index s))) s))
-     (define ps (slide-for prog))
-     (define ds (slide-for deck))
+;; A slide deleted in the editor is not merged back yet, and taking the
+;; difference for edits would delete the program's real elements.
+(define (check-slides-removed removed program-path)
+  (unless (null? removed)
+    (error 'glide-pptx
+           (string-append
+            "~a slide~a in ~a ~a not in the deck any more.\n"
+            "  Deleting a slide in the editor is not merged back yet: the program\n"
+            "  says which slides exist. Remove its `def slide_N` and its entry in\n"
+            "  `all_slides`, and export again.")
+           (length removed) (if (= 1 (length removed)) "" "s")
+           (if (path? program-path) (file-name-from-path program-path) program-path)
+           (if (= 1 (length removed)) "is" "are"))))
+
+(define (merge-states base prog deck [program-path "the program"])
+  (define-values (pairs added removed) (match-slides base deck))
+  (check-slides-removed removed program-path)
+  (append
+   (append*
+    (for/list ([pair (in-list pairs)])
+      (define ds (car pair))
+      (define bs (cdr pair))
+      (define index (slide-state-index bs))
+      (define ps (for/first ([s (in-list prog)]
+                             #:when (= index (slide-state-index s))) s))
+      (cond
+        [ps
+         (define as (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
+                                 (slide-state-elements ds)
+                                 (max 1.0 (slide-state-width bs))))
+         (if (wholesale-change? (slide-state-elements bs) as)
+             (list (sync-action
+                    'ambiguous (format "slide ~a" index) index
+                    (format (string-append
+                             "most of this slide's ~a elements are not in the deck any more,"
+                             " so it is a different slide rather than an edited one")
+                            (length (slide-state-elements bs)))
+                    #f))
+             as)]
+        [else (list (sync-action 'conflict (format "slide ~a" index) index
+                                 '(slide-missing) #f))])))
+   ;; A slide the base does not have was added in the editor. Where it goes in
+   ;; the program's order is where it sits in the deck: after whichever program
+   ;; slide the nearest earlier deck slide belongs to.
+   (let loop ([ds (in-deck-order deck)] [after 0] [seq 0] [acc '()])
      (cond
-       [(and ps ds)
-        (define as (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
-                                (slide-state-elements ds)
-                                (max 1.0 (slide-state-width bs))))
-        (if (wholesale-change? (slide-state-elements bs) as)
-            (list (sync-action
-                   'ambiguous (format "slide ~a" index) index
-                   (format (string-append
-                            "most of this slide's ~a elements are not in the deck any more,"
-                            " so it is a different slide rather than an edited one")
-                           (length (slide-state-elements bs)))
-                   #f))
-            as)]
-       [else (list (sync-action 'conflict (format "slide ~a" index) index
-                                '(slide-missing) #f))]))))
+       [(null? ds) (reverse acc)]
+       [else
+        (define d (car ds))
+        (define b (for/first ([p (in-list pairs)] #:when (eq? d (car p))) (cdr p)))
+        (if b
+            (loop (cdr ds) (slide-state-index b) 0 acc)
+            (loop (cdr ds) after (add1 seq)
+                  (cons (sync-action 'added-slide
+                                     (format "deck slide ~a" (slide-state-index d))
+                                     (slide-state-index d)
+                                     (list after seq)
+                                     #f)
+                        acc)))]))))
+
+(define (in-deck-order deck)
+  (sort deck < #:key slide-state-index))
 
 ;; -------------------------------------------------------- patching the source
 
@@ -351,7 +410,7 @@
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
 ;; shape in the editor puts it on top, which is where the last argument draws.
-(struct slide-site (scope insert-at indent) #:transparent)
+(struct slide-site (scope insert-at indent def-end) #:transparent)
 (struct rng (start end) #:transparent)
 
 ;; Shifts every recovered range, for a reader that was handed only part of the
@@ -514,7 +573,7 @@
   (rhombus-at-sites path))
 
 (define (find-at-sites path)
-  (define-values (sites _scopes _slides) (find-program-sites path))
+  (define-values (sites _scopes _slides _layout) (find-program-sites path))
   sites)
 
 ;; ---------------------------------------------------------------- rhombus
@@ -564,9 +623,74 @@
                                 sites))))
           (for-each walk l))
         (void))))
-  (values (reverse sites) (rhombus-slide-scopes groups)
-          (parameterize ([current-range-offset after-lang])
-            (with-indents (rhombus-slide-sites groups text) (reverse sites) text))))
+  (parameterize ([current-range-offset after-lang])
+    (values (reverse sites) (rhombus-slide-scopes groups)
+            (with-indents (rhombus-slide-sites groups text) (reverse sites) text)
+            (program-layout (rhombus-name-list groups text)
+                            (rhombus-export-block groups text)))))
+
+;; Where a slide can be added, and where its name has to be entered for the
+;; addition to mean anything. A `def slide_N` nobody lists in `all_slides` is
+;; dead code, so the two edits go together.
+(struct program-layout (slide-list exports) #:transparent)
+
+;; `def all_slides = [slide_1, slide_2]` -- the brackets, and each name in them.
+(struct name-list (open close items) #:transparent)
+(struct name-entry (name range) #:transparent)
+
+;; The `[...]` of the `all_slides` definition.
+(define (rhombus-name-list groups text)
+  (for/or ([g (in-list groups)])
+    (define l (let ([e (syntax-e g)]) (and (list? e) e)))
+    (and l (= 5 (length l)) (eq? 'group (syntax-e* (first l)))
+         (eq? 'def (syntax-e* (second l)))
+         (memq (syntax-e* (third l)) '(all_slides all-slides))
+         (let ([b (let ([e (syntax-e (fifth l))]) (and (list? e) e))])
+           (and b (eq? 'brackets (syntax-e* (car b)))
+                (let* ([items
+                        (filter values
+                                (for/list ([grp (in-list (cdr b))])
+                                  (define v (rhombus-group-value grp))
+                                  (and v (symbol? (syntax-e* v))
+                                       (name-entry (syntax-e* v) (range-of v)))))]
+                       ;; The brackets carry no position, so they are found from
+                       ;; the first name -- or, for an empty list, from the `=`.
+                       [anchor (if (pair? items)
+                                   (rng-start (name-entry-range (first items)))
+                                   (let ([r (range-of (fourth l))]) (and r (rng-end r))))]
+                       [open (and anchor (prev-char text anchor #\[))]
+                       [close (and open (match-close text open
+                                                     (lambda (c d)
+                                                       (and (char=? c #\/) (eqv? d #\/)))
+                                                     (lambda (c d)
+                                                       (and (char=? c #\/) (eqv? d #\*)))))])
+                  (and open close (name-list open close items))))))))
+
+;; The first `ch` at or before `i`.
+(define (prev-char text i ch)
+  (let loop ([j (min i (sub1 (string-length text)))])
+    (cond [(< j 0) #f]
+          [(char=? (string-ref text j) ch) j]
+          [else (loop (sub1 j))])))
+
+;; The `export:` block, as the position a new name goes after and the
+;; indentation it takes. A program need not have one -- `all_slides` is what an
+;; export reads -- so this is #f when there is none.
+(define (rhombus-export-block groups text)
+  (for/or ([g (in-list groups)])
+    (define l (let ([e (syntax-e g)]) (and (list? e) e)))
+    (and l (= 3 (length l)) (eq? 'group (syntax-e* (first l)))
+         (eq? 'export (syntax-e* (second l)))
+         (let ([b (let ([e (syntax-e (third l))]) (and (list? e) e))])
+           (and b (eq? 'block (syntax-e* (car b)))
+                (let ([rs (filter values
+                                  (for/list ([grp (in-list (cdr b))])
+                                    (define v (rhombus-group-value grp))
+                                    (and v (range-of v))))])
+                  (and (pair? rs)
+                       (let ([last-r (argmax rng-end rs)])
+                         (cons (rng-end last-r)
+                               (indent-at text (rng-start last-r)))))))))))
 
 ;; The `slide_canvas(...)` call in each `def slide_N = slide_canvas(...)`.
 ;; From the head of a call to just past its closing paren.
@@ -586,8 +710,10 @@
                               (fifth l)))
             (and scope name
                  (let* ([r (range-of name)]
+                        [open (and r (next-open text (rng-end r)))]
+                        [shut (and open (rhombus-close text open))]
                         [ins (and r (canvas-insertion text (rng-end r) rhombus-close))])
-                   (and ins (slide-site scope (first ins) 2)))))))
+                   (and ins shut (slide-site scope (first ins) 2 (add1 shut))))))))
 
 ;; `(group def slide_1 (op =) ...)` -> slide_1, and the same for `fun`.
 (define (rhombus-def-name g)
@@ -822,8 +948,118 @@
       [else (void)]))
   (remove-duplicates acc))
 
+;; Slides added in the editor, written into the program as `def slide_N`
+;; definitions and entered in `all_slides`.
+;;
+;; The definitions go after the last existing one, whatever order the slides
+;; belong in: `all_slides` is what decides the deck's order, so appending keeps
+;; the edit to two splices instead of renumbering and reflowing the file.
+(define (apply-added-slides! program-path actions slide-sites layout d
+                            media-names media-subdir)
+  (define text (file->string program-path))
+  (define taken
+    (for/list ([ss (in-list slide-sites)]) (symbol->string (slide-site-scope ss))))
+  (define next
+    (add1 (apply max 0
+                 (for/list ([n (in-list taken)])
+                   (cond
+                     [(regexp-match #rx"([0-9]+)$" n) => (lambda (m) (string->number (cadr m)))]
+                     [else 0])))))
+  ;; In deck order, so the names read in the order the slides appear.
+  (define (position a)
+    ;; (after . seq): where in the program's order, then the order among slides
+    ;; added at that same place.
+    (define d (sync-action-detail a))
+    (+ (* 1000 (first d)) (second d)))
+  (define sorted (sort actions < #:key position))
+  (define planned
+    (for/list ([a (in-list sorted)] [i (in-naturals)])
+      (define s (for/first ([s (in-list (deck-slides d))]
+                            #:when (= (sync-action-slide a) (slide-index s)))
+                  s))
+      (list a s (format "slide_~a" (+ next i)))))
+  (define missing (filter (lambda (p) (not (second p))) planned))
+  (define usable (filter second planned))
+  (cond
+    [(null? slide-sites)
+     (for/list ([p (in-list planned)])
+       (cons (first p) "there is no `def slide_N = slide_canvas(...)` to add one beside"))]
+    [(not (program-layout-slide-list layout))
+     (for/list ([p (in-list planned)])
+       (cons (first p) "`all_slides` is not a literal list, so a slide cannot be added to it"))]
+    [else
+     ;; The images a pasted slide brings with it.
+     (for* ([p (in-list usable)]
+            [src (in-list (append* (map element-media
+                                        (append (slide-inherited (second p))
+                                                (slide-elements (second p))))))])
+       (copy-media-file! d src program-path media-names media-subdir))
+     (define defs
+       (string-join
+        (for/list ([p (in-list usable)])
+          (rhombus-slide-source (second p) (third p)
+                                #:media-names media-names
+                                #:font (and d (dominant-font d))))
+        "\n\n"))
+     (define at (slide-site-def-end (last slide-sites)))
+     (list (list (rng at at) (string-append "\n\n" defs))
+           ;; Each name goes where its slide sits in the deck's order.
+           (name-list-edits (program-layout-slide-list layout) usable text)
+           (export-edits (program-layout-exports layout) usable)
+           missing)]))
+
+;; One edit per position in `all_slides`, since several slides can be added at
+;; the same place and two insertions at one offset would fight.
+(define (name-list-edits nl planned text)
+  (define items (name-list-items nl))
+  (define groups
+    (let loop ([ps planned] [acc '()])
+      (cond
+        [(null? ps) (reverse acc)]
+        [else
+         (define after (first (sync-action-detail (first (car ps)))))
+         (define-values (same rest)
+           (splitf-at ps (lambda (p) (= after (first (sync-action-detail (first p)))))))
+         (loop rest (cons (cons after (map third same)) acc))])))
+  (for/list ([g (in-list groups)])
+    (define after (car g))
+    (define names (cdr g))
+    (cond
+      ;; After nothing: at the head of the list.
+      [(or (zero? after) (null? items))
+       (list (rng (add1 (name-list-open nl)) (add1 (name-list-open nl)))
+             (string-append (string-join names ", ")
+                            (if (null? items) "" ", ")))]
+      [else
+       (define i (min (sub1 after) (sub1 (length items))))
+       (define r (name-entry-range (list-ref items i)))
+       (list (rng (rng-end r) (rng-end r))
+             (string-append ", " (string-join names ", ")))])))
+
+;; A name nobody exports still works -- `all_slides` is what an export reads --
+;; but the generated file lists them all, so a new one is listed too.
+(define (export-edits ex planned)
+  (cond
+    [(not ex) '()]
+    [else
+     (define at (car ex))
+     (define ind (cdr ex))
+     (list (list (rng at at)
+                 (apply string-append
+                        (for/list ([p (in-list planned)])
+                          (format "\n~a~a" (make-string ind #\space) (third p))))))]))
+
+(define (copy-media-file! d src program-path media-names media-subdir)
+  (define from (build-path (deck-media-dir d) src))
+  (define to (build-path (or (path-only (path->complete-path program-path))
+                             (current-directory))
+                         media-subdir (hash-ref media-names src src)))
+  (when (file-exists? from)
+    (make-directory* (path-only to))
+    (copy-file from to #t)))
+
 (define (apply-actions! program-path actions #:deck [d #f])
-  (define-values (all-sites scopes slide-sites) (find-program-sites program-path))
+  (define-values (all-sites scopes slide-sites layout) (find-program-sites program-path))
   (check-site-tags all-sites scopes program-path)
   ;; Keyed by the slide's definition, so "Title 1" on slide 3 finds slide 3's
   ;; `at`. When the slide list is computed there is no definition to key on, and
@@ -862,7 +1098,29 @@
   ;; cannot see. Every caller checks the result.
   (define (edit! r text)
     (and r (begin (set! edits (cons (list r text) edits)) #t)))
-  (for ([a (in-list actions)])
+  ;; Added slides are done together: several can land at one position, and two
+  ;; insertions at one offset would fight.
+  (define added-slides
+    (filter (lambda (a) (eq? 'added-slide (sync-action-kind a))) actions))
+  (unless (null? added-slides)
+    (define r (apply-added-slides! program-path added-slides slide-sites layout d
+                                   media-names media-subdir))
+    (cond
+      ;; A list of (action . reason) means none of them could be written.
+      [(andmap pair? r)
+       (set! skipped (append (reverse r) skipped))]
+      [else
+       (define-values (edit-lists refused) (values (take r 3) (fourth r)))
+       (for ([e (in-list (append* (map (lambda (x) (if (and (pair? x) (rng? (car x)))
+                                                       (list x) x))
+                                       edit-lists)))])
+         (set! edits (cons e edits)))
+       (for ([p (in-list refused)])
+         (set! skipped (cons (cons (first p) "the deck has no such slide") skipped)))
+       (for ([a (in-list added-slides)]
+             #:unless (memq a (map first refused)))
+         (set! applied (cons a applied)))]))
+  (for ([a (in-list actions)] #:unless (eq? 'added-slide (sync-action-kind a)))
     (define site (site-for a))
     (case (sync-action-kind a)
       [(moved resized)
@@ -1037,8 +1295,7 @@
                         #:deck (path->string (path->complete-path pptx-path))))
      (done! (sync-report '() '() '() (not dry-run?)))]
     [else
-     (check-slide-sets base deck program-path)
-     (define actions (merge-states base prog deck))
+     (define actions (merge-states base prog deck program-path))
      (cond
        [dry-run? (done! (sync-report actions '() '() #f))]
        [else

@@ -6,7 +6,7 @@
 (require racket/list racket/string racket/file racket/path racket/format
          file/unzip file/zip)
 (provide with-unpacked-deck drag-in-deck! deck-part
-         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide!)
+         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -247,4 +247,28 @@
        [else
         (display-to-file (string-replace t (list-ref ids (sub1 n)) "" #:all? #f)
                          pres #:exists 'replace)
+        #t]))))
+
+;; Moves slide `from` to position `to` in the slide list, one-based, which is
+;; what dragging it in the slide navigator amounts to.
+(define (move-slide! pptx from to)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define pres (build-path dir "ppt" "presentation.xml"))
+     (define t (file->string pres))
+     (define ids (regexp-match* #px"<p:sldId [^>]*/>" t))
+     (cond
+       [(or (< from 1) (> from (length ids)) (< to 1) (> to (length ids))) #f]
+       [else
+        (define moved (list-ref ids (sub1 from)))
+        (define without (remove moved ids))
+        (define reordered
+          (append (take without (sub1 to)) (list moved) (drop without (sub1 to))))
+        (define lst (regexp-match #px"(?s:<p:sldIdLst>.*?</p:sldIdLst>)" t))
+        (display-to-file
+         (string-replace t (first lst)
+                         (string-append "<p:sldIdLst>" (apply string-append reordered)
+                                        "</p:sldIdLst>"))
+         pres #:exists 'replace)
         #t]))))
