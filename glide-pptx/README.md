@@ -490,19 +490,46 @@ picture whose relationship resolves to nothing.
 
 ## Where this is going
 
-The loop works for geometry and text on literals. What is left:
+The loop works: geometry and text merge back on literals, and a computed
+position gets a correction that cannot stack. What is left, roughly in the order
+it is worth doing.
 
-1. **A `nudge` wrapper for computed layout.** A drag on `(vc-append 5 a b)` has no
-   number to patch, but it is expressible as a bbox-preserving pad --
-   `(inset p dx dy (- dx) (- dy))`, measured to move the drawing exactly while
-   leaving the enclosing combinator alone. It converges: after one drag the
-   element has literal numbers from then on.
-2. **Shapes added or deleted in the editor.** Reported now; inserting a generated
-   `(at ...)` at the right z-position is the next step, and a deletion should
-   comment code out rather than remove it.
-3. **Patching the original package** instead of synthesizing one, so a deck with
-   charts or SmartArt keeps them across the loop even though we cannot render
-   them.
-4. **Testing the Keynote and PowerPoint adapters**, which needs a Mac.
-5. **`--stages`**, one slide per animation step, for a presentable deck.
-   `rhombus/pict`'s `snapshot(epoch)` hands that over directly.
+**Make the editor honest about what it can honor.** An element with no tag, or
+whose position is computed with no literal to patch, can be dragged and then not
+moved. Reporting that after the fact is worse than not offering it: such an
+element should be flattened into its parent so the editor shows one object
+rather than a piece that will not move. Export already has what it needs to
+decide -- whether a patchable source site exists.
+
+**Shapes added or deleted in the editor.** Reported now. Adding should insert a
+generated `at` form at the right z-position; deleting should comment code out
+rather than remove it. Reordering is detected as a signal but not applied.
+
+**A structural round-trip check.** Fidelity is measured in pixels, and a dropped
+attribute can hide under 0.1%. Import, export, import again, and diff the two
+IRs: exact, fast, and it catches semantic loss that no image diff will.
+
+**Patch the original package** instead of synthesizing one, so a deck with charts
+or SmartArt keeps them across the loop even though we cannot render them. This is
+what makes the round trip safe on a deck that uses features we do not model.
+
+**A correction for picts composed inside an `at`.** The `#:nudge` argument covers
+an element that `at` places. One of several children of a `vc-append` has no
+`at` of its own, and there the wrapper form is still the answer:
+`(inset p dx dy (- dx) (- dy))`, measured to move the drawing exactly while
+leaving the enclosing combinator alone.
+
+**Fidelity gaps that real files exposed**, all currently reported rather than
+silently wrong:
+
+- `start-alpha`/`end-alpha` grouping, so nested transparency composites right
+- arbitrary clipping, which DrawingML cannot express and which should rasterize
+  the clipped span rather than drop the clip
+- sheared text, same
+- coalescing adjacent `draw-text` on the flattened path, so a line is one
+  paragraph rather than one box per drawn run
+- `a:sym`, the symbol font, which is read but not carried
+- charts and SmartArt, which draw as an empty box -- 62 of them in the corpus
+
+**Testing the Keynote and PowerPoint adapters**, which needs a Mac. The
+AppleScript is written against their APIs but has never run.
