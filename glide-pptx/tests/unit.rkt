@@ -282,3 +282,43 @@
       (check-equal? (length sites) written
                     (format "~a: every `at` written was found again" name)))
     (delete-file out)))
+
+;; --------------------------------------------- line spacing is 1.2 per cent
+
+;; A percentage line spacing is a percentage of *single* spacing, and single
+;; spacing is 1.2 times the largest font size on the line. It is not a
+;; percentage of the font's own bounding box, which is what this used to
+;; multiply -- and which is font-dependent: Liberation Sans measures 1.12 times
+;; its size, Carlito 1.22.
+;;
+;; Measured against LibreOffice both ways round: a two-line title at 116pt with
+;; 80% spacing advances 111.75pt there and here (it was 8pt tight), and
+;; 32pt bullets at 100% advance 38.6pt there against 38.4 here (they were 39.1).
+;;
+;; Every fixture is one line per paragraph, so nothing here noticed until a real
+;; deck's title wrapped.
+(let ()
+  (local-require glide-pptx/runtime glide-pptx/draw-ir glide-pptx/record-adapt
+                 pict racket/list)
+  (define (advance size pct)
+    ;; Two paragraphs, so there are two lines whose tops can be compared.
+    (define box
+      (textbox #:width 2000.0 #:height 400.0
+               (para* #:line-spacing (cons 'percent pct)
+                      (run* "First" #:size size #:font "Liberation Sans"))
+               (para* #:line-spacing (cons 'percent pct)
+                      (run* "Second" #:size size #:font "Liberation Sans"))))
+    ;; The recorded draw calls, so the y of each drawn line is the real one.
+    (define page (pict->display-page (lambda (dc) (draw-pict box dc 0 0)) 2000.0 400.0))
+    (define texts
+      (sort (filter it:text? (display-page-items page)) < #:key it:text-y))
+    (and (= 2 (length texts))
+         (- (it:text-y (second texts)) (it:text-y (first texts)))))
+
+  (for ([size (in-list '(116.0 32.0 18.0))])
+    (for ([pct (in-list '(1.0 0.8 1.5))])
+      (define got (advance size pct))
+      (define want (* pct 1.2 size))
+      (check-true (and got (< (abs (- got want)) 0.01))
+                  (format "~apt at ~a%: advance ~a, want ~a (1.2 x size x the percentage)"
+                          size (* 100 pct) got want)))))
