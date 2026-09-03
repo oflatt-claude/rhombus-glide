@@ -101,8 +101,11 @@
         '()))
 
   (define slide-tree (sp-tree-of slide-x))
+  ;; Filled in as the tree is read, with the names that came from our alt text.
+  (define tag-names (make-hash))
   (define elements
-    (parse-sp-tree (ctx-for slide-name layout-phs master-phs tx-styles) slide-tree))
+    (parameterize ([current-tag-names tag-names])
+      (parse-sp-tree (ctx-for slide-name layout-phs master-phs tx-styles) slide-tree)))
 
   (define bg (resolve-background cctx (media-for slide-name)
                                  (list slide-x layout-x master-x)))
@@ -114,15 +117,20 @@
          ;; so it has to be unique within its slide -- which PowerPoint does not
          ;; guarantee. Doing it here means every path downstream gets a key,
          ;; whether it goes through generated code or renders directly.
-         (uniquify-names elements)))
+         ;;
+         ;; A name that came from our own alt text is exempt: several shapes
+         ;; carrying one tag were drawn by one `at`, and renaming them apart
+         ;; would turn one code site into three.
+         (uniquify-names elements (hash-keys tag-names))))
 
-(define (uniquify-names elements)
+(define (uniquify-names elements [exempt '()])
   (define seen (make-hash))
   (define (rename e)
     (define name (element-name e))
     (define renamed
       (cond
         [(string=? "" name) e]
+        [(member name exempt) e]
         [else
          (define n (hash-ref seen name 0))
          (hash-set! seen name (add1 n))

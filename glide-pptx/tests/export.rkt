@@ -12,7 +12,7 @@
          racket/runtime-path pict
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
          glide-pptx/export glide-pptx/draw-ir glide-pptx/record-adapt glide-pptx/verify
-         glide-pptx/emit-racket
+         glide-pptx/emit-rhombus (only-in glide-pptx/sync load-program-picts)
          (only-in file/unzip read-zip-directory zip-directory-entries unzip
                   make-filesystem-entry-reader))
 
@@ -106,11 +106,10 @@
   (make-directory* dir)
   (define pptx (build-path decks-dir "04-pictures-groups.pptx"))
   (define d (pptx->deck pptx #:workdir (build-path dir "unpacked")))
-  (define program (build-path dir "deck.rkt"))
-  (write-racket-deck d program #:source-name (path->string pptx))
+  (define program (build-path dir "deck.rhm"))
+  (write-rhombus-deck d program #:source-name (path->string pptx))
   (define picts
-    (parameterize ([current-media-base dir])
-      (dynamic-require `(file ,(path->string program)) 'all-slides)))
+    (load-program-picts program))
   (define out (build-path dir "out.pptx"))
   (picts->pptx picts out #:width (deck-width d) #:height (deck-height d))
   (define media
@@ -137,11 +136,10 @@
   (define pptx (build-path decks-dir (string-append name ".pptx")))
   (define d (pptx->deck pptx #:workdir (build-path dir "unpacked")))
   ;; Go through the emitted program, so this exercises what a user would run.
-  (define program (build-path dir "deck.rkt"))
-  (write-racket-deck d program #:source-name (path->string pptx))
+  (define program (build-path dir "deck.rhm"))
+  (write-rhombus-deck d program #:source-name (path->string pptx))
   (define picts
-    (parameterize ([current-media-base dir])
-      (dynamic-require `(file ,(path->string program)) 'all-slides)))
+    (load-program-picts program))
   (for ([p (in-list picts)])
     (check-true (semantic-page? p)
                 (format "~a: a generated slide carries its structure" name)))

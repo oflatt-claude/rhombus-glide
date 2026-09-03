@@ -5,7 +5,7 @@
 ;; settles into rather than about how quickly it gets there.
 (require rackunit racket/list racket/string racket/file racket/path racket/port
          racket/system racket/runtime-path
-         glide-pptx/ir glide-pptx/parse glide-pptx/emit-racket glide-pptx/export
+         glide-pptx/ir glide-pptx/parse glide-pptx/emit-rhombus glide-pptx/export
          glide-pptx/sync glide-pptx/watch glide-pptx/runtime "deck-edit.rkt")
 
 (define-runtime-path decks-dir "decks")
@@ -35,7 +35,7 @@
 
 (define dir (build-path work "loop"))
 (make-directory* dir)
-(define program (build-path dir "deck.rkt"))
+(define program (build-path dir "deck.rhm"))
 (define pptx (build-path dir "deck.pptx"))
 
 (define (write-program! color)
@@ -43,21 +43,25 @@
     (lambda (o)
       (write-string
        (string-join
-        (list "#lang racket/base"
-              "(require pict glide-pptx/runtime)"
-              "(provide all-slides slide-width slide-height)"
-              "(define slide-width 480.0)"
-              "(define slide-height 270.0)"
-              "(define slide-1"
-              "  (slide-canvas"
-              "   #:width slide-width #:height slide-height #:background (hex \"FFFFFF\")"
-              "   (at 40.0 60.0 #:tag \"Box\""
-              "       (shape-pict #:width 100.0 #:height 40.0 #:shape \"roundRect\""
-              (format "                   #:fill (hex ~s)))" color)
-              "   (at 200.0 60.0 #:tag \"Label\""
-              "       (textbox #:width 200.0 #:height 30.0"
-              "                (para* (run* \"hello\" #:size 18.0))))))"
-              "(define all-slides (list slide-1))"
+        (list "#lang rhombus/and_meta"
+              "import:"
+              "  lib(\"glide-pptx/runtime.rhm\") open"
+              "export:"
+              "  all_slides"
+              "  slide_width"
+              "  slide_height"
+              "def slide_width = 480.0"
+              "def slide_height = 270.0"
+              "def slide_1 = slide_canvas("
+              "  ~width: slide_width, ~height: slide_height, ~background: hex(\"FFFFFF\"),"
+              "  at(40.0, 60.0, ~tag: \"Box\","
+              "     shape_pict(~width: 100.0, ~height: 40.0, ~shape: \"roundRect\","
+              (format "                ~~fill: hex(~s)))," color)
+              "  at(200.0, 60.0, ~tag: \"Label\","
+              "     textbox(~width: 200.0, ~height: 30.0,"
+              "             para(run(\"hello\", ~size: 18.0))))"
+              ")"
+              "def all_slides = [slide_1]"
               "")
         "\n") o))))
 
@@ -108,9 +112,9 @@
                   "the shape to drag was found in the generated deck"))
 
 (void (wait-for! "the program to be patched"
-                 (lambda () (regexp-match? #rx"at 150[.]0 90[.]0" (file->string program)))))
+                 (lambda () (regexp-match? #rx"at[(]150[.]0, 90[.]0" (file->string program)))))
 (define source-after (file->string program))
-(check-true (regexp-match? #rx"at 150[.]0 90[.]0" source-after)
+(check-true (regexp-match? #rx"at[(]150[.]0, 90[.]0" source-after)
             "dragging in the deck moved the literal in the program")
 (check-equal? (length (string-split source-before "\n"))
               (length (string-split source-after "\n"))

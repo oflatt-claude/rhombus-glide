@@ -166,15 +166,7 @@
     (log! "  ~a slides written\n" (length picts))
     #t))
 
-(define (program-picts program)
-  (define full (path->complete-path program))
-  (define ns (make-base-empty-namespace))
-  (for ([m (in-list '(pict glide-pptx/runtime glide-pptx/tagged glide-pptx/ir))])
-    (namespace-attach-module (current-namespace) m ns))
-  (define v (parameterize ([current-namespace ns])
-              (dynamic-require `(file ,(path->string full)) 'all-slides)))
-  (cond [(list? v) v]
-        [else ((dynamic-require 'racket/treelist 'treelist->list) v)]))
+(define (program-picts program) (load-program-picts program))
 
 ;; deck -> program.
 (define (merge-back! program pptx document adapter workdir)

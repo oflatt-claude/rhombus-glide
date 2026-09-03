@@ -49,6 +49,8 @@ export:
   pict_width
   pict_height
   blank
+  vstack
+  hstack
 
 // A Rhombus list is not a Racket list, so anything crossing into the Racket
 // runtime as a list argument is converted here. Generated code can then use
@@ -186,6 +188,17 @@ fun picts_to_pptx(picts, path, ~width: w = #false, ~height: h = #false):
 
 def media_lookup = rt.#{media-lookup}
 def current_media_base = rt.#{current-media-base}
+// Composition. A slide is built from `at` placements, but the pict placed at one
+// of them is often several picts stacked up. These are Racket's `vc-append` and
+// `hc-append`: rhombus/pict's `stack` and `beside` work on its own `Pict`, not
+// on these picts, and the names here stay clear of them so that a program can
+// `open` both while it is being refactored.
+fun vstack(~sep: sep = 0, & ps):
+  pict_rkt.#{vc-append}(sep, & ps)
+
+fun hstack(~sep: sep = 0, & ps):
+  pict_rkt.#{hc-append}(sep, & ps)
+
 def blank = pict_rkt.#{blank}
 def pict_width = pict_rkt.#{pict-width}
 def pict_height = pict_rkt.#{pict-height}

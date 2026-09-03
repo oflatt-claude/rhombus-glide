@@ -17,7 +17,7 @@
          num-string
          element->value slide-background-value
          render render-lines
-         copy-media! default-pdf-name element-tag)
+         copy-media! media-names-for default-pdf-name element-tag)
 
 ;; ---------------------------------------------------------------- value trees
 

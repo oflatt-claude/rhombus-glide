@@ -3,7 +3,7 @@
 (require racket/cmdline racket/list racket/string racket/file racket/path racket/treelist pict
          racket/pretty racket/format
          "ir.rkt" "parse.rkt" "render.rkt" "runtime.rkt"
-         "emit-racket.rkt" "emit-rhombus.rkt" "verify.rkt" "geometry.rkt"
+         "emit-rhombus.rkt" "verify.rkt" "geometry.rkt"
          "export.rkt" "sync.rkt" "watch.rkt"
          (only-in "semantic.rkt" current-flatten-opaque?)
          (only-in "parse.rkt" current-allow-unsupported?))
@@ -33,25 +33,18 @@
 
 (define (cmd-translate args)
   (define out-dir (box "out"))
-  (define lang (box 'racket))
   (define files
     (parse-command-line
      "glide-pptx translate" args
      `((once-each
-        [("-o" "--out") ,(lambda (_ v) (set-box! out-dir v)) ("Output directory" "dir")]
-        [("--rhombus") ,(lambda (_) (set-box! lang 'rhombus)) ("Emit Rhombus instead of Racket")]
-        [("--racket") ,(lambda (_) (set-box! lang 'racket)) ("Emit Racket (the default)")]))
+        [("-o" "--out") ,(lambda (_ v) (set-box! out-dir v)) ("Output directory" "dir")]))
      (lambda (_ . fs) fs)
      '("deck.pptx")))
   (for ([f (in-list files)])
     (with-deck f (unbox out-dir)
       (lambda (d _w)
-        (define stem (deck-stem f))
-        (define ext (if (eq? 'rhombus (unbox lang)) ".rhm" ".rkt"))
-        (define path (build-path (unbox out-dir) (string-append stem ext)))
-        (if (eq? 'rhombus (unbox lang))
-            (write-rhombus-deck d path #:source-name f)
-            (write-racket-deck d path #:source-name f))
+        (define path (build-path (unbox out-dir) (string-append (deck-stem f) ".rhm")))
+        (write-rhombus-deck d path #:source-name f)
         (printf "~a  (~a slides, ~a elements)\n"
                 path (length (deck-slides d)) (deck-count-elements d))))))
 
@@ -143,14 +136,10 @@
      '("program.rkt")))
   (for ([f (in-list files)])
     (define full (path->complete-path f))
-    (define mod `(file ,(path->string full)))
-    ;; A generated program looks for its images beside itself, which it cannot
-    ;; work out on its own when loaded this way.
     (define picts
       (if (unbox slideshow?)
           (slideshow-slides full (unbox width) (unbox height))
-          (parameterize ([current-media-base (path-only full)])
-            (load-slides mod (unbox binding)))))
+          (load-program-picts full #:named (unbox binding))))
     (define target
       (or (unbox out)
           (path->string (path-replace-extension (file-name-from-path f) ".pptx"))))
@@ -192,23 +181,7 @@
   (for/list ([p (in-list frames)])
     (scale p (/ w SLIDESHOW-W) (/ h SLIDESHOW-H))))
 
-(define (load-slides mod named)
-  (define candidates (if named (list (string->symbol named)) '(all-slides all_slides)))
-  (define found
-    (for/or ([name (in-list candidates)])
-      (with-handlers ([exn:fail? (lambda (_e) #f)])
-        (dynamic-require mod name))))
-  (cond
-    [(list? found) found]
-    ;; A Rhombus `List` is a treelist, not a Racket list.
-    [(treelist? found) (treelist->list found)]
-    [(pict? found) (list found)]
-    [else
-     (error 'export
-            (string-append "~a provides no list of slide picts.\n"
-                           "  Expected a provided `all-slides` (or `all_slides`),"
-                           " or pass --slides <name>.")
-            mod)]))
+
 
 ;; One merge pass between a program and a deck. With no base recorded yet this
 ;; only writes the base, since there is nothing to merge against.

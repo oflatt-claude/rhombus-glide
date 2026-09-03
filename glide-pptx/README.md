@@ -5,7 +5,7 @@ through a GUI of our own.
 
 `glide` gives you a window to drag slide elements around in. `glide-pptx` gives
 you PowerPoint or Keynote for the same job: it translates a `.pptx` into a
-[Pict](https://docs.racket-lang.org/pict/) program (Racket or Rhombus), exports
+[Pict](https://docs.racket-lang.org/pict/) program in Rhombus, exports
 any pict program back to `.pptx`, and keeps the two in step while you edit
 either one. Both directions are checked by rendering to PDF and diffing the
 pages.
@@ -47,57 +47,48 @@ of `picts->pdf`:
 ## What the generated code looks like
 
 Positions, sizes, colors and text come from the file; everything else is
-ordinary Racket, so a slide is a `pict` you can compose with anything.
-
-```racket
-#lang racket/base
-(require pict glide-pptx/runtime)
-
-(define slide-width 959.976)
-(define slide-height 540.0)
-
-;; The theme font. Runs that name no typeface use this one, so restyling
-;; the whole deck is one edit.
-(current-default-font "Calibri")
-
-(define slide-3
-  (slide-canvas
-   #:width slide-width #:height slide-height
-   #:background (hex "FFFFFF")
-
-   ;; TextBox 1 (id 2)
-   (at 50.5 28.75
-       (textbox #:width 792.0 #:height 72.0 #:wrap? #f #:autofit 'grow
-                (para* (run* "Pipeline" #:size 40.0 #:bold? #t #:color (hex "1F3B63")))))
-
-   ;; Rounded Rectangle 2 (id 3)
-   (at 57.5 158.5
-       (shape-pict #:width 172.8 #:height 86.5 #:shape "roundRect"
-                   #:fill (hex "4472C4")
-                   #:body (body* #:anchor 'center
-                                 (para* #:align 'center
-                                        (run* "pptx" #:size 22.0 #:bold? #t
-                                              #:color (hex "FFFFFF"))))))))
-```
-
-The same deck in Rhombus (`--rhombus`), against the same runtime:
+ordinary code, so a slide is a `pict` you can compose with anything. This is
+`tests/decks/05-realistic.pptx`, slide 3, as `translate` writes it:
 
 ```rhombus
 #lang rhombus/and_meta
+
 import:
   lib("glide-pptx/runtime.rhm") open
+
+def slide_width = 959.976
+def slide_height = 540.0
+
+// The theme font. Runs that name no typeface use this one, so restyling
+// the whole deck is one edit.
+current_default_font("Calibri")
 
 def slide_3 = slide_canvas(
   ~width: slide_width, ~height: slide_height,
   ~background: hex("FFFFFF"),
+  // TextBox 1 (id 2)
+  at(50.4, 28.8, ~tag: "TextBox 1",
+     textbox(~width: 792.0, ~height: 72.0, ~wrap: #false, ~autofit: #'grow,
+             para(run("Pipeline", ~size: 40.0, ~bold: #true, ~color: hex("1F3B63"))))),
   // Rounded Rectangle 2 (id 3)
-  at(57.5, 158.5,
-     shape_pict(~width: 172.8, ~height: 86.5, ~shape: "roundRect", ~fill: hex("4472C4"),
+  at(57.6, 158.4, ~tag: "Rounded Rectangle 2",
+     shape_pict(~width: 172.8, ~height: 86.4, ~shape: "roundRect", ~fill: hex("4472C4"),
                 ~body: body(~anchor: #'center,
                             para(~align: #'center,
                                  run("pptx", ~size: 22.0, ~bold: #true,
                                      ~color: hex("FFFFFF")))))))
 ```
+
+Every element carries a `~tag:`, which is the PowerPoint shape name. That tag is
+what an editor's edit is traced back to, so it is written into the exported shape
+as alt text as well -- alt text survives being renamed in PowerPoint, and the
+name does not.
+
+A tag names a *code site*, not an element, so one `at` inside a loop draws
+several elements under one tag. Dragging all of them the same way is one
+correction on the one `at`; dragging or deleting only some of them is refused,
+with the reason, because no single correction produces it.
+
 
 Each element keeps the shape id and name PowerPoint gave it, as a comment. That
 is what a future write-back will match on, and in the meantime it is how you
@@ -107,7 +98,7 @@ find the thing you just clicked on in the editor.
 
 | Command | What it does |
 | --- | --- |
-| `translate deck.pptx [-o dir] [--rhombus]` | emit a program plus the images it uses |
+| `translate deck.pptx [-o dir]` | emit a Rhombus program plus the images it uses |
 | `export program.rkt [-o out.pptx]` | write a `.pptx` from the program's slide picts |
 | `sync program.rkt deck.pptx [-n]` | merge the deck's edits back into the program |
 | `watch program.rkt [--app keynote]` | keep both in step, in both directions |
@@ -428,8 +419,7 @@ glide-pptx/
   export.rkt       picts->pptx, the mirror of picts->pdf
   runtime.rhm      Rhombus naming over the same runtime
   render.rkt       IR to picts, via the runtime
-  emit-common.rkt  what to emit, shared by both back ends
-  emit-racket.rkt  Racket surface syntax
+  emit-common.rkt  what to emit, and the pretty printer
   emit-rhombus.rkt Rhombus surface syntax
   verify.rkt       LibreOffice reference, rasterizing, image diffing
   tagged.rkt       a pict subtype carrying how it was built
