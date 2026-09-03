@@ -52,6 +52,23 @@
   (define-values (w h d _a) (send (force measure-dc) get-text-extent str f (and combine? #t)))
   (values (/ w k) (/ h k) (/ (- h d) k)))
 
+;; The typeface to name in the output. A font often gives only a family, and
+;; the generic names a family resolves to here -- "Sans", "Serif", "Monospace" --
+;; mean nothing to PowerPoint, so they become the conventional faces every
+;; system has. That is a real substitution, and it is why text set by family
+;; rather than by face does not measure identically after a round trip.
+(define family-faces
+  (hash "Sans" "Arial" "Helvetica" "Arial"
+        "Serif" "Times New Roman" "Monospace" "Courier New"))
+
+(define (spec-face spec)
+  (define face (second spec))
+  (cond
+    [(string? face) face]
+    [else
+     (define builtin (get-family-builtin-face (third spec)))
+     (hash-ref family-faces builtin (lambda () (or builtin "Arial")))]))
+
 ;; A font's size as a device measurement. racket/draw treats a "point" as a 96th
 ;; of an inch unless told otherwise, so a size given in points has to be scaled
 ;; before it means anything on a dc whose unit is the point.
@@ -284,7 +301,16 @@
       [(set-font) (set-st-font! s (first args))]
       [(set-alpha) (set-st-alpha! s (first args))]
       [(set-text-foreground) (set-st-text-fg! s (first args))]
-      [(transform) (set-st-ctm! s (mat* (st-ctm s) (first args)))]
+      ;; racket/draw folds a transform into the initial matrix and resets the
+      ;; origin, scale and rotation -- so a later `set-scale` multiplies on top
+      ;; of it rather than replacing it. Treating `transform` as a plain
+      ;; accumulation loses every transform that precedes a `set-scale`, which
+      ;; is exactly what pict emits when a scaled pict contains a scaled one.
+      [(transform)
+       (set-st-im! s (mat* (st-ctm s) (first args)))
+       (set-st-ox! s 0.0) (set-st-oy! s 0.0)
+       (set-st-sx! s 1.0) (set-st-sy! s 1.0) (set-st-rot! s 0.0)
+       (recompute! s)]
       [(set-initial-matrix)
        (set-st-im! s (first args))
        (set-st-ox! s 0.0) (set-st-oy! s 0.0)
@@ -368,7 +394,7 @@
             (define-values (px py pw ph prot) (apply values placed))
             (define scale (mat-scale-factor m))
             (emit! (it:text px py pw ph prot str
-                            (or (second spec) "sans-serif")
+                            (spec-face spec)
                             (* scale (font-device-size spec))
                             (memq (fifth spec) '(bold semibold))
                             (eq? (fourth spec) 'italic)

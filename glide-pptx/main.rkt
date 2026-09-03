@@ -120,6 +120,8 @@
   (define width (box #f))
   (define height (box #f))
   (define binding (box #f))
+  (define slideshow? (box #f))
+  (define condense? (box #f))
   (define files
     (parse-command-line
      "glide-pptx export" args
@@ -130,7 +132,11 @@
         [("--height") ,(lambda (_ v) (set-box! height (string->number v)))
                       ("Slide height in points" "pt")]
         [("--slides") ,(lambda (_ v) (set-box! binding v))
-                      ("Name of the provided list of picts" "id")]))
+                      ("Name of the provided list of picts" "id")]
+        [("--slideshow") ,(lambda (_) (set-box! slideshow? #t))
+                         ("Run as a slideshow program: one slide per step")]
+        [("--condense") ,(lambda (_) (set-box! condense? #t))
+                        ("With --slideshow, collapse each slide's steps into one")]))
      (lambda (_ . fs) fs)
      '("program.rkt")))
   (for ([f (in-list files)])
@@ -138,8 +144,11 @@
     (define mod `(file ,(path->string full)))
     ;; A generated program looks for its images beside itself, which it cannot
     ;; work out on its own when loaded this way.
-    (define picts (parameterize ([current-media-base (path-only full)])
-                    (load-slides mod (unbox binding))))
+    (define picts
+      (if (unbox slideshow?)
+          (slideshow-slides full (unbox width) (unbox height) (unbox condense?))
+          (parameterize ([current-media-base (path-only full)])
+            (load-slides mod (unbox binding)))))
     (define target
       (or (unbox out)
           (path->string (path-replace-extension (file-name-from-path f) ".pptx"))))
@@ -148,6 +157,35 @@
       (picts->pptx picts target #:width (unbox width) #:height (unbox height)))
     (printf "~a  (~a slide~a)\n" target (length picts) (if (= 1 (length picts)) "" "s"))
     (report-warnings warnings)))
+
+;; A `slideshow` program does not provide a list of slides; it *calls* `slide`,
+;; and each animation step is a separate frame. `get-slides-as-picts` is the
+;; same entry point `raco slideshow --pdf` uses, so one pptx slide comes out per
+;; step -- which for an animated Rhombus talk is one per epoch.
+;;
+;; It is required lazily because it pulls in the GUI toolkit, and nothing else
+;; here needs that.
+(define SLIDESHOW-W 1360.0)
+(define SLIDESHOW-H 766.0)
+
+(define (slideshow-slides path width height condense?)
+  (define get
+    (with-handlers ([exn:fail?
+                     (lambda (e)
+                       (error 'export
+                              (string-append
+                               "--slideshow needs slideshow and its GUI support:\n"
+                               "  ~a")
+                              (first (string-split (exn-message e) "\n"))))])
+      (dynamic-require 'slideshow/slides-to-picts 'get-slides-as-picts)))
+  (define w (or width 960.0))
+  (define h (or height 540.0))
+  (define frames
+    (parameterize ([current-directory (path-only path)])
+      (get (path->string path) SLIDESHOW-W SLIDESHOW-H (and condense? #t))))
+  ;; Slideshow renders at its own size, so the frames are scaled onto the page.
+  (for/list ([p (in-list frames)])
+    (scale p (/ w SLIDESHOW-W) (/ h SLIDESHOW-H))))
 
 (define (load-slides mod named)
   (define candidates (if named (list (string->symbol named)) '(all-slides all_slides)))

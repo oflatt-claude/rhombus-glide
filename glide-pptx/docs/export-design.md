@@ -644,7 +644,13 @@ writes a tag.
 
 ## 4. Animations
 
-Not exported. The pict is exported at one state.
+Not exported as animations: a deck is one slide per state.
+
+For a `slideshow` program that is one slide per *advance*, which
+`get-slides-as-picts` produces with condensing on. Without it the same talk came
+out as 4869 slides rather than 291, because an animated pict is many frames
+between advances -- the count matched the talk's own backup PDF exactly once
+condensed.
 
 `rhombus/pict`'s `snapshot(epoch)` makes a `--stages` mode cheap later: one slide
 per animation step, which is how a deck with builds would be made presentable.
