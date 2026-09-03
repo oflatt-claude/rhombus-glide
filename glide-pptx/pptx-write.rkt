@@ -360,13 +360,17 @@
 ;; ------------------------------------------------------------------ images
 
 (define (image-item-xml id i rid)
-  (format (string-append "<p:pic><p:nvPicPr><p:cNvPr id=\"~a\" name=\"Picture ~a\"/>"
+  (format (string-append "<p:pic><p:nvPicPr><p:cNvPr id=\"~a\" name=\"~a\"~a/>"
                          "<p:cNvPicPr/><p:nvPr/></p:nvPicPr>"
                          "<p:blipFill><a:blip r:embed=\"~a\"/>"
                          "<a:stretch><a:fillRect/></a:stretch></p:blipFill>"
                          "<p:spPr>~a<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr>"
                          "</p:pic>")
-          id id rid
+          id
+          (xml-escape (or (it:image-tag i) (format "Picture ~a" id)))
+          (if (it:image-tag i)
+              (format " descr=\"glide-pptx:~a\"" (xml-escape (it:image-tag i))) "")
+          rid
           (xfrm-xml (it:image-x i) (it:image-y i) (it:image-w i) (it:image-h i)
                     (it:image-rot i))))
 
