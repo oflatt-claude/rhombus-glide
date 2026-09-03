@@ -61,8 +61,8 @@
   (check-equal? (length (deck-slides after)) (length (deck-slides before))
                 (format "~a: slide count" name))
 
-  (define bs (deck->slide-states before #:include-inherited? #t))
-  (define as (deck->slide-states after #:include-inherited? #t))
+  (define bs (deck->slide-states before #:include-inherited? #t #:descend-groups? #t))
+  (define as (deck->slide-states after #:include-inherited? #t #:descend-groups? #t))
 
   (define reported '())
   (for ([b (in-list bs)] [a (in-list as)])

@@ -512,3 +512,38 @@
   (check-regexp-match #rx"not in the deck any more" msg)
   (check-regexp-match #rx"all_slides" msg "and says what to do about it")
   (check-equal? (file->string program) before "the program is untouched"))
+
+;; ------------------------------------------------- a program holding a group
+
+;; Reported from a live session as a crash: `it:shape-path-box` given an
+;; `it:group`. The state builder's last branch assumed anything left was a
+;; shape-path, and a group became a semantic item when groups started exporting
+;; as groups -- so it was read as one. Nothing here had ever put a program with a
+;; group through the sync.
+(let ()
+  (define-values (dir program exported) (fixture "grouped" "04-pictures-groups.pptx"))
+  (define states (program-slide-states program))
+  (check-true (pair? states) "a program with a group has slide states")
+  (define kinds
+    (remove-duplicates
+     (append* (for/list ([s (in-list states)])
+                (map el-state-kind (slide-state-elements s))))))
+  (check-true (and (memq 'group kinds) #t)
+              (format "and a group among them: ~s" kinds))
+
+  ;; And it syncs: the group is one element to drag.
+  (define r (sync-once program exported #:workdir (build-path dir "w2")))
+  (check-equal? (sync-report-actions r) '() "nothing to merge at rest")
+  (define found
+    (for*/first ([s (in-list states)]
+                 [e (in-list (slide-state-elements s))]
+                 #:when (eq? 'group (el-state-kind e)))
+      (cons (slide-state-index s) (el-state-tag e))))
+  (check-true (and found #t) "the group has a tag")
+  (when found
+    (check-true (drag-in-deck! exported (car found) (cdr found) 120.0 140.0)
+                "the group was dragged")
+    (define r2 (sync-once program exported #:workdir (build-path dir "w2")))
+    (check-equal? (map sync-action-kind (sync-report-actions r2)) '(moved)
+                  "and the drag comes back as a move, on the group itself")
+    (check-equal? (sync-action-tag (first (sync-report-actions r2))) (cdr found))))
