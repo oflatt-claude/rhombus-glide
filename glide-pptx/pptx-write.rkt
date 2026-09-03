@@ -322,13 +322,23 @@
           (body-or-empty (it:textbox-body i))))
 
 ;; Custom geometry keeps its drawn path but not its name, and still carries text.
+(define EMU-PT (/ 1.0 12700.0))
+
 (define (shape-path-item-xml id i)
   (define segs (it:shape-path-segs i))
-  (define-values (bx by bw bh) (apply values (segs-bounds segs)))
+  ;; The shape's own box, not the path's extent. A curve's control points can
+  ;; sit outside the box, and OOXML allows a path coordinate outside 0..w -- the
+  ;; decks that draw connectors this way rely on it -- so taking the extent
+  ;; instead moved and grew the shape a little on every round trip. The rotation
+  ;; was dropped outright, which turned a rotated freeform upright.
+  (define-values (bx by bw0 bh0) (apply values (it:shape-path-box i)))
+  ;; A zero extent is still worth avoiding; one EMU is what PowerPoint writes.
+  (define bw (if (< bw0 EMU-PT) EMU-PT bw0))
+  (define bh (if (< bh0 EMU-PT) EMU-PT bh0))
   (format "<p:sp>~a<p:spPr>~a~a~a~a</p:spPr>~a</p:sp>"
           (nv-xml id (format "Freeform ~a" id) #:tag (it:shape-path-tag i))
-          (xfrm-xml bx by (max bw 0.001) (max bh 0.001) 0.0)
-          (path-geom-xml segs bx by (max bw 0.001) (max bh 0.001))
+          (xfrm-xml bx by bw bh (it:shape-path-rot i))
+          (path-geom-xml segs bx by bw bh)
           (fill-xml (it:shape-path-fill i)) (line-xml (it:shape-path-pen i))
           (body-or-empty (it:shape-path-body i))))
 
