@@ -248,7 +248,8 @@
       ;; opened -- but say so rather than doing it quietly.
       [(and deck-moved? prog-moved?)
        (sync-action 'conflict tag index
-                    (list 'geometry (el-geometry b) (el-geometry p) (el-geometry d)))]
+                    (list 'geometry (el-geometry b) (el-geometry p) (el-geometry d))
+                    (and p (el-geometry p)))]
       [deck-moved?
        (sync-action (if (and (< (abs (- (el-state-w d) (el-state-w b))) 0.05)
                              (< (abs (- (el-state-h d) (el-state-h b))) 0.05))
@@ -261,9 +262,48 @@
       ;; taken.
       [(and deck-retext? prog-retext?)
        (sync-action 'conflict tag index
-                    (list 'text (el-state-text b) (el-state-text p) (el-state-text d)))]
-      [deck-retext? (sync-action 'retext tag index (el-state-text d))]
+                    (list 'text (el-state-text b) (el-state-text p) (el-state-text d))
+                    (and p (el-geometry p)))]
+      [deck-retext? (sync-action 'retext tag index (el-state-text d) #f)]
       [else #f]))))
+
+;; The merge pairs slides by index, so it can only run when the deck holds the
+;; same slides the base does. Adding or removing slides in the editor -- pasting
+;; some in from another deck, say -- shifts every later index, and then the merge
+;; would compare slide 3 against slide 2 and take the difference for edits: on a
+;; three-slide deck with one slide pasted at the front, that was 28 "edits" and
+;; eight elements deleted from the program. So it refuses instead.
+;;
+;; The program is the source of truth for what slides exist. Add a slide by
+;; adding a `def slide_N` and putting it in `all_slides`; the next export puts it
+;; in the deck.
+(define (check-slide-sets base deck program-path)
+  (define nb (length base))
+  (define nd (length deck))
+  (unless (= nb nd)
+    (error 'glide-pptx
+           (string-append
+            "the deck now has ~a slide~a and ~a has ~a, so edits cannot be matched up.\n"
+            "  Slides added or deleted in the editor are not merged back: the program\n"
+            "  says which slides exist. Add a `def slide_N`, put it in `all_slides`,\n"
+            "  and export again.\n"
+            "  To start over from the deck as it now stands, delete ~a and translate it.")
+           nd (if (= 1 nd) "" "s")
+           (if (path? program-path) (file-name-from-path program-path) program-path)
+           nb
+           (file-name-from-path (base-path-for program-path)))))
+
+;; Even with the counts equal the slides can have been swapped around -- one
+;; pasted in and one deleted. A slide whose elements mostly do not match is not
+;; the slide the base recorded, and calling the difference an edit would delete
+;; the program's real elements.
+(define WHOLESALE 0.5)
+
+(define (wholesale-change? base-elements actions)
+  (define n (length base-elements))
+  (define gone (for/sum ([a (in-list actions)]
+                         #:when (memq (sync-action-kind a) '(removed))) 1))
+  (and (> n 1) (> gone (* WHOLESALE n))))
 
 (define (merge-states base prog deck)
   (append*
@@ -275,9 +315,18 @@
      (define ds (slide-for deck))
      (cond
        [(and ps ds)
-        (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
-                     (slide-state-elements ds)
-                     (max 1.0 (slide-state-width bs)))]
+        (define as (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
+                                (slide-state-elements ds)
+                                (max 1.0 (slide-state-width bs))))
+        (if (wholesale-change? (slide-state-elements bs) as)
+            (list (sync-action
+                   'ambiguous (format "slide ~a" index) index
+                   (format (string-append
+                            "most of this slide's ~a elements are not in the deck any more,"
+                            " so it is a different slide rather than an edited one")
+                           (length (slide-state-elements bs)))
+                   #f))
+            as)]
        [else (list (sync-action 'conflict (format "slide ~a" index) index
                                 '(slide-missing) #f))]))))
 
@@ -978,6 +1027,7 @@
                         #:deck (path->string (path->complete-path pptx-path))))
      (sync-report '() '() '() (not dry-run?))]
     [else
+     (check-slide-sets base deck program-path)
      (define actions (merge-states base prog deck))
      (cond
        [dry-run? (sync-report actions '() '() #f)]

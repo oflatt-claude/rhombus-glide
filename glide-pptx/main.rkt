@@ -11,7 +11,31 @@
 
 (define (default-workdir out) (build-path out ".glide-pptx"))
 
-(define (with-deck pptx out proc)
+;; A Keynote document is not a .pptx, but Keynote will write one -- and the
+;; watcher already knows how to ask it to. So a `.key` is accepted anywhere a
+;; deck is, by exporting it first.
+(define (as-pptx path out)
+  (cond
+    [(not (regexp-match? #rx"[.](key|keynote)$"
+                         (string-downcase (if (path? path) (path->string path) path))))
+     path]
+    [else
+     (define full (path->complete-path path))
+     (define exported (build-path (default-workdir out)
+                                  (string-append (deck-stem full) ".pptx")))
+     (make-directory* (default-workdir out))
+     (printf "exporting ~a from Keynote\n" (file-name-from-path full))
+     ((app-adapter-harvest! (adapter-named 'keynote)) full exported)
+     (unless (file-exists? exported)
+       (error 'glide-pptx
+              (string-append "Keynote did not write ~a.\n"
+                             "  Export it by hand -- File > Export To > PowerPoint -- and"
+                             " pass the .pptx.")
+              exported))
+     exported]))
+
+(define (with-deck given out proc)
+  (define pptx (as-pptx given out))
   (define warnings (box '()))
   (define d (parameterize ([current-warnings warnings])
               (pptx->deck pptx #:workdir (build-path (default-workdir out)
@@ -40,10 +64,21 @@
         [("-o" "--out") ,(lambda (_ v) (set-box! out-dir v)) ("Output directory" "dir")]))
      (lambda (_ . fs) fs)
      '("deck.pptx")))
+  ;; `-o` names a directory, but `-o talk.rhm` clearly means the file, so both
+  ;; work: the images go beside whichever it is.
+  (define named-file?
+    (regexp-match? #rx"[.]rhm$" (unbox out-dir)))
+  (define dir (if named-file?
+                  (let ([p (path-only (path->complete-path (unbox out-dir)))])
+                    (if p (path->string p) "."))
+                  (unbox out-dir)))
   (for ([f (in-list files)])
-    (with-deck f (unbox out-dir)
+    (with-deck f dir
       (lambda (d _w)
-        (define path (build-path (unbox out-dir) (string-append (deck-stem f) ".rhm")))
+        (define path
+          (if named-file?
+              (path->complete-path (unbox out-dir))
+              (build-path dir (string-append (deck-stem f) ".rhm"))))
         (write-rhombus-deck d path #:source-name f)
         (printf "~a  (~a slides, ~a elements)\n"
                 path (length (deck-slides d)) (deck-count-elements d))))))
