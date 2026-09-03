@@ -11,7 +11,7 @@
 (require racket/list racket/string racket/format racket/path racket/file
          "ir.rkt" "emit-common.rkt")
 (provide rhombus-flavor emit-rhombus-deck write-rhombus-deck
-         rhombus-element-source)
+         rhombus-element-source rhombus-slide-source)
 
 (define LINE-WIDTH 88)
 
@@ -74,6 +74,42 @@
     (string-join (append head (render-lines (element->value e) rhombus-flavor ind LINE-WIDTH))
                  "\n")))
 
+;; One slide definition, as `emit-rhombus-deck` writes it -- factored out because
+;; a slide pasted into the deck has to be written into the program the same way a
+;; fresh translate would have written it.
+(define (rhombus-slide-source s name
+                              #:media-names [names (hash)]
+                              #:font [font #f]
+                              #:width-expr [width-expr "slide_width"]
+                              #:height-expr [height-expr "slide_height"])
+  (parameterize ([current-media-names names]
+                 [current-deck-font (or font (current-deck-font))])
+    (define out (open-output-string))
+    (write-slide out s name width-expr height-expr)
+    ;; The writer ends every line, including the last.
+    (string-trim (get-output-string out) "\n" #:left? #f)))
+
+(define (write-slide out s name width-expr height-expr)
+  (line out 0 "// ~a" (make-string (- LINE-WIDTH 3) #\-))
+  (line out 0 "// ~a~a" name
+        (if (or (not (slide-name s))
+                (equal? (slide-name s) (format "Slide ~a" (slide-index s))))
+            "" (format ": ~a" (slide-name s))))
+  (line out 0 "def ~a = slide_canvas(" name)
+  (define elements (append (slide-inherited s) (slide-elements s)))
+  (line out 2 "~~width: ~a, ~~height: ~a," width-expr height-expr)
+  (line out 2 "~~background: ~a~a"
+        (render (slide-background-value s) rhombus-flavor)
+        (if (null? elements) "" ","))
+  (define n (length (slide-inherited s)))
+  (for ([e (in-list elements)] [i (in-naturals)])
+    (when (and (positive? n) (= i 0))
+      (line out 2 "// Drawn by the slide layout and master, not by this slide."))
+    (when (and (positive? n) (= i n))
+      (line out 2 "// The slide's own shapes."))
+    (write-element out 2 e (= i (sub1 (length elements)))))
+  (line out 0 ")"))
+
 (define (emit-rhombus-deck d out
                            #:source-name [source-name #f]
                            #:media-subdir [media-subdir "media"]
@@ -113,25 +149,8 @@
       (line out 0 "def media = media_lookup(~s)" media-subdir))
     (for ([s (in-list (deck-slides d))])
       (newline out)
-      (line out 0 "// ~a" (make-string (- LINE-WIDTH 3) #\-))
-      (line out 0 "// Slide ~a~a" (slide-index s)
-            (if (equal? (slide-name s) (format "Slide ~a" (slide-index s)))
-                "" (format ": ~a" (slide-name s))))
-      (line out 0 "def slide_~a = slide_canvas(" (slide-index s))
-      (define elements (append (slide-inherited s) (slide-elements s)))
-      (line out 2 "~a"
-            (format "~~width: slide_width, ~~height: slide_height,"))
-      (line out 2 "~~background: ~a~a"
-            (render (slide-background-value s) rhombus-flavor)
-            (if (null? elements) "" ","))
-      (define n (length (slide-inherited s)))
-      (for ([e (in-list elements)] [i (in-naturals)])
-        (when (and (positive? n) (= i 0))
-          (line out 2 "// Drawn by the slide layout and master, not by this slide."))
-        (when (and (positive? n) (= i n))
-          (line out 2 "// The slide's own shapes."))
-        (write-element out 2 e (= i (sub1 (length elements)))))
-      (line out 0 ")"))
+      (write-slide out s (format "slide_~a" (slide-index s))
+                   "slide_width" "slide_height"))
     (newline out)
     (line out 0 "def all_slides = [~a]"
           (string-join (for/list ([s (in-list (deck-slides d))])

@@ -169,11 +169,15 @@
 (define (program-picts program) (load-program-picts program))
 
 ;; deck -> program.
+;; Returns #t when the merge went through. On a refusal the whole message is
+;; logged, not its first line: what to do about it is usually on the lines after
+;; the first, and the editor is still open on the slide that caused it.
 (define (merge-back! program pptx document adapter workdir)
   (log! "deck changed -> merging into ~a\n" (file-name-from-path program))
   (with-handlers ([exn:fail? (lambda (e)
-                               (log! "  ! merge failed: ~a\n"
-                                     (first (string-split (exn-message e) "\n")))
+                               (log! "  ! merge refused\n")
+                               (for ([l (in-list (string-split (exn-message e) "\n"))])
+                                 (log! "    ~a\n" (string-trim l #:right? #f)))
                                #f)])
     ;; For an app that does not save .pptx, get one out of it first.
     (unless (equal? (path->string document) (path->string pptx))
@@ -201,11 +205,25 @@
   (define document ((app-adapter-document adapter) pptx))
   (log! "watching\n  program ~a\n  deck    ~a\n  app     ~a\n"
         program document (app-adapter-name adapter))
-  ;; Start from the program, so the deck exists and both sides agree.
-  (regenerate! program pptx adapter #:width w #:height h)
-  (sync-once program pptx #:workdir workdir)
+  ;; The deck can have moved while the watcher was not running -- stopped it,
+  ;; edited a slide, started it again -- so those edits are merged before
+  ;; anything is written. Regenerating first would have thrown them away.
+  (define start-stuck?
+    (and (file-exists? (base-path-for program))
+         (file-exists? document)
+         (not (merge-back! program pptx document adapter workdir))))
+  ;; Then start from the program, so the deck exists and both sides agree.
+  (unless start-stuck?
+    (regenerate! program pptx adapter #:width w #:height h)
+    (sync-once program pptx #:workdir workdir))
+  ;; `stuck?` means the editor holds edits that were refused. Until they are
+  ;; resolved the deck is not regenerated -- otherwise the obvious next move,
+  ;; fixing the program as the message asks, would overwrite the very slides the
+  ;; refusal was protecting. While stuck, a change on either side retries the
+  ;; merge: the fix can be in the editor or in the program.
   (let loop ([prog-hash (content-hash program)]
              [doc-hash (content-hash document)]
+             [stuck? start-stuck?]
              [n 0])
     (cond
       [(and ticks (>= n ticks)) (log! "done\n")]
@@ -213,14 +231,39 @@
        (sleep interval)
        (define ph (content-hash program))
        (define dh (content-hash document))
+       (define changed?
+         (or (and ph (not (equal? ph prog-hash)))
+             (and dh (not (equal? dh doc-hash)))))
        (cond
+         [(and stuck? changed?)
+          (settle document)
+          (define ok? (merge-back! program pptx document adapter workdir))
+          (unless ok?
+            (log! "    the deck is not being rewritten while this stands, so nothing
+")
+            (log! "    you have done in ~a is lost. To drop those edits and take the
+"
+                  (app-adapter-name adapter))
+            (log! "    program as it is, delete ~a and save the program.
+"
+                  (file-name-from-path (base-path-for program))))
+          (loop (content-hash program) (content-hash document) (not ok?) (add1 n))]
+         [stuck? (loop prog-hash doc-hash #t (add1 n))]
          [(and ph (not (equal? ph prog-hash)))
           (settle program)
           (regenerate! program pptx adapter #:width w #:height h)
           ;; Re-read both, since we just wrote the deck ourselves.
-          (loop (content-hash program) (content-hash document) (add1 n))]
+          (loop (content-hash program) (content-hash document) #f (add1 n))]
          [(and dh (not (equal? dh doc-hash)))
           (settle document)
-          (merge-back! program pptx document adapter workdir)
-          (loop (content-hash program) (content-hash document) (add1 n))]
-         [else (loop prog-hash doc-hash (add1 n))])])))
+          (define ok? (merge-back! program pptx document adapter workdir))
+          (unless ok?
+            (log! "    the deck will not be rewritten while this stands, so nothing
+")
+            (log! "    you have done in ~a is lost -- fix it there or in the program
+"
+                  (app-adapter-name adapter))
+            (log! "    and save, and this will try again.
+"))
+          (loop (content-hash program) (content-hash document) (not ok?) (add1 n))]
+         [else (loop prog-hash doc-hash #f (add1 n))])])))

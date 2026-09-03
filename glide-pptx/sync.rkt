@@ -25,7 +25,10 @@
          apply-actions! sync-once
          find-at-sites find-program-sites
          (struct-out at-site) (struct-out slide-site) (struct-out rng)
-         base-path-for format-sync-report)
+         base-path-for format-sync-report current-keep-work?)
+
+;; Whether scratch directories are left behind for inspection.
+(define current-keep-work? (make-parameter #f))
 
 ;; kind: 'moved, 'resized, 'retext, 'conflict, 'added, 'removed, 'ambiguous
 ;; `prior` is where the program currently draws the element, which is what a
@@ -1014,9 +1017,16 @@
   (define base-file (base-path-for program-path))
   (define-values (base _p _d) (read-sync-base base-file))
   (define prog (program-slide-states program-path))
+  ;; The deck is unzipped to be read. When the caller did not say where, this
+  ;; owns the scratch and clears it before returning.
+  (define given-dir workdir)
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
   (define deck-ir (pptx->deck pptx-path #:workdir dir))
   (define deck (deck->slide-states deck-ir))
+  (define (done! v)
+    (when (and (not given-dir) (not (current-keep-work?)))
+      (delete-directory/files dir #:must-exist? #f))
+    v)
   (cond
     ;; With no base there is nothing to merge against: the program is the truth
     ;; and this pass just records where both sides stand.
@@ -1025,12 +1035,12 @@
        (write-sync-base base-file prog
                         #:program (path->string (path->complete-path program-path))
                         #:deck (path->string (path->complete-path pptx-path))))
-     (sync-report '() '() '() (not dry-run?))]
+     (done! (sync-report '() '() '() (not dry-run?)))]
     [else
      (check-slide-sets base deck program-path)
      (define actions (merge-states base prog deck))
      (cond
-       [dry-run? (sync-report actions '() '() #f)]
+       [dry-run? (done! (sync-report actions '() '() #f))]
        [else
         (define-values (applied skipped)
           (apply-actions! program-path actions #:deck deck-ir))
@@ -1040,7 +1050,7 @@
         (write-sync-base base-file after
                          #:program (path->string (path->complete-path program-path))
                          #:deck (path->string (path->complete-path pptx-path)))
-        (sync-report actions applied skipped #t)])]))
+        (done! (sync-report actions applied skipped #t))])]))
 
 (define (format-sync-report r)
   (define o (open-output-string))

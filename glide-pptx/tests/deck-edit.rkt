@@ -6,7 +6,7 @@
 (require racket/list racket/string racket/file racket/path racket/format
          file/unzip file/zip)
 (provide with-unpacked-deck drag-in-deck! deck-part
-         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck!)
+         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -230,4 +230,21 @@
                                          (format "<a:t>~a</a:t>" text)]))))
         (call-with-output-file part #:exists 'replace
           (lambda (o) (write-string (string-replace d (first m) retexted) o)))
+        #t]))))
+
+;; Removes slide `n` from the deck's slide list, which is what deleting it in the
+;; editor amounts to. The part is left in the package, unreferenced, the way an
+;; editor often leaves it. Returns #t when there was one to remove.
+(define (delete-slide! pptx n)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define pres (build-path dir "ppt" "presentation.xml"))
+     (define t (file->string pres))
+     (define ids (regexp-match* #px"<p:sldId [^>]*/>" t))
+     (cond
+       [(or (< n 1) (> n (length ids))) #f]
+       [else
+        (display-to-file (string-replace t (list-ref ids (sub1 n)) "" #:all? #f)
+                         pres #:exists 'replace)
         #t]))))
