@@ -9,6 +9,7 @@
 
 (define pkg-desc "Direct manipulation of Rhombus and Racket pict slideshows through PowerPoint or Keynote.")
 
-;; `raco glide-pptx <command>`
+;; `raco glide <command>`. The collection stays `glide-pptx`, because every
+;; program this has ever written imports `lib("glide-pptx/runtime.rhm")`.
 (define raco-commands
-  '(("glide-pptx" glide-pptx/main "translate, export and sync PowerPoint decks" 60)))
+  '(("glide" glide-pptx/main "translate, export and sync PowerPoint decks" 60)))

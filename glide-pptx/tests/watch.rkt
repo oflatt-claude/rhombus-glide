@@ -236,3 +236,67 @@
   (check-equal? (deck-slide-count pptx) 1
                 "the deletion survived a program save -- the deck was not regenerated")
   (kill-thread runner))
+
+;; ------------------------------------------- closing the editor ends the session
+
+;; Quitting the editor should end the session and take the scratch with it --
+;; the deck, the editor's own document and the agreed base are all derived, and
+;; leaving them behind is what the `.glide` folder was complained about for. The
+;; last edits are merged first, though, and a merge that is refused keeps the
+;; scratch: the deck then holds something the program does not.
+(define (closing-adapter open-box)
+  (app-adapter 'test (lambda (pptx) pptx) (lambda (doc pptx) #t) (lambda (pptx) #t)
+               (lambda () (unbox open-box))))
+
+(let ()
+  (define dir (build-path work "closing"))
+  (make-directory* dir)
+  (define program (build-path dir "deck.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export:"
+          "  all_slides"
+          "def slide_1 = slide_canvas("
+          "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+          "  at(40.0, 60.0, ~tag: \"Box\","
+          "     shape_pict(~width: 100.0, ~height: 40.0, ~fill: hex(\"4472C4\")))"
+          ")"
+          "def all_slides = [slide_1]"
+          "")
+    "\n")
+   program #:exists 'replace)
+  (define scratch (scratch-dir-of program))
+  (define pptx (build-path scratch "deck.pptx"))
+  (make-directory* scratch)
+
+  (define open? (box #t))
+  (define lines '())
+  (define (note fmt . args) (set! lines (cons (apply format fmt args) lines)))
+  (define (said? rx) (ormap (lambda (l) (regexp-match? rx l)) lines))
+
+  ;; A session that is running, then closed.
+  (define runner
+    (thread (lambda ()
+              (parameterize ([current-watch-log note])
+                (watch-loop program pptx #:width 480.0 #:height 270.0
+                            #:adapter (closing-adapter open?)
+                            #:workdir (build-path dir "w")
+                            #:interval 0.05 #:open-check 0.1 #:ticks 400)))))
+  (let wait ([n 0])
+    (cond [(said? #rx"slides written") (void)]
+          [(> n 200) (fail "the session never started")]
+          [else (sleep 0.1) (wait (add1 n))]))
+  (check-true (file-exists? pptx) "the deck is in scratch while the session runs")
+
+  (set-box! open? #f)
+  (let wait ([n 0])
+    (cond [(said? #rx"cleared") (void)]
+          [(> n 200) (fail "the session never finished")]
+          [else (sleep 0.1) (wait (add1 n))]))
+  (check-true (said? #rx"test closed") "closing the editor is what ended it")
+  (check-false (directory-exists? scratch) "and the scratch went with it")
+  (check-true (file-exists? program) "the program is what is left")
+  (kill-thread runner))

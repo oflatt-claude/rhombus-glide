@@ -9,7 +9,7 @@
 (require racket/class racket/math racket/list racket/string
          racket/draw
          "ir.rkt")
-(provide preset-path preset-known? preset-names
+(provide preset-path preset-known? preset-names path-ends custom-path-ends
          custom-path
          geometry-closed?)
 
@@ -297,6 +297,64 @@
 ;; ------------------------------------------------------------ custom paths
 
 ;; Custom geometry arrives in its own coordinate space; scale it onto w x h.
+;; ------------------------------------------------------ ends of an open path
+
+;; Where a line starts and finishes, and which way it points there, so a
+;; decoration can be drawn at each end. #f for a shape that has no ends to speak
+;; of -- a closed one, or a preset whose path this does not know.
+;;
+;; Returns (list start-x start-y start-angle end-x end-y end-angle), the angles
+;; in radians and pointing *outward*, which is the way an arrowhead faces.
+(define (path-ends name w h #:flip-h? [fh #f] #:flip-v? [fv #f])
+  (define pts (open-path-points name w h))
+  (and pts (>= (length pts) 2)
+       (let* ([flip (lambda (p)
+                      (cons (if fh (- w (car p)) (car p))
+                            (if fv (- h (cdr p)) (cdr p))))]
+              [ps (map flip pts)]
+              [a (first ps)] [a2 (second ps)]
+              [z (last ps)] [z2 (list-ref ps (- (length ps) 2))])
+         (list (car a) (cdr a) (atan (- (cdr a) (cdr a2)) (- (car a) (car a2)))
+               (car z) (cdr z) (atan (- (cdr z) (cdr z2)) (- (car z) (car z2)))))))
+
+;; The corner points of the open presets, in order. Only the straight ones: a
+;; curve's end direction is its tangent, which these are not.
+(define (open-path-points name w h)
+  (case name
+    [("line" "straightConnector1") (list (cons 0.0 0.0) (cons w h))]
+    [("bentConnector2") (list (cons 0.0 0.0) (cons w 0.0) (cons w h))]
+    [else #f]))
+
+;; The same, for a custom path: its first and last points, with the ones next to
+;; them for direction.
+(define (custom-path-ends geom w h #:flip-h? [fh #f] #:flip-v? [fv #f])
+  (define sx (if (zero? (custom-geom-w geom)) 1.0 (/ w (exact->inexact (custom-geom-w geom)))))
+  (define sy (if (zero? (custom-geom-h geom)) 1.0 (/ h (exact->inexact (custom-geom-h geom)))))
+  (define paths (custom-geom-paths geom))
+  (and (pair? paths)
+       (let* ([pts (command-points (first paths) sx sy)]
+              [flip (lambda (p) (cons (if fh (- w (car p)) (car p))
+                                      (if fv (- h (cdr p)) (cdr p))))]
+              [ps (map flip pts)])
+         (and (>= (length ps) 2)
+              (let ([a (first ps)] [a2 (second ps)]
+                    [z (last ps)] [z2 (list-ref ps (- (length ps) 2))])
+                (and (not (and (= (car a) (car z)) (= (cdr a) (cdr z))))
+                     (list (car a) (cdr a) (atan (- (cdr a) (cdr a2)) (- (car a) (car a2)))
+                           (car z) (cdr z)
+                           (atan (- (cdr z) (cdr z2)) (- (car z) (car z2))))))))))
+
+;; The points a subpath visits, scaled onto the box. A curve contributes its
+;; control points, which is enough for the direction at an end.
+(define (command-points subpath sx sy)
+  (append*
+   (for/list ([cmd (in-list subpath)])
+     (case (car cmd)
+       [(move line) (list (cons (* sx (car (second cmd))) (* sy (cdr (second cmd)))))]
+       [(curve quad) (for/list ([p (in-list (rest cmd))])
+                       (cons (* sx (car p)) (* sy (cdr p))))]
+       [else '()]))))
+
 (define (custom-path geom w h #:flip-h? [fh #f] #:flip-v? [fv #f])
   (define sx (if (zero? (custom-geom-w geom)) 1.0 (/ w (exact->inexact (custom-geom-w geom)))))
   (define sy (if (zero? (custom-geom-h geom)) 1.0 (/ h (exact->inexact (custom-geom-h geom)))))

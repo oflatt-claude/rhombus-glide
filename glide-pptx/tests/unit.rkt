@@ -322,3 +322,57 @@
       (check-true (and got (< (abs (- got want)) 0.01))
                   (format "~apt at ~a%: advance ~a, want ~a (1.2 x size x the percentage)"
                           size (* 100 pct) got want)))))
+
+;; --------------------------------------------------- the ends of a line
+
+;; Reported from a real deck: "the lines on slide 15 seem pretty messed up". Ten
+;; connectors there carry `<a:tailEnd type="arrow"/>`, and arrowheads were not
+;; parsed, drawn, emitted or written -- the diagram's arrows were plain lines.
+;;
+;; Nothing caught it, and nothing could have: a round trip compares what we
+;; parsed against what we wrote, and a feature that is not parsed is absent on
+;; both sides. The pixel diff against LibreOffice did draw them, but ten
+;; arrowheads are two hundredths of a percent of a slide, which is well inside
+;; the residual that text metrics already account for.
+(let ()
+  (local-require glide-pptx/geometry racket/math)
+  ;; Which way the two ends of a connector face, since that is what orients an
+  ;; arrowhead and what `flipH`/`flipV` change.
+  (define plain (path-ends "straightConnector1" 100.0 60.0))
+  (check-true (and plain #t) "a connector has ends")
+  (check-equal? (list (first plain) (second plain)) '(0.0 0.0) "starting at the corner")
+  (check-equal? (list (fourth plain) (fifth plain)) '(100.0 60.0) "and ending at the other")
+  (define flipped (path-ends "straightConnector1" 100.0 60.0 #:flip-h? #t))
+  (check-equal? (list (first flipped) (second flipped)) '(100.0 0.0)
+                "a flip swaps which corner is the start")
+  ;; The outward angles are opposite each other on a straight line.
+  (check-= (abs (- (third plain) (sixth plain))) pi 0.001
+           "the two ends face opposite ways")
+
+  ;; A closed shape has no ends to decorate.
+  (check-false (path-ends "rect" 100.0 60.0) "a rectangle has no ends")
+
+  ;; And the decoration survives being written and read again.
+  (local-require glide-pptx/export glide-pptx/runtime racket/file)
+  (define ln (make-stroke (hex "000000") #:width 4.0
+                          #:head (line-end 'triangle "sm" "lg")
+                          #:tail (line-end 'arrow "med" "med")))
+  (define out (make-temporary-file "ends~a.pptx"))
+  (picts->pptx (list (slide-canvas #:width 400.0 #:height 300.0 #:background (hex "FFFFFF")
+                                   (at 80.0 60.0 #:tag "Arrow"
+                                       (shape-pict #:width 200.0 #:height 120.0
+                                                   #:shape "straightConnector1" #:line ln))))
+               out #:width 400.0 #:height 300.0)
+  (define back (pptx->deck out #:workdir (make-temporary-file "ends~a" 'directory)))
+  (define shape
+    (for*/first ([s (in-list (deck-slides back))]
+                 [e (in-list (slide-elements s))]
+                 #:when (and (shape? e) (shape-line e)))
+      e))
+  (check-true (and shape #t) "the connector came back")
+  (when shape
+    (define l (shape-line shape))
+    (check-equal? (line-end-kind (stroke-head l)) 'triangle "with its head")
+    (check-equal? (line-end-length (stroke-head l)) "lg" "at the size it was given")
+    (check-equal? (line-end-kind (stroke-tail l)) 'arrow "and its tail"))
+  (delete-file out))

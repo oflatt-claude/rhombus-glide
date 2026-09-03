@@ -90,12 +90,26 @@
     [else
      ;; A hairline has no width in DrawingML; the thinnest real line stands in.
      (define w (if (zero? (pen*-width p)) 0.75 (pen*-width p)))
-     (format "<a:ln w=\"~a\" cap=\"~a\"><a:solidFill>~a</a:solidFill>~a<a:~a/></a:ln>"
+     (format "<a:ln w=\"~a\" cap=\"~a\"><a:solidFill>~a</a:solidFill>~a<a:~a/>~a~a</a:ln>"
              (emu w)
              (case (pen*-cap p) [(round) "rnd"] [(square) "sq"] [else "flat"])
              (clr (pen*-color p))
              (hash-ref dash-xml (pen*-dash p) "")
-             (case (pen*-join p) [(round) "round"] [(bevel) "bevel"] [else "miter"]))]))
+             (case (pen*-join p) [(round) "round"] [(bevel) "bevel"] [else "miter"])
+             (end-xml "headEnd" (pen*-head p))
+             (end-xml "tailEnd" (pen*-tail p)))]))
+
+;; The decoration at one end of a line. The order matters: DrawingML wants the
+;; head before the tail, both after the dash and join.
+(define (end-xml tag e)
+  (if (not e)
+      ""
+      (format "<a:~a type=\"~a\" w=\"~a\" len=\"~a\"/>"
+              tag
+              (case (ir:line-end-kind e)
+                [(triangle) "triangle"] [(stealth) "stealth"]
+                [(diamond) "diamond"] [(oval) "oval"] [else "arrow"])
+              (ir:line-end-width e) (ir:line-end-length e))))
 
 ;; ------------------------------------------------------------------ shapes
 

@@ -17,16 +17,16 @@ which is turning a drag into an edit of the source that leaves the rest of the
 file alone.
 
 ```console
-$ raco glide-pptx translate -o out talk.pptx
+$ raco glide translate -o out talk.pptx
 out/talk.rkt  (14 slides, 212 elements)
 
 $ racket out/talk.rkt
 wrote talk.pdf
 
-$ raco glide-pptx export -o talk-edit.pptx out/talk.rkt
+$ raco glide export -o talk-edit.pptx out/talk.rkt
 talk-edit.pptx  (14 slides)
 
-$ raco glide-pptx verify talk.pptx
+$ raco glide verify talk.pptx
 talk
   page    mean err    pixels off
   1       0.50%       0.87%        ok
@@ -114,15 +114,15 @@ racket -l racket/base -e '(require (submod (file "talk.rhm") pdf))'   # write th
 ## The workflow
 
 ```shell
-raco glide-pptx talk.pptx -o talk.rhm   # once, to get a program
-raco glide-pptx talk.rhm                # then this, and edit either side
+raco glide talk.pptx -o talk.rhm   # once, to get a program
+raco glide talk.rhm                # then this, and edit either side
 ```
 
 The second command exports the program to a deck, opens it in an editor
 (Keynote on macOS, `--app` to choose), and keeps the two in step: save the
 program and the deck is rewritten; save in the editor and the drag comes back as
 a literal in the source. The deck, the editor's own document and the agreed base
-are scratch, kept in `.glide-pptx/` -- what the folder holds is `talk.rhm` and
+are scratch, kept in `.glide/` -- what the folder holds is `talk.rhm` and
 its `media/`.
 
 
@@ -148,7 +148,7 @@ Anything drawn approximately is reported on stderr rather than silently
 approximated:
 
 ```console
-$ raco glide-pptx translate deck.pptx
+$ raco glide translate deck.pptx
 2 notes about approximate rendering:
   - graphicFrame Chart 4: unsupported content (chart or diagram), drawn as an empty box
   - picture Image 9: unresolved image rId7
@@ -235,7 +235,7 @@ descriptor still exports through the flattened path.
 `watch` is the parent process for the whole loop:
 
 ```console
-$ raco glide-pptx watch talk.rkt --app keynote
+$ raco glide watch talk.rkt --app keynote
 watching
   program talk.rkt
   deck    talk.key
@@ -319,7 +319,7 @@ an animated pict is many frames. `--slideshow` runs it through the same entry
 point `raco slideshow --pdf` uses:
 
 ```console
-$ raco glide-pptx export --slideshow talk.rhm -o talk.pptx
+$ raco glide export --slideshow talk.rhm -o talk.pptx
 talk.pptx  (291 slides)
 ```
 

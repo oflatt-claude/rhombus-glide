@@ -547,3 +547,101 @@
     (check-equal? (map sync-action-kind (sync-report-actions r2)) '(moved)
                   "and the drag comes back as a move, on the group itself")
     (check-equal? (sync-action-tag (first (sync-report-actions r2))) (cdr found))))
+
+;; ============================================ the editing workflow, end to end
+
+;; The single edits each have their own test above. What those do not cover is
+;; the workflow: several edits in one pass, the same element edited twice, an
+;; element added and then moved, and rounds of this in a row. Each round asserts
+;; the same two things -- the program draws what the editor holds, and a second
+;; pass has nothing left to do.
+
+;; What the program and the deck each say is on a slide, as tag -> geometry, so
+;; the two can be compared without a renderer.
+(define (program-shape program)
+  (for/list ([s (in-list (program-slide-states program))])
+    (for/list ([e (in-list (slide-state-elements s))])
+      (cons (el-state-tag e) (map (lambda (v) (/ (round (* 10.0 v)) 10.0))
+                                  (el-geometry e))))))
+
+(define (deck-shape-of pptx dir tag)
+  (for/list ([s (in-list (deck-slide-states pptx #:workdir (build-path dir tag)))])
+    (for/list ([e (in-list (slide-state-elements s))])
+      (cons (el-state-tag e) (map (lambda (v) (/ (round (* 10.0 v)) 10.0))
+                                  (el-geometry e))))))
+
+;; One round: apply `edit!` to the deck, merge, and check that the program now
+;; agrees with the deck and that the merge has settled.
+(define (round! name dir program exported edit! [expect #f])
+  (check-true (edit!) (format "~a: the edit went into the deck" name))
+  (define r (sync-once program exported #:workdir (build-path dir "w")))
+  (when expect
+    (check-equal? (sort (map symbol->string (map sync-action-kind (sync-report-actions r)))
+                        string<?)
+                  (sort (map symbol->string expect) string<?)
+                  (format "~a: what the merge saw" name)))
+  (check-equal? (sync-report-skipped r) '()
+                (format "~a: every action was applied" name))
+  (check-equal? (program-shape program) (deck-shape-of exported dir (format "~a-cmp" name))
+                (format "~a: the program now draws what the deck holds" name))
+  (define again (sync-once program exported #:workdir (build-path dir "w")))
+  (check-equal? (sync-report-actions again) '()
+                (format "~a: and the merge settled" name))
+  r)
+
+(let ()
+  (define-values (dir program exported) (fixture "workflow" "05-realistic.pptx"))
+
+  ;; Move.
+  (round! "move" dir program exported
+          (lambda () (drag-in-deck! exported 3 "Rounded Rectangle 2" 90.0 210.0))
+          '(moved))
+
+  ;; Resize -- the size is a literal on the leaf, not on `at`.
+  (round! "resize" dir program exported
+          (lambda () (resize-in-deck! exported 3 "Rounded Rectangle 2" 200.0 100.0))
+          '(resized))
+
+  ;; Retype the text.
+  (round! "retext" dir program exported
+          (lambda () (retext-in-deck! exported 3 "TextBox 1" "Rewritten"))
+          '(retext))
+  (check-regexp-match #rx"\"Rewritten\"" (file->string program))
+
+  ;; Move and retype in one pass, on different elements.
+  (round! "move+retext" dir program exported
+          (lambda () (and (drag-in-deck! exported 3 "Right Arrow 3" 300.0 320.0)
+                          (retext-in-deck! exported 3 "TextBox 1" "Twice")))
+          '(moved retext))
+
+  ;; Add a shape, then move the shape that was added.
+  (round! "add" dir program exported
+          (lambda () (and (add-shape-to-deck! exported 3 "New Box" #:x 40.0 #:y 400.0) #t))
+          '(added))
+  (round! "move the added one" dir program exported
+          (lambda () (drag-in-deck! exported 3 "New Box" 120.0 430.0))
+          '(moved))
+
+  ;; Delete it again.
+  (round! "delete" dir program exported
+          (lambda () (delete-from-deck! exported 3 "New Box"))
+          '(removed))
+  (check-false (regexp-match? #rx"New Box" (file->string program))
+               "the deleted element left no trace in the source")
+
+  ;; Several elements moved at once.
+  (round! "three at once" dir program exported
+          (lambda () (and (drag-in-deck! exported 3 "Rounded Rectangle 2" 60.0 180.0)
+                          (drag-in-deck! exported 3 "Rounded Rectangle 4" 260.0 180.0)
+                          (drag-in-deck! exported 3 "Rounded Rectangle 6" 460.0 180.0)))
+          '(moved moved moved))
+
+  ;; And rounds of it, to see that nothing accumulates.
+  (for ([i (in-range 3)])
+    (round! (format "round ~a" i) dir program exported
+            (lambda () (drag-in-deck! exported 3 "Right Arrow 5"
+                                      (+ 200.0 (* i 30.0)) (+ 250.0 (* i 20.0))))
+            '(moved)))
+
+  ;; The file is still a program, and still the same one.
+  (check-equal? (length (load-program-picts program)) 3 "three slides throughout"))

@@ -28,6 +28,7 @@ export:
   image_fill
   pattern_fill
   make_stroke
+  line_end
   rgba
   rgb
   black
@@ -149,8 +150,14 @@ fun run(text,
 
 fun hex(s, ~alpha: alpha = 1.0): rt.#{hex}(s, ~alpha: alpha)
 
-fun make_stroke(color, ~width: w = 1.0, ~dash: dash = #'solid, ~cap: cap = #'flat):
-  rt.#{make-stroke}(color, ~width: w, ~dash: dash, ~cap: cap)
+fun make_stroke(color, ~width: w = 1.0, ~dash: dash = #'solid, ~cap: cap = #'flat,
+                ~head: head = #false, ~tail: tail = #false):
+  rt.#{make-stroke}(color, ~width: w, ~dash: dash, ~cap: cap, ~head: head, ~tail: tail)
+
+// What a line is decorated with at one end: an arrow on a connector, most
+// often. `kind` is #'arrow, #'triangle, #'stealth, #'diamond or #'oval.
+fun line_end(kind, width, length):
+  rt.#{line-end}(kind, width, length)
 
 def solid_fill = rt.#{solid-fill}
 

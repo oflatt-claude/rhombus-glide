@@ -26,7 +26,7 @@
          ;; Deliberately not `all-from-out`: the IR's accessors include names
          ;; like `slide-width` that generated code defines itself.
          solid-fill gradient-fill image-fill pattern-fill
-         stroke make-stroke
+         stroke make-stroke line-end
          rgba rgb black white
          insets default-insets
          bullet no-bullet
@@ -494,6 +494,58 @@
      (define r (rotate inner (- (degrees->radians (text-body-rot tb)))))
      (cc-superimpose (blank w h) r)]))
 
+;; ------------------------------------------------------ ends of a drawn line
+
+;; PowerPoint sizes an arrowhead from the line's width: "med" is about three
+;; times it long and as wide again. The two size words scale that.
+(define (end-scale word)
+  (case word [("sm") 0.75] [("lg") 1.5] [else 1.0]))
+
+(define (draw-line-end! dc e x y angle pen-w)
+  (define len (* 3.0 pen-w (end-scale (line-end-length e))))
+  (define half (* 1.5 pen-w (end-scale (line-end-width e))))
+  (define ca (cos angle))
+  (define sa (sin angle))
+  ;; The tip is at the end of the line, and the head runs back down it.
+  (define (at d across)
+    (cons (+ x (* d ca) (* across (- sa)))
+          (+ y (* d sa) (* across ca))))
+  (define pts
+    (case (line-end-kind e)
+      [(diamond) (list (at 0.0 0.0) (at (- (/ len 2.0)) half)
+                       (at (- len) 0.0) (at (- (/ len 2.0)) (- half)))]
+      [(stealth) (list (at 0.0 0.0) (at (- len) half)
+                       (at (* -0.6 len) 0.0) (at (- len) (- half)))]
+      [(oval) #f]
+      [else (list (at 0.0 0.0) (at (- len) half) (at (- len) (- half)))]))
+  (define old-pen (send dc get-pen))
+  (cond
+    [(eq? 'oval (line-end-kind e))
+     (send dc set-pen (new pen% [style 'transparent]))
+     (send dc draw-ellipse (- x half) (- y half) (* 2 half) (* 2 half))]
+    [else
+     (send dc set-pen (new pen% [style 'transparent]))
+     (send dc draw-polygon (map (lambda (p) (cons (car p) (cdr p))) pts))])
+  (send dc set-pen old-pen))
+
+;; Both ends of a shape's outline, if it has ends and the stroke asks for them.
+(define (draw-line-ends! dc line geom w h fh fv dx dy)
+  (when (and (stroke? line) (or (stroke-head line) (stroke-tail line)))
+    (define ends
+      (if (custom-geom? geom)
+          (custom-path-ends geom w h #:flip-h? fh #:flip-v? fv)
+          (path-ends (preset-geom-name geom) w h #:flip-h? fh #:flip-v? fv)))
+    (when ends
+      (define pen-w (max 0.5 (let ([v (stroke-width line)]) (if (real? v) v 1.0))))
+      (define old-brush (send dc get-brush))
+      (send dc set-brush (new brush% [color (rgba->color (stroke-color line))]))
+      (define-values (x0 y0 a0 x1 y1 a1) (apply values ends))
+      (when (stroke-head line)
+        (draw-line-end! dc (stroke-head line) (+ dx x0) (+ dy y0) a0 pen-w))
+      (when (stroke-tail line)
+        (draw-line-end! dc (stroke-tail line) (+ dx x1) (+ dy y1) a1 pen-w))
+      (send dc set-brush old-brush))))
+
 ;; An auto-shape: geometry filled and outlined, with its text on top.
 ;; `#:shape` names a preset directly, which is the common case; `#:geom` takes a
 ;; full geometry when adjustment values or a custom path are involved.
@@ -540,6 +592,7 @@
           (send dc set-pen (stroke->pen line))
           (unless (and (image-fill? fill) (not (stroke? line)))
             (send dc draw-path path dx dy))
+          (draw-line-ends! dc line geom w h fh fv dx dy)
           (send dc set-pen old-pen)
           (send dc set-brush old-brush))
         w h))
@@ -740,7 +793,7 @@
 
 ;; Where a generated program's `media` subdirectory is rooted. A program run
 ;; directly gets this from `current-load-relative-directory`, but a program
-;; loaded with `dynamic-require` -- which is how `raco glide-pptx export` reads
+;; loaded with `dynamic-require` -- which is how `raco glide export` reads
 ;; one -- does not reliably have that set, so a caller can say where the module
 ;; lives instead.
 (define current-media-base (make-parameter #f))

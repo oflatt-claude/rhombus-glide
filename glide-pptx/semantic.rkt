@@ -61,7 +61,8 @@
              (* scale (stroke-width l))
              (stroke-dash l)
              (case (stroke-cap l) [(round) 'round] [(projecting) 'square] [else 'flat])
-             'miter)))
+             'miter
+             (stroke-head l) (stroke-tail l))))
 
 ;; A group with a scale changes text size along with everything else, matching
 ;; what the renderer draws.

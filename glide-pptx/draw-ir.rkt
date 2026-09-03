@@ -24,7 +24,8 @@
 
 ;; dash is 'solid, 'dash, 'dot or 'dash-dot; cap is 'flat, 'round or 'square;
 ;; join is 'miter, 'round or 'bevel. A #f pen means nothing is stroked.
-(struct pen* (color width dash cap join) #:prefab)
+;; `head` and `tail` are the decorations at the ends, as `line-end` or #f.
+(struct pen* (color width dash cap join head tail) #:prefab)
 
 ;; ------------------------------------------------------------------ paths
 

@@ -83,13 +83,19 @@
     ;; crashed.
     [else (error 'sync "no state for ~a" i)]))
 
+;; Normalized, because the same text can be spelled two ways: macOS hands back
+;; decomposed forms where the file had composed ones, and a text that only
+;; differs that way is not a text the user edited. Comparing the raw strings
+;; reported an edit on every sync, on every shape whose text has an accent or a
+;; combining mark, and it could never be applied or settled.
 (define (body-text body)
   (if (not body)
       ""
-      (string-join
-       (for/list ([p (in-list (text-body-paras body))])
-         (apply string-append (for/list ([r (in-list (para-runs p))]) (trun-text r))))
-       "\n")))
+      (string-normalize-nfc
+       (string-join
+        (for/list ([p (in-list (text-body-paras body))])
+          (apply string-append (for/list ([r (in-list (para-runs p))]) (trun-text r))))
+        "\n"))))
 
 (define (fill-digest f)
   (cond
