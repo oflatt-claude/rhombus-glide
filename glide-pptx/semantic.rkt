@@ -52,6 +52,9 @@
      (fill:linear 0.0 0.0 (cos a) (sin a)
                   (for/list ([s (in-list (gradient-fill-stops f))])
                     (list (exact->inexact (car s)) (ir-color->rgba (cdr s)))))]
+    ;; A picture as a fill keeps its file, so the export can write the bytes
+    ;; back out rather than dropping the picture on the floor.
+    [(image-fill? f) (fill:image (image-fill-src f) (image-fill-opacity f))]
     [(pattern-fill? f) (fill:solid (ir-color->rgba (pattern-fill-fg f)))]
     [else #f]))
 

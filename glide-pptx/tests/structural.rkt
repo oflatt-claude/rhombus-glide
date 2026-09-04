@@ -10,7 +10,7 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/export glide-pptx/sync-state)
+         glide-pptx/export glide-pptx/sync-state glide-pptx/sync)
 
 (define-runtime-path decks-dir "decks")
 
@@ -91,6 +91,51 @@
   (for ([r (in-list (reverse reported))]) (printf "    ~a\n" r))
   (check-equal? reported '()
                 (format "~a: the representation survived the round trip" name)))
+
+;; ------------------------------------------------- a picture used as a fill
+
+;; A shape whose fill is a picture exported as no fill at all: nothing in the
+;; drawing description held the file, so the picture was dropped on the way
+;; out -- and since the deck is rewritten from the program on every save, the
+;; first one lost it. The program renders it, so this only ever showed up in
+;; the file.
+(define-runtime-path media-dir "media")
+
+(let ()
+  (define dir (build-path work "image-fill"))
+  (make-directory* (build-path dir "media"))
+  (copy-file (build-path media-dir "checker.png")
+             (build-path dir "media" "checker.png") #t)
+  (define program (build-path dir "f.rhm"))
+  (define deck (build-path dir "f.pptx"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export:"
+          "  all_slides"
+          "def media = media_lookup(\"media\")"
+          "def slide_1 = slide_canvas("
+          "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+          "  at(60.0, 60.0, ~tag: \"Filled\","
+          "     shape_pict(~width: 200.0, ~height: 150.0,"
+          "                ~fill: image_fill(media(\"checker.png\"), 0.5)))"
+          ")"
+          "def all_slides = [slide_1]"
+          "")
+    "\n")
+   program #:exists 'replace)
+  (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+  (define d (pptx->deck deck #:workdir (build-path dir "w")))
+  (define e (first (slide-elements (first (deck-slides d)))))
+  (check-true (image-fill? (shape-fill e)) "the fill came back as a picture")
+  (check-= (image-fill-opacity (shape-fill e)) 0.5 0.01 "with its opacity")
+  ;; The importer names a part rather than a path, so the file it points at is
+  ;; the one the package holds.
+  (check-regexp-match #rx"^ppt/media/" (format "~a" (image-fill-src (shape-fill e))))
+  (check-true (file-exists? (build-path dir "w" (image-fill-src (shape-fill e))))
+              "and the file it names is in the package"))
 
 (printf "structural tests done; ~a difference~a in total\n"
         total-diffs (if (= 1 total-diffs) "" "s"))

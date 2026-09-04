@@ -500,7 +500,8 @@ and every number above will be noise.
   `satMod`/`alpha` transforms, major and minor fonts, and `fillRef`/`lnRef`
   style references.
 - **Shapes** — 53 preset geometries drawn exactly, custom geometry paths,
-  solid/gradient/pattern/image fills, outlines with dash and cap, rotation,
+  solid/gradient/pattern/image fills (a picture used as a fill keeps its file
+  rather than its pixels, in both directions), outlines with dash and cap, rotation,
   flips, groups with their own child coordinate space, connectors, tables.
 - **Text** — runs with family, size, weight, slant, underline, strike, color,
   letter spacing, caps and super/subscript; paragraph alignment, indents,
@@ -513,8 +514,9 @@ and every number above will be noise.
 ## What is not handled yet
 
 - Swapping a picture's image is invisible to a merge: the program names the
-  file and an exported deck names the same bytes differently, so there is no
-  identity to compare yet. A picture's crop and opacity do merge.
+  file and an exported deck names the same bytes differently -- one a path, the
+  other a package part -- so there is no identity to compare yet. A picture's
+  crop and opacity do merge.
 - Charts and SmartArt (`graphicFrame` content other than tables) draw as an
   empty box and are reported.
 - Effects: shadows, glow, reflection, 3-D, soft edges.

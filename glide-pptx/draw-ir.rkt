@@ -20,6 +20,9 @@
 ;; stops are (list fraction rgba*), ordered.
 (struct fill:solid (color) #:prefab)
 (struct fill:linear (x0 y0 x1 y1 stops) #:prefab)
+;; A picture used as a fill. It keeps the file rather than the pixels, so
+;; exporting it writes the bytes that came in.
+(struct fill:image (src opacity) #:prefab)
 (struct fill:radial (x0 y0 r0 x1 y1 r1 stops) #:prefab)
 
 ;; dash is 'solid, 'dash, 'dot or 'dash-dot; cap is 'flat, 'round or 'square;
