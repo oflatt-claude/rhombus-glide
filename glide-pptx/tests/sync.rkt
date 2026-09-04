@@ -814,6 +814,154 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; ------------------------------------------- appearance the source never states
+
+;; Most of what an editor does to a shape's appearance is not a value the
+;; program already has: a solid line has no `~dash:` to rewrite, and a shape
+;; with no fill has no `~fill:` at all. Reporting those is worse than useless --
+;; the deck and the program disagree and the user is told to fix it by hand --
+;; so the argument is added, and one that the editor took away is removed.
+(let ()
+  (define dir (build-path work "appearance"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define deck (build-path dir "p.pptx"))
+  (define (reset!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  at(60.0, 60.0, ~tag: \"Box\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\"),"
+            "                ~line: make_stroke(hex(\"203040\"), ~width: 2.0))),"
+            "  at(240.0, 60.0, ~tag: \"Bare\","
+            "     shape_pict(~width: 90.0, ~height: 60.0)),"
+            "  at(60.0, 200.0, ~tag: \"Words\","
+            "     textbox(~width: 300.0, ~height: 60.0,"
+            "             para(run(\"hello\", ~font: \"Arial\", ~size: 24.0,"
+            "                      ~color: hex(\"101010\"))))),"
+            "  at(60.0, 300.0, ~tag: \"Plain\","
+            "     textbox(~width: 300.0, ~height: 60.0,"
+            "             para(run(\"plain\", ~size: 18.0))))"
+            ")"
+            "def all_slides = [slide_1]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+  (define (sync!) (sync-once program deck #:workdir (build-path dir "w")))
+  (define (applied! r why) (check-equal? (length (sync-report-applied r)) 1 why))
+  ;; Keynote writes a colour into the run's properties, whether or not the run
+  ;; had one.
+  (define (recolour-run! tag hex)
+    (or (edit-after-tag! deck 1 tag #px"<a:srgbClr val=\"[0-9A-Fa-f]+\"/></a:solidFill>"
+                         (format "<a:srgbClr val=\"~a\"/></a:solidFill>" hex))
+        (edit-after-tag! deck 1 tag #px"(<a:rPr[^>]*)/>"
+                         (format "\\1><a:solidFill><a:srgbClr val=\"~a\"/></a:solidFill></a:rPr>" hex))))
+
+  ;; A dash on a line that is solid: the argument is added inside the stroke.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Box" #px"</a:ln>"
+                               "<a:prstDash val=\"dash\"/></a:ln>")
+              "the line was dashed")
+  (applied! (sync!) "and the dash was written")
+  (check-regexp-match #rx"~dash: #'dash" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A fill made translucent: the alpha is added inside its own `hex`.
+  (reset!)
+  (check-true (edit-after-tag!
+               deck 1 "Box" #px"<a:srgbClr val=\"ED7D31\"/>"
+               "<a:srgbClr val=\"ED7D31\"><a:alpha val=\"50000\"/></a:srgbClr>")
+              "the fill was made translucent")
+  (applied! (sync!) "and the opacity was written")
+  (check-regexp-match #rx"hex[(]\"ED7D31\", ~alpha: 0[.]5[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; An outline on a shape that has none: a whole stroke, with the width the
+  ;; editor gave it, since neither has anywhere to be written on its own.
+  (reset!)
+  (check-true (edit-after-tag!
+               deck 1 "Bare" #px"<a:ln><a:noFill/></a:ln>"
+               "<a:ln w=\"19050\"><a:solidFill><a:srgbClr val=\"FF0000\"/></a:solidFill></a:ln>")
+              "the shape was given an outline")
+  (applied! (sync!) "and the stroke was written")
+  (check-regexp-match #rx"~line: make_stroke[(]hex[(]\"FF0000\"[)], ~width: 1[.]5[)]"
+                      (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A fill on a shape that has none.
+  (reset!)
+  (check-true (edit-after-tag!
+               deck 1 "Bare" #px"<a:noFill/><a:ln>"
+               "<a:solidFill><a:srgbClr val=\"00B050\"/></a:solidFill><a:ln>")
+              "the shape was given a fill")
+  (applied! (sync!) "and the fill was written")
+  (check-regexp-match #rx"~fill: hex[(]\"00B050\"[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; And taken away again: `#false` is how the program says a shape has none,
+  ;; and the whole argument goes, not the colour inside it.
+  (check-true (edit-after-tag!
+               deck 1 "Bare" #px"<a:solidFill><a:srgbClr val=\"00B050\"/></a:solidFill>"
+               "<a:noFill/>")
+              "the fill was removed")
+  (applied! (sync!) "and the removal was written")
+  (check-regexp-match #rx"~fill: #false" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; The outline of the shape that has one.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Box" #px"<a:ln w=\"[0-9]+\"[^>]*>.*?</a:ln>"
+                               "<a:ln><a:noFill/></a:ln>")
+              "the outline was removed")
+  (applied! (sync!) "and the removal was written")
+  (define src (file->string program))
+  (check-regexp-match #rx"~line: #false" src)
+  (check-false (regexp-match? #rx"make_stroke" src) "the stroke call is gone")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Bold and italic are flags: absent means false, so they are added.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Words" #px"<a:rPr lang=\"en-US\" sz=\"2400\""
+                               "<a:rPr lang=\"en-US\" sz=\"2400\" b=\"1\" i=\"1\"")
+              "the text was bolded and italicised")
+  (applied! (sync!) "and both were written")
+  (define src2 (file->string program))
+  (check-regexp-match #rx"~bold: #true" src2)
+  (check-regexp-match #rx"~italic: #true" src2)
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A colour the source never states for its text.
+  (reset!)
+  (check-true (recolour-run! "Plain" "CC0000") "the text was recoloured")
+  (applied! (sync!) "and the colour was written")
+  (check-regexp-match #rx"~color: hex[(]\"CC0000\"[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A gradient is not a colour the source can be told to be, and saying so is
+  ;; the point: the alternative is writing one stop of it and calling it done.
+  (reset!)
+  (check-true (edit-after-tag!
+               deck 1 "Box" #px"<a:solidFill><a:srgbClr val=\"ED7D31\"/></a:solidFill>"
+               (string-append "<a:gradFill><a:gsLst>"
+                              "<a:gs pos=\"0\"><a:srgbClr val=\"FF0000\"/></a:gs>"
+                              "<a:gs pos=\"100000\"><a:srgbClr val=\"0000FF\"/></a:gs>"
+                              "</a:gsLst><a:lin ang=\"0\"/></a:gradFill>"))
+              "the fill was made a gradient")
+  (define rg (sync!))
+  (check-equal? (sync-report-applied rg) '() "which is not written")
+  (check-regexp-match #rx"fill" (cdr (first (sync-report-skipped rg)))
+                      "and the report says so"))
+
 ;; --------------------------------- the rest of what an editor can do to a deck
 
 ;; Surveyed by simulating each action and seeing what the merge made of it. Four

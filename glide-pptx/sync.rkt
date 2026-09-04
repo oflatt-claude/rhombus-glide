@@ -146,14 +146,22 @@
 ;; Which named properties differ, as (name was now). A property missing on one
 ;; side is not a difference: a deck states a font where a program leaves it to
 ;; the theme, and neither is an edit.
+;; Stands for a property one side does not have at all, so that it is told apart
+;; from a `bold` that is really false.
+(define ABSENT 'absent)
+
+;; What the two states disagree about, as (property was now). An outline the
+;; editor added, or took away, is as much of a change as one it recoloured, so
+;; a property missing from either side is reported with `ABSENT` rather than
+;; passed over.
 (define (style-changes was now)
+  (define (value l k) (let ([p (assq k l)]) (if p (cdr p) ABSENT)))
+  (define keys (remove-duplicates (append (map car was) (map car now))))
   (filter values
-          (for/list ([pair (in-list now)])
-            (define k (car pair))
-            (define old (assq k was))
-            (and old
-                 (not (equal? (cdr old) (cdr pair)))
-                 (list k (cdr old) (cdr pair))))))
+          (for/list ([k (in-list keys)])
+            (define a (value was k))
+            (define b (value now k))
+            (and (not (equal? a b)) (list k a b)))))
 
 ;; A tag names one *code site*, and one `at` inside a loop draws several
 ;; elements. So a tag can stand for a family, and an edit to a family only
@@ -926,7 +934,10 @@
 ;; A keyword's literal value inside a particular call.
 (define (rhombus-child-kw-in call kw pred)
   (define l (and (syntax? call) (let ([e (syntax-e call)]) (and (list? e) e))))
-  (define parens (and l (findf (lambda (x) (rhombus-head? x 'parens)) l)))
+  (parens-kw-in (and l (findf (lambda (x) (rhombus-head? x 'parens)) l)) kw pred))
+
+;; The same, for an argument list already in hand.
+(define (parens-kw-in parens kw pred)
   (and parens
        (for/or ([g (in-list (cdr (syntax-e parens)))])
          (and (eq? kw (rhombus-kw-name g)) (literal-range (rhombus-kw-value g) pred)))))
@@ -943,7 +954,14 @@
 ;; literal at all. A `~fill: hex("4472C4")` can be rewritten; a
 ;; `~fill: brand_blue` names something shared, and changing that would recolour
 ;; every shape using it -- so it is reported with the name instead.
-(struct style-site (property range shared) #:transparent)
+;; `range` is where the value is written, when it is written at all. `insert-at`
+;; and `keyword` are how to add it when it is not: a line that is solid has no
+;; `~dash:` to rewrite, and adding one is a better answer than reporting that it
+;; is missing.
+;; `whole` is the whole argument's extent, for a property that can be written as
+;; absent: a shape whose fill the editor removed says `~fill: #false`, and there
+;; is no literal inside the old `hex(...)` that means that.
+(struct style-site (property range shared insert-at keyword whole) #:transparent)
 
 ;; The literal inside the first `hex("...")` under `stx`, or the name it is given
 ;; instead.
@@ -973,6 +991,30 @@
                        (syntax-e* (second l)))))
      (and nm (cons 'shared nm))]))
 
+
+;; The `hex(...)` call itself, when the colour is written as one: an `~alpha:`
+;; it does not state is added just inside these parentheses.
+(define (hex-call stx)
+  (define found (box #f))
+  (let walk ([s stx])
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (when (and l (not (unbox found)))
+      (for ([a (in-list l)] [b (in-list (cdr l))])
+        (when (and (not (unbox found)) (eq? 'hex (syntax-e* a)) (rhombus-head? b 'parens))
+          (set-box! found (cons a b))))
+      (unless (unbox found) (for-each walk l))))
+  (unbox found))
+
+;; A name the colour cannot be read out of: a gradient's first stop is a
+;; `hex(...)` too, and rewriting it would leave the fill a gradient.
+(define (compound-fill? stx)
+  (define bad '(gradient_fill image_fill pattern_fill))
+  (let walk ([s stx])
+    (define e (and (syntax? s) (syntax-e s)))
+    (cond [(memq e bad) #t]
+          [(list? e) (for/or ([x (in-list e)]) (walk x))]
+          [else #f])))
+
 (define (kw-value-stx child kw)
   (define l (and (syntax? child) (syntax-e child)))
   (define parens (and (list? l) (findf (lambda (x) (rhombus-head? x 'parens)) l)))
@@ -982,49 +1024,82 @@
 
 ;; The properties this can find in one `at` form.
 (define (style-sites child)
-  (define (colour-of kw name)
-    (define v (kw-value-stx child kw))
-    (define hit (and v (hex-site v)))
-    (and hit (style-site name
-                         (and (eq? 'literal (car hit)) (cdr hit))
-                         (and (eq? 'shared (car hit)) (cdr hit)))))
+  (define fill-stx (kw-value-stx child '#:fill))
+  ;; The whole value of a keyword argument, which is what has to be rewritten to
+  ;; say that the property is gone.
+  (define (value-extent stx)
+    (define l (and (syntax? stx) (let ([e (syntax-e stx)]) (and (list? e) e))))
+    (define name (for/or ([a (in-list (or l '()))] [b (in-list (cdr (or l '(1))))])
+                   (and (symbol? (syntax-e* a)) (rhombus-head? b 'parens) a)))
+    (and name (rhombus-call-extent (current-source-text) name)))
+  ;; The colour argument, however the source states it: a `hex(...)` to rewrite,
+  ;; a shared name, `#false` for a shape that has none, or nothing at all -- in
+  ;; which case the whole argument is added.
+  (define (paint-site property kw stx)
+    (define hit (and stx (not (compound-fill? stx)) (hex-site stx)))
+    (cond
+      [hit (style-site property
+                       (and (eq? 'literal (car hit)) (cdr hit))
+                       (and (eq? 'shared (car hit)) (cdr hit))
+                       #f #f (value-extent stx))]
+      [(and stx (literal-range stx boolean?))
+       => (lambda (r) (style-site property #f #f #f kw r))]
+      [(not stx) (style-site property #f #f (call-append-at child) kw #f)]
+      [else #f]))
+  ;; A colour's alpha lives inside its own `hex(...)`, so a shape made
+  ;; translucent in the editor is an `~alpha:` written or added there.
+  (define (opacity-site property stx)
+    (define call (and stx (not (compound-fill? stx)) (hex-call stx)))
+    (and call
+         (style-site property
+                     (parens-kw-in (cdr call) '#:alpha real?)
+                     #f (call-append-at stx) '#:alpha #f)))
   (define runs (rhombus-run-calls child))
-  (define (run-kw kw name pred)
-    (and (= 1 (length runs))
-         (let ([r (rhombus-child-kw-in (first runs) kw pred)])
-           (and r (style-site name r #f)))))
-  ;; The stroke is a call of its own, so its colour and width sit inside it.
+  ;; The stroke is a call of its own, so its colour, width and dash sit inside
+  ;; it -- and where it does not state one, it can be added.
   (define stroke-stx (kw-value-stx child '#:line))
-  (define line-colour
-    (let ([hit (and stroke-stx (hex-site stroke-stx))])
-      (and hit (style-site 'line
-                           (and (eq? 'literal (car hit)) (cdr hit))
-                           (and (eq? 'shared (car hit)) (cdr hit))))))
-  (define line-width
-    (let ([r (and stroke-stx (rhombus-child-kw-in stroke-stx '#:width real?))])
-      (and r (style-site 'line-width r #f))))
-  (define line-dash
-    (let ([r (and stroke-stx (rhombus-child-kw-in stroke-stx '#:dash symbol?))])
-      (and r (style-site 'dash r #f))))
+  (define (in-stroke property kw pred)
+    (and stroke-stx
+         (style-site property
+                     (rhombus-child-kw-in stroke-stx kw pred)
+                     #f
+                     (call-append-at stroke-stx)
+                     kw #f)))
   ;; A run's colour is a call too.
   (define text-colour
     (and (= 1 (length runs))
          (let* ([v (kw-value-stx (first runs) '#:color)]
                 [hit (and v (hex-site v))])
-           (and hit (style-site 'text-color
-                                (and (eq? 'literal (car hit)) (cdr hit))
-                                (and (eq? 'shared (car hit)) (cdr hit)))))))
+           (cond
+             [hit (style-site 'text-color
+                              (and (eq? 'literal (car hit)) (cdr hit))
+                              (and (eq? 'shared (car hit)) (cdr hit))
+                              #f #f #f)]
+             ;; Text whose colour the source never states, recoloured in the
+             ;; editor: the argument is added to the run.
+             [(not v) (style-site 'text-color #f #f
+                                  (call-append-at (first runs)) '#:color #f)]
+             [else #f]))))
+  (define (in-run property kw pred)
+    (and (= 1 (length runs))
+         (style-site property
+                     (if pred
+                         (rhombus-child-kw-in (first runs) kw pred)
+                         (rhombus-child-flag-in (first runs) kw))
+                     #f
+                     (call-append-at (first runs))
+                     kw #f)))
   (filter values
-          (list (colour-of '#:fill 'fill)
-                line-colour line-width line-dash text-colour
-                (run-kw '#:size 'size real?)
-                (run-kw '#:font 'font string?)
-                (let ([v (and (= 1 (length runs))
-                              (rhombus-child-flag-in (first runs) '#:bold))])
-                  (and v (style-site 'bold v #f)))
-                (let ([v (and (= 1 (length runs))
-                              (rhombus-child-flag-in (first runs) '#:italic))])
-                  (and v (style-site 'italic v #f))))))
+          (list (paint-site 'fill '#:fill fill-stx)
+                (opacity-site 'fill-opacity fill-stx)
+                (paint-site 'line '#:line stroke-stx)
+                text-colour
+                (in-stroke 'line-width '#:width real?)
+                (in-stroke 'dash '#:dash symbol?)
+                (in-run 'size '#:size real?)
+                (in-run 'font '#:font string?)
+                (in-run 'bold '#:bold #f)
+                (in-run 'italic '#:italic #f))))
 
 ;; A boolean keyword on the leaf, as (range . value) -- so a flip that is
 ;; already there can be set either way. `#:width` and friends carry a number and
@@ -1040,12 +1115,35 @@
 
 ;; Just inside the leaf call's parentheses, which is where a keyword it does not
 ;; have yet can be added.
-(define (rhombus-child-insert child)
-  (define l (and (syntax? child) (syntax-e child)))
-  (define name (and (list? l) (>= (length l) 2) (second l)))
-  (define r (and name (symbol? (syntax-e* name)) (range-of name)))
+(define (rhombus-child-insert child) (call-insert-at child))
+
+;; Just inside a call's parentheses, which is where an argument it does not have
+;; yet can be added.
+(define (call-insert-at stx)
+  (define r (call-name-range stx))
   (define open (and r (next-open (current-source-text) (rng-end r))))
   (and open (add1 open)))
+
+;; A call's head: the symbol whose next sibling is the argument list.
+(define (call-name stx)
+  (define l (and (syntax? stx) (let ([e (syntax-e stx)]) (and (list? e) e))))
+  (for/or ([a (in-list (or l '()))] [b (in-list (cdr (or l '(1))))])
+    (and (symbol? (syntax-e* a)) (rhombus-head? b 'parens) a)))
+
+(define (call-name-range stx)
+  (let ([n (call-name stx)]) (and n (range-of n))))
+
+;; Just before a call's closing paren, and back over the whitespace that was
+;; indenting it: where a new last argument belongs. Adding at the front would
+;; work too, but `hex(~alpha: 0.5, "ED7D31")` is not how anyone writes it.
+(define (call-append-at stx)
+  (define name (call-name stx))
+  (define r (and name (rhombus-call-extent (current-source-text) name)))
+  (and r (back-over-space (current-source-text) (sub1 (rng-end r)))))
+
+;; The comma a new last argument needs, which is none when the call had none.
+(define (argument-comma text at)
+  (if (and (> at 0) (char=? #\( (string-ref text (sub1 at)))) "" ", "))
 
 (define (rhombus-child-texts child)
   (define acc '())
@@ -1467,19 +1565,77 @@
       ;; reported by name where it does not.
       [(restyle)
        (define sites (if site (at-site-styles site) '()))
+       (define (site-for property)
+         (findf (lambda (st) (eq? property (style-site-property st))) sites))
+       (define detail (sync-action-detail a))
+       ;; A fill or an outline the shape did not have, or one the editor took
+       ;; away, is a whole argument: everything inside it is written or removed
+       ;; at once, because none of those properties has anywhere of its own to
+       ;; sit.
+       (define (whole-argument head keyword)
+         (define ch (assq head detail))
+         (define hit (and ch (site-for head)))
+         (define (took? ok) (and ok (hash-ref STYLE-GROUPS head)))
+         (and hit
+              (cond
+                [(eq? ABSENT (second ch))
+                 (define src (argument->source head detail))
+                 (took?
+                  (cond
+                    [(and (style-site-whole hit) (not (style-site-range hit)))
+                     (edit! (style-site-whole hit) src)]
+                    [(and (style-site-insert-at hit)
+                          (eq? keyword (style-site-keyword hit)))
+                     (define at (style-site-insert-at hit))
+                     (edit! (rng at at)
+                            (format "~a~~~a: ~a"
+                                    (argument-comma (current-source-text) at)
+                                    (keyword->string keyword) src))]
+                    [else #f]))]
+                [(and (eq? ABSENT (third ch)) (style-site-whole hit))
+                 (took? (edit! (style-site-whole hit) "#false"))]
+                [else #f])))
+       (define wholes (append (or (whole-argument 'fill '#:fill) '())
+                              (or (whole-argument 'line '#:line) '())))
+       (define changes
+         (filter (lambda (ch) (not (memq (first ch) wholes))) detail))
        (define-values (done left)
-         (for/fold ([done '()] [left '()]) ([ch (in-list (sync-action-detail a))])
-           (define hit (findf (lambda (st) (eq? (style-site-property st) (first ch))) sites))
+         (for/fold ([done (filter (lambda (p) (memq p '(fill line))) wholes)]
+                    [left '()])
+                   ([ch (in-list changes)])
+           (define property (first ch))
+           (define want (third ch))
+           (define hit (site-for property))
            (cond
+             ;; Gone. Only a property with a whole argument of its own can be
+             ;; written as absent -- a fill can, a typeface cannot.
+             [(eq? ABSENT want)
+              (cond
+                [(and hit (style-site-whole hit) (edit! (style-site-whole hit) "#false"))
+                 (values (cons property done) left)]
+                [else (values done (cons (format "~a was removed, and the program has no way to say that"
+                                                 property)
+                                         left))])]
              [(and hit (style-site-range hit)
-                   (edit! (style-site-range hit) (style->source (first ch) (third ch))))
-              (values (cons (first ch) done) left)]
+                   (edit! (style-site-range hit) (style->source property want)))
+              (values (cons property done) left)]
+             ;; Not stated, so it is added -- which is the difference between
+             ;; "make this line dashed" working and being reported.
+             [(and hit (not (style-site-range hit)) (not (style-site-shared hit))
+                   (style-site-insert-at hit) (style-site-keyword hit)
+                   (let ([at (style-site-insert-at hit)])
+                     (edit! (rng at at)
+                            (format "~a~~~a: ~a"
+                                    (argument-comma (current-source-text) at)
+                                    (keyword->string (style-site-keyword hit))
+                                    (added->source property want)))))
+              (values (cons property done) left)]
              [(and hit (style-site-shared hit))
               ;; A named colour belongs to everything that uses it, so it is
               ;; rewritten only when everything that uses it changed the same
               ;; way -- the same rule as a tag that names several elements.
               (define name (style-site-shared hit))
-              (define users (sites-using all-sites (first ch) name))
+              (define users (sites-using all-sites property name))
               (define agreed?
                 (and (hash-ref (program-layout-globals layout) name #f)
                      (for/and ([st (in-list users)])
@@ -1487,19 +1643,19 @@
                          (and (eq? 'restyle (sync-action-kind b))
                               (equal? (at-site-tag st) (sync-action-tag b))
                               (for/or ([c (in-list (sync-action-detail b))])
-                                (and (eq? (first c) (first ch))
-                                     (equal? (third c) (third ch)))))))))
+                                (and (eq? (first c) property)
+                                     (equal? (third c) want))))))))
               (cond
                 [agreed?
                  (edit! (hash-ref (program-layout-globals layout) name)
-                        (style->source (first ch) (third ch)))
-                 (values (cons (format "~a via ~a" (first ch) name) done) left)]
+                        (style->source property want))
+                 (values (cons (format "~a via ~a" property name) done) left)]
                 [else
                  (values done (cons (format "~a is ~a, shared with ~a other element~a that did not change with it"
-                                            (first ch) name (max 0 (sub1 (length users)))
+                                            property name (max 0 (sub1 (length users)))
                                             (if (= 2 (length users)) "" "s"))
                                     left))])]
-             [else (values done (cons (format "~a is not a literal here" (first ch)) left))])))
+             [else (values done (cons (format "~a is not a literal here" property) left))])))
        (cond
          [(null? left) (set! applied (cons a applied))]
          [else
@@ -1581,10 +1737,45 @@
 
 ;; A style value as it reads in source: a colour is the string inside `hex`, a
 ;; size is a number, a typeface a string, boldness a boolean.
+;; Properties that live inside one argument, so they are written and removed
+;; together: a fill's opacity is part of its colour, and a line's width is part
+;; of its stroke. The first of each is the one that says whether the argument is
+;; there at all.
+(define STYLE-GROUPS
+  (hash 'fill '(fill fill-opacity)
+        'line '(line line-width dash)))
+
+;; A whole argument, for a group the source does not state at all: an outline a
+;; shape was given in the editor is a stroke call, and a fill is a colour.
+(define (argument->source head changes)
+  (define (val p)
+    (let ([ch (assq p changes)]) (and ch (not (eq? ABSENT (third ch))) (third ch))))
+  (case head
+    [(fill)
+     (define o (val 'fill-opacity))
+     (if (and o (< o 0.999))
+         (format "hex(~s, ~~alpha: ~a)" (or (val 'fill) "FFFFFF") (num->source o))
+         (format "hex(~s)" (or (val 'fill) "FFFFFF")))]
+    [else
+     (format "make_stroke(hex(~s)~a~a)"
+             (or (val 'line) "000000")
+             (let ([w (val 'line-width)]) (if w (format ", ~~width: ~a" (num->source w)) ""))
+             (let ([d (val 'dash)])
+               (if (and d (not (equal? "solid" (format "~a" d))))
+                   (format ", ~~dash: ~a" (style->source 'dash d))
+                   "")))]))
+
+;; An argument being added rather than rewritten: a colour is a call of its own,
+;; where the literal inside an existing one is just the string.
+(define (added->source property value)
+  (case property
+    [(text-color) (format "hex(~s)" value)]
+    [else (style->source property value)]))
+
 (define (style->source property value)
   (case property
     [(fill line text-color) (format "~s" value)]
-    [(size line-width) (num->source value)]
+    [(size line-width fill-opacity) (num->source value)]
     [(font) (format "~s" value)]
     [(bold italic) (if value "#true" "#false")]
     ;; A hyphen is subtraction in Rhombus, so a name that is not an identifier
