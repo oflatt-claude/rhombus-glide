@@ -145,9 +145,10 @@
   (check-= cy 45.0 1e-9))
 (check-true (text-body-empty? #f))
 (check-true (text-body-empty?
-             (text-body (list (para (list (trun "" "Calibri" 18.0 #f #f #f #f black 0.0 'none 0.0))
-                                    'left 0 0.0 0.0 '(percent . 1.0) 0.0 0.0 no-bullet))
-                        'top #f #t 'none default-insets 0.0)))
+             (text-body (list (para (list (trun "" "Calibri" 18.0 #f #f #f #f black 0.0 'none 0.0
+                                                'all))
+                                    'left 0 0.0 0.0 '(percent . 1.0) 0.0 0.0 no-bullet 'all))
+                        'top #f #t 'none default-insets 0.0 'all)))
 
 ;; A deck round-trips through `write`/`read`, which is what golden IR relies on.
 (let* ([d (deck 960.0 540.0

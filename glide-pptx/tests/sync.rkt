@@ -852,6 +852,93 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; -------------------------------------------- an editor that states less than we do
+
+;; Reported from live use: a Keynote round trip produced 298 refusals and
+;; merged nothing. Keynote's pptx export leaves out a great deal that ours
+;; writes -- a body's anchor and insets, a paragraph's alignment and spacing, a
+;; run's typeface and size -- and every one of those absences was being read as
+;; the user having removed something. Under the rule that a save lands whole or
+;; not at all, one of them blocked the lot.
+;;
+;; Nothing in any editor removes a typeface or an anchor; they only change. So
+;; a side that does not state one did not say, and only the properties whose
+;; absence the program can state -- a fill, an outline, an arrowhead, a crop, a
+;; bullet -- are read as removals.
+(let ()
+  (define dir (build-path work "terse-editor"))
+  (make-directory* dir)
+  (define program (build-path dir "t.rhm"))
+  (define deck (build-path dir "t.pptx"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export:"
+          "  all_slides"
+          "def slide_1 = slide_canvas("
+          "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+          "  at(60.0, 60.0, ~tag: \"Box\","
+          "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\"))),"
+          "  at(60.0, 200.0, ~tag: \"Words\","
+          "     textbox(~width: 400.0, ~height: 90.0, ~anchor: #'center,"
+          "             para(~align: #'right, ~line_spacing: pair(#'percent, 1.5),"
+          "                  run(\"hello \", ~font: \"Georgia\", ~size: 24.0),"
+          "                  run(\"world\", ~size: 18.0, ~bold: #true))))"
+          ")"
+          "def all_slides = [slide_1]"
+          "")
+    "\n")
+   program #:exists 'replace)
+  (define base (base-path-for program))
+  (when (file-exists? base) (delete-file base))
+  (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+  (void (sync-once program deck #:workdir (build-path dir "w")))
+  (define before (file->string program))
+
+  ;; An editor that writes the text but not what we said about it.
+  (check-true (edit-slide-part! deck 1 #px"<a:bodyPr [^>/]*" "<a:bodyPr" #:all? #t)
+              "the body properties were dropped")
+  (check-true (edit-slide-part! deck 1 #px"(?s:<a:pPr[^>]*>(?:(?!</a:pPr>).)*</a:pPr>)" ""
+                                #:all? #t)
+              "and the paragraph properties")
+  (check-true (edit-slide-part! deck 1 #px"(?s:<a:rPr[^>]*>(?:(?!</a:rPr>).)*</a:rPr>)"
+                                "<a:rPr/>" #:all? #t)
+              "and the run properties")
+  (define r (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-actions r) '()
+                "an unstated property is not a statement, so there is nothing to report")
+  (check-equal? (sync-report-skipped r) '() "and nothing stops the save")
+  (check-equal? (file->string program) before "and the program is untouched")
+
+  ;; And a real edit in the same terse deck still lands.
+  (check-true (drag-in-deck! deck 1 "Box" 200.0 240.0) "a shape was dragged")
+  (define r2 (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-actions r2)) '(moved))
+  (check-equal? (length (sync-report-applied r2)) 1 "the drag is written")
+  (check-equal? (sync-report-skipped r2) '() "and nothing stopped it")
+  (check-regexp-match #rx"~font: \"Georgia\"" (file->string program)
+                      "the typeface the program states is still what it states")
+
+  ;; An editor that does state the defaults is a different matter: it says the
+  ;; text is Calibri 18 plain, which is what a deck says when it says nothing.
+  ;; That is noted rather than written, since the two cannot be told apart --
+  ;; and a note does not stop a save.
+  (check-true (edit-slide-part! deck 1 #px"<a:rPr/>"
+                                "<a:rPr sz=\"1800\" b=\"0\"><a:latin typeface=\"Calibri\"/></a:rPr>"
+                                #:all? #t)
+              "the editor stated the defaults")
+  (define r3 (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-true (and (memq 'noted (map sync-action-kind (sync-report-actions r3))) #t)
+              "which is noted")
+  (check-equal? (sync-report-skipped r3) '() "and does not stop a save")
+  (check-regexp-match #rx"when it says nothing" (cdr (first (sync-report-notes r3))))
+  (check-regexp-match #rx"~font: \"Georgia\"" (file->string program)
+                      "the program keeps what it says")
+  (check-regexp-match #rx"at[(]200[.]0, 240[.]0, ~tag: \"Box\"" (file->string program)
+                      "and the drag that did land is still there"))
+
 ;; ------------------------------------------------ where a new shape is written
 
 ;; A shape drawn in the editor is somewhere in the drawing order, and that

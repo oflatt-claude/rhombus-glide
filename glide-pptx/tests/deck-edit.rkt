@@ -9,7 +9,8 @@
          add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!
          resize-in-deck! rotate-in-deck! edit-after-tag! shape-rx find-tag
          bring-to-front! duplicate-in-deck!
-         group-in-deck! ungroup-in-deck! move-element-to-slide! edit-slide-part!)
+         group-in-deck! ungroup-in-deck! move-element-to-slide! edit-slide-part!
+         edit-part!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -88,15 +89,31 @@
                     "(?:(?!</p:(?:sp|pic|grpSp)>).)*?</p:(?:sp|pic|grpSp)>)")
                    (regexp-quote tag) (regexp-quote tag))))
 
-;; A raw edit to one slide part, for what no element carries.
-(define (edit-slide-part! pptx slide rx to)
+;; A raw edit to any part of the package, for what no element carries.
+(define (edit-part! pptx name rx to)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir (string->path name)))
+     (and (file-exists? part)
+          (let ([t (file->string part)])
+            (and (regexp-match? rx t)
+                 (begin (display-to-file (regexp-replace rx t to) part #:exists 'replace)
+                        #t)))))))
+
+;; A raw edit to one slide part, for what no element carries. `all?` replaces
+;; every match rather than the first, which is how an editor that states less
+;; than we do is imitated.
+(define (edit-slide-part! pptx slide rx to #:all? [all? #f])
   (with-unpacked-deck
    pptx
    (lambda (dir)
      (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
      (define t (file->string part))
      (and (regexp-match? rx t)
-          (begin (display-to-file (regexp-replace rx t to) part #:exists 'replace) #t)))))
+          (begin (display-to-file ((if all? regexp-replace* regexp-replace) rx t to)
+                                  part #:exists 'replace)
+                 #t)))))
 
 ;; Groups two shapes, which is what the editor's Group command does: the two
 ;; forms move inside a `<p:grpSp>` whose box covers them both, and whose child

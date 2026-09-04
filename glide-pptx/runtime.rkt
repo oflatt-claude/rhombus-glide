@@ -247,7 +247,7 @@
 
 (define (empty-line-metrics p)
   (define r (if (pair? (para-runs p)) (first (para-runs p))
-                (trun "" "sans-serif" 18.0 #f #f #f #f black 0.0 'none 0.0)))
+                (trun "" "sans-serif" 18.0 #f #f #f #f black 0.0 'none 0.0 'all)))
   (define-values (w h d) (measure-run "Ag" r))
   (values h d))
 
@@ -770,7 +770,7 @@
               #:bold? [bold? #f] #:italic? [italic? #f] #:underline? [u? #f]
               #:strike? [s? #f] #:color [color black] #:spacing [spc 0.0]
               #:caps [caps 'none] #:baseline [base 0.0])
-  (trun text family size bold? italic? u? s? (color->rgba color) spc caps base))
+  (trun text family size bold? italic? u? s? (color->rgba color) spc caps base 'all))
 
 (define (para* #:align [align 'left] #:level [level 0]
                #:margin-left [marl 0.0] #:indent [indent 0.0]
@@ -781,7 +781,7 @@
   (para (if (null? runs)
             (list (run* ""))
             runs)
-        align level marl indent ls sb sa b))
+        align level marl indent ls sb sa b 'all))
 
 ;; A text box: the same options as `body*`, plus the box it lays out in.
 (define (textbox #:width w #:height h
@@ -789,13 +789,13 @@
                  #:autofit [autofit 'none] #:insets [ins default-insets]
                  #:rotate [rot 0.0]
                  . paras)
-  (define body (text-body paras anchor ac? wrap? autofit ins rot))
+  (define body (text-body paras anchor ac? wrap? autofit ins rot 'all))
   (with-desc (text-pict body w h) (text-desc w h body)))
 
 (define (body* #:anchor [anchor 'top] #:anchor-center? [ac? #f] #:wrap? [wrap? #t]
                #:autofit [autofit 'none] #:insets [ins default-insets] #:rotate [rot 0.0]
                . paras)
-  (text-body paras anchor ac? wrap? autofit ins rot))
+  (text-body paras anchor ac? wrap? autofit ins rot 'all))
 
 ;; ------------------------------------------------------------------ output
 

@@ -16,7 +16,7 @@
          racket/math racket/port racket/treelist pict
          (only-in shrubbery/parse parse-all)
          "ir.rkt" "draw-ir.rkt" "parse.rkt" "semantic.rkt" "sync-state.rkt"
-         (only-in "runtime.rkt" current-media-base)
+         (only-in "runtime.rkt" current-media-base current-default-font)
          (only-in "emit-common.rkt" media-names-for dominant-font)
          (only-in "emit-rhombus.rkt" rhombus-element-source rhombus-slide-source))
 (provide (struct-out sync-action) (struct-out sync-report)
@@ -41,7 +41,11 @@
 ;; `skipped` pairs each action the merge could not make with the reason. Knowing
 ;; an edit was refused, and why, is the whole difference between "nothing moved"
 ;; and "your drag was thrown away".
-(struct sync-report (actions applied skipped base-written?) #:transparent)
+;; `notes` are differences the merge saw and did not act on, because they are
+;; not assertions: an editor that states nothing leaves the format's defaults
+;; standing, and those are not edits. They belong in the report and must not
+;; stop a save, which is why they are neither applied nor skipped.
+(struct sync-report (actions applied skipped notes base-written?) #:transparent)
 
 ;; ------------------------------------------------------- reading both sides
 
@@ -153,10 +157,67 @@
 ;; from a `bold` that is really false.
 (define ABSENT 'absent)
 
+;; The properties an editor can take away, which are exactly the ones the
+;; program can state the absence of: a shape with no fill says `~fill: #false`,
+;; a line with no arrowhead `~head: #false`, a paragraph with no bullet
+;; `no_bullet`.
+;;
+;; Nothing else has an "absent" for anyone to choose. There is no command in
+;; any editor that removes a typeface, an anchor or a line spacing -- they only
+;; ever change. So a side that does not state one is a side that did not say,
+;; not a removal, and the two sides differ in what they bother to state:
+;; Keynote's export leaves out a great deal that our own writes. Reading that
+;; as edits reported hundreds of removals nobody had made, and under the rule
+;; that a save lands whole or not at all, one of them blocked the lot.
+;; The list is `STYLE-GROUPS`' own members -- everything that travels with a
+;; fill or an outline, since an outline being added is its width and its dash
+;; arriving with it -- plus the two that state their own absence.
+;; A bullet is not on the list: a paragraph with none says `<a:buNone/>`, which
+;; is a statement and compares as one, while a paragraph that says nothing at
+;; all about bullets inherits whatever its list style gives it.
+(define REMOVABLE '(fill fill-opacity line line-width dash cap head tail crop))
+
+;; What the format means when it says nothing. A shape whose `<a:rPr>` states no
+;; weight is not bold; one whose `<a:pPr>` states no alignment is left-aligned.
+;; Our own export states all of it; other editors stay quiet and let the
+;; defaults stand, and reading that as an edit rewrote a program's typography
+;; to the defaults -- Georgia 24 bold became Calibri 18 plain, silently, on the
+;; first save after a round trip through Keynote.
+;;
+;; So a deck value that is the default is not taken as an assertion about the
+;; shape. It is noted instead: the program keeps what it says, and the report
+;; says the two do not agree. The cost is that setting a property *to* its
+;; default in the editor is not merged -- which is the one case that cannot be
+;; told from the editor saying nothing at all.
+;; The typeface a deck falls back on, which is the one the program itself names
+;; -- a generated program says `current_default_font(...)` at the top, and the
+;; deck we wrote from it says the same in its master. Read off the runtime once
+;; the program has been loaded.
+(define inherited-font (make-parameter #f))
+
+(define INHERITED-DEFAULTS
+  (hash 'size 18.0 'bold #f 'italic #f 'underline #f 'strike #f
+        'spacing 0.0 'caps 'none 'baseline 0.0
+        'align 'left 'line-spacing '(percent . 1.0)
+        'space-before 0.0 'space-after 0.0
+        'level 0 'margin-left 0.0 'indent 0.0
+        'anchor 'top 'wrap #t 'autofit 'none
+        'insets '(7.2 3.6 7.2 3.6)))
+
+;; (values edits notes): the changes to act on, and the ones only worth saying.
+(define (split-trusted changes)
+  (for/fold ([edits '()] [notes '()] #:result (values (reverse edits) (reverse notes)))
+            ([ch (in-list changes)])
+    (define d (case (property-head (first ch))
+                [(font) (or (inherited-font) 'no-default)]
+                [else (hash-ref INHERITED-DEFAULTS (property-head (first ch)) 'no-default)]))
+    (if (and (not (eq? 'no-default d)) (equal? d (third ch)))
+        (values edits (cons ch notes))
+        (values (cons ch edits) notes))))
+
 ;; What the two states disagree about, as (property was now). An outline the
 ;; editor added, or took away, is as much of a change as one it recoloured, so
-;; a property missing from either side is reported with `ABSENT` rather than
-;; passed over.
+;; a removable property missing from either side is reported with `ABSENT`.
 (define (style-changes was now)
   (define (value l k) (let ([p (assoc k l)]) (if p (cdr p) ABSENT)))
   (define keys (remove-duplicates (append (map car was) (map car now))))
@@ -164,7 +225,10 @@
           (for/list ([k (in-list keys)])
             (define a (value was k))
             (define b (value now k))
-            (and (not (equal? a b)) (list k a b)))))
+            (and (not (equal? a b))
+                 (or (not (or (eq? ABSENT a) (eq? ABSENT b)))
+                     (memq (property-head k) REMOVABLE))
+                 (list k a b)))))
 
 ;; A tag names one *code site*, and one `at` inside a loop draws several
 ;; elements. So a tag can stand for a family, and an edit to a family only
@@ -382,8 +446,15 @@
     ;; this is reported and written only where the source holds a literal -- but
     ;; reported it must be: recolouring a shape in the editor used to disappear
     ;; without a word.
-    (let ([changes (style-changes (el-state-style b) (el-state-style d))])
+    (let-values ([(changes _noted)
+                  (split-trusted (style-changes (el-state-style b) (el-state-style d)))])
       (and (pair? changes) (sync-action 'restyle tag index changes #f)))
+    ;; And what it says the shape looks like without ever having said so: the
+    ;; defaults it left standing where it stated nothing. Those are noted, not
+    ;; acted on, and they do not stop a save.
+    (let-values ([(_changes noted)
+                  (split-trusted (style-changes (el-state-style b) (el-state-style d)))])
+      (and (pair? noted) (sync-action 'noted tag index noted #f)))
     (cond
       ;; Text is the code's, so a program edit wins and a deck-only edit is
       ;; taken.
@@ -1360,6 +1431,11 @@
              (kw-site (nth-property 'font i) r '#:font string?)
              (kw-site (nth-property 'bold i) r '#:bold 'flag)
              (kw-site (nth-property 'italic i) r '#:italic 'flag)
+             (kw-site (nth-property 'underline i) r '#:underline 'flag)
+             (kw-site (nth-property 'strike i) r '#:strike 'flag)
+             (kw-site (nth-property 'spacing i) r '#:spacing real?)
+             (kw-site (nth-property 'caps i) r '#:caps 'quoted)
+             (kw-site (nth-property 'baseline i) r '#:baseline real?)
              (run-colour-site (nth-property 'text-color i) r)))))
   (define para-sites
     (append*
@@ -1367,7 +1443,11 @@
        (list (kw-site (nth-property 'align i) p '#:align 'quoted)
              (kw-site (nth-property 'line-spacing i) p '#:line_spacing 'call)
              (kw-site (nth-property 'space-before i) p '#:space_before real?)
-             (kw-site (nth-property 'space-after i) p '#:space_after real?)))))
+             (kw-site (nth-property 'space-after i) p '#:space_after real?)
+             (kw-site (nth-property 'level i) p '#:level real?)
+             (kw-site (nth-property 'margin-left i) p '#:margin_left real?)
+             (kw-site (nth-property 'indent i) p '#:indent real?)
+             (kw-site (nth-property 'bullet i) p '#:bullet 'call)))))
   (append
    (filter values run-sites)
    (filter values para-sites)
@@ -1378,6 +1458,7 @@
                             (leaf-taking 'shape_pict 'image_pict))
                 (kw-site 'line-width stroke '#:width real?)
                 (kw-site 'dash stroke '#:dash 'quoted)
+                (kw-site 'cap stroke '#:cap 'quoted)
                 (end-site 'head stroke '#:head)
                 (end-site 'tail stroke '#:tail)
 
@@ -1725,6 +1806,7 @@
   (define edits '())
   (define applied '())
   (define skipped '())
+  (define notes '())
   ;; Ungrouping is several actions at once -- the group gone, and each shape it
   ;; held arriving on its own -- so it is worked out before anything is
   ;; written. Lifting the `at` forms out of the `group_pict` keeps what the
@@ -2246,16 +2328,26 @@
                       skipped))]
          [(edit! (car pieces) (cdr pieces)) (set! applied (cons a applied))]
          [else (set! skipped (cons (cons a "its `at` forms cannot be moved") skipped))])]
+      ;; A difference that is not an assertion: said, and nothing more.
+      [(noted)
+       (set! notes
+             (cons (cons a (string-join
+                            (for/list ([ch (in-list (sync-action-detail a))])
+                              (format "~a is ~s here and ~s in the deck, which is what a deck says when it says nothing"
+                                      (property-name (first ch)) (second ch) (third ch)))
+                            "; "))
+                   notes))]
       [(ambiguous)
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
       [else (set! skipped (cons (cons a "reported only") skipped))])
-    (unless (memq a applied) (set! edits before-edits)))
+    (unless (or (memq a applied) (eq? 'noted (sync-action-kind a)))
+      (set! edits before-edits)))
   (cond
     ;; All of it, or none of it.
-    [(and atomic? (pair? skipped)) (values '() (reverse skipped))]
+    [(and atomic? (pair? skipped)) (values '() (reverse skipped) (reverse notes))]
     [else
      (when (pair? edits) (splice-file! program-path edits))
-     (values (reverse applied) (reverse skipped))]))
+     (values (reverse applied) (reverse skipped) (reverse notes))]))
 
 ;; Whether the deck's rotation or mirroring differs from what the source says.
 ;; The source's own value is what it was exported with, so the base is not
@@ -2313,7 +2405,7 @@
 ;; there at all.
 (define STYLE-GROUPS
   (hash 'fill '(fill fill-opacity)
-        'line '(line line-width dash head tail)))
+        'line '(line line-width dash cap head tail)))
 
 ;; A whole argument, for a group the source does not state at all: an outline a
 ;; shape was given in the editor is a stroke call, and a fill is a colour.
@@ -2332,12 +2424,16 @@
        [(and o (< o 0.999)) (format "hex(~s, ~~alpha: ~a)" c (num->source o))]
        [else (format "hex(~s)" c)])]
     [else
-     (format "make_stroke(hex(~s)~a~a~a~a)"
+     (format "make_stroke(hex(~s)~a~a~a~a~a)"
              (or (val 'line) "000000")
              (let ([w (val 'line-width)]) (if w (format ", ~~width: ~a" (num->source w)) ""))
              (let ([d (val 'dash)])
                (if (and d (not (equal? "solid" (format "~a" d))))
                    (format ", ~~dash: ~a" (style->source 'dash d))
+                   ""))
+             (let ([c (val 'cap)])
+               (if (and c (not (eq? 'flat c)))
+                   (format ", ~~cap: ~a" (style->source 'cap c))
                    ""))
              (end-argument "head" (val 'head))
              (end-argument "tail" (val 'tail)))]))
@@ -2648,7 +2744,9 @@
 (define (property-name property)
   (if (pair? property)
       (format "~a of ~a ~a" (first property)
-              (if (memq (first property) '(align line-spacing space-before space-after))
+              (if (memq (first property)
+                        '(align line-spacing space-before space-after
+                          level margin-left indent bullet))
                   "paragraph" "run")
               (second property))
       (format "~a" property)))
@@ -2660,7 +2758,19 @@
     [(size line-width fill-opacity) (num->source value)]
     [(font) (format "~s" value)]
     [(bold italic) (if value "#true" "#false")]
-    [(space-before space-after) (num->source value)]
+    [(space-before space-after level margin-left indent spacing baseline)
+     (num->source value)]
+    [(underline strike) (if value "#true" "#false")]
+    ;; A bullet is a call of five things, and no bullet at all is `no_bullet`.
+    [(bullet)
+     (if (list? value)
+         (format "bullet(~a, ~a, ~a, ~a, ~a)"
+                 (style->source 'dash (first value))
+                 (if (second value) (format "~s" (second value)) "#false")
+                 (if (third value) (format "~s" (third value)) "#false")
+                 (if (fourth value) (num->source (fourth value)) "#false")
+                 (if (fifth value) (format "hex(~s)" (fifth value)) "#false"))
+         "no_bullet")]
     ;; `line_end(#'triangle, "med", "med")`, or nothing on that end at all.
     [(head tail)
      (if (list? value)
@@ -2677,7 +2787,7 @@
     [(line-spacing) (format "pair(#'~a, ~a)" (car value) (num->source (cdr value)))]
     ;; A hyphen is subtraction in Rhombus, so a name that is not an identifier
     ;; there has to be written the long way.
-    [(dash align anchor autofit) (let ([n (format "~a" value)])
+    [(dash align anchor autofit cap caps) (let ([n (format "~a" value)])
               (if (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_]*$" n)
                   (format "#'~a" n)
                   (format "#'#{~a}" n)))]
@@ -2742,6 +2852,8 @@
   (define base-file (base-path-for program-path))
   (define-values (base _p _d) (read-sync-base base-file))
   (define prog (program-slide-states program-path))
+  ;; The program has been loaded now, so the typeface it falls back on is known.
+  (define fallback-font (current-default-font))
   ;; The deck is unzipped to be read. When the caller did not say where, this
   ;; owns the scratch and clears it before returning.
   (define given-dir workdir)
@@ -2760,18 +2872,20 @@
        (write-sync-base base-file prog
                         #:program (path->string (path->complete-path program-path))
                         #:deck (path->string (path->complete-path pptx-path))))
-     (done! (sync-report '() '() '() (not dry-run?)))]
+     (done! (sync-report '() '() '() '() (not dry-run?)))]
     [else
-     (define actions (merge-states base prog deck program-path #:deck-ir deck-ir))
+     (define actions
+       (parameterize ([inherited-font fallback-font])
+         (merge-states base prog deck program-path #:deck-ir deck-ir)))
      (cond
-       [dry-run? (done! (sync-report actions '() '() #f))]
+       [dry-run? (done! (sync-report actions '() '() '() #f))]
        [else
-        (define-values (applied skipped)
+        (define-values (applied skipped notes)
           (apply-actions! program-path actions #:deck deck-ir #:atomic? atomic?))
         (cond
           ;; Nothing was written, so there is nothing new for the base to
           ;; record: leaving it alone is what makes the next save try again.
-          [(and atomic? (pair? skipped)) (done! (sync-report actions '() skipped #f))]
+          [(and atomic? (pair? skipped)) (done! (sync-report actions '() skipped notes #f))]
           [else
            ;; The new base is the program as it now reads, so the next pass
            ;; compares against something both sides agree on.
@@ -2779,7 +2893,7 @@
            (write-sync-base base-file after
                             #:program (path->string (path->complete-path program-path))
                             #:deck (path->string (path->complete-path pptx-path)))
-           (done! (sync-report actions applied skipped #t))])])]))
+           (done! (sync-report actions applied skipped notes #t))])])]))
 
 (define (format-sync-report r)
   (define o (open-output-string))
@@ -2787,7 +2901,7 @@
   (cond
     [(null? as) (fprintf o "  nothing to merge\n")]
     [else
-     (for ([a (in-list as)])
+     (for ([a (in-list as)] #:unless (eq? 'noted (sync-action-kind a)))
        (fprintf o "  slide ~a  ~a  ~s~a\n" (sync-action-slide a)
                 (~a (sync-action-kind a) #:min-width 12)
                 (sync-action-tag a)
@@ -2824,7 +2938,19 @@
                    (if (> (length tags) 4)
                        (format " and ~a more" (- (length tags) 4))
                        ""))]))
-     (fprintf o "  ~a applied, ~a reported\n"
+     ;; Notes, once each. A terse editor can leave the same note on every text
+     ;; box on the slide, and they are not things to do -- only things to know.
+     (define notes (sync-report-notes r))
+     (unless (null? notes)
+       (define kinds (remove-duplicates (map cdr notes)))
+       (fprintf o "  ~a element~a the deck describes differently, not merged:\n"
+                (length notes) (if (= 1 (length notes)) "" "s"))
+       (for ([why (in-list (take kinds (min 3 (length kinds))))])
+         (fprintf o "    ~a\n" why))
+       (when (> (length kinds) 3)
+         (fprintf o "    and ~a more like it\n" (- (length kinds) 3))))
+     (fprintf o "  ~a applied, ~a reported~a\n"
               (length (sync-report-applied r))
-              (- (length as) (length (sync-report-applied r))))])
+              (- (length as) (length (sync-report-applied r)) (length notes))
+              (if (null? notes) "" (format ", ~a noted" (length notes))))])
   (get-output-string o))

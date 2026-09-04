@@ -175,8 +175,15 @@
       (append (let ([h (hex-of (pen*-color p))]) (if h (list (cons 'line h)) '()))
               (list (cons 'line-width (/ (round (* 100.0 (pen*-width p))) 100.0))
                     (cons 'dash (format "~a" (pen*-dash p)))
+                    (cons 'cap (pen-cap-name (pen*-cap p)))
                     (cons 'head (end-style (pen*-head p)))
                     (cons 'tail (end-style (pen*-tail p)))))))
+
+;; The two sides spell a line's cap differently -- the drawing side calls
+;; PowerPoint's `projecting` a square end -- so they are compared under the
+;; name the program writes.
+(define (pen-cap-name c)
+  (case c [(round) 'round] [(square projecting) 'projecting] [else 'flat]))
 
 ;; What is on the end of a line: an arrowhead the editor put there is an edit
 ;; like any other. `#f` is one of the values, so it is reported as such rather
@@ -207,20 +214,63 @@
 ;; name, so a report about a body of one run reads the way it always did.
 (define (nth-property name i) (if (= i 1) name (list name i)))
 
-(define (run-style r i)
-  (list (cons (nth-property 'font i) (trun-family r))
-        (cons (nth-property 'size i) (round-to (trun-size r) 10.0))
-        (cons (nth-property 'bold i) (and (trun-bold? r) #t))
-        (cons (nth-property 'italic i) (and (trun-italic? r) #t))
-        (cons (nth-property 'text-color i) (or (hex-of (trun-color r)) ""))))
+;; Only what the shape says for itself. A property it inherits -- from its
+;; placeholder, the layout, the master, the theme -- is not a statement about
+;; it, and comparing inherited values reads an editor's terse export as a
+;; hundred edits nobody made, or worse writes the inherited value back into the
+;; program. `'all` is what a program's own text carries.
+(define (only-stated style stated)
+  (if (eq? 'all stated)
+      style
+      (for/list ([kv (in-list style)]
+                 #:when (memq (property-of (car kv)) stated))
+        kv)))
 
+;; A property is named either by a symbol or, after the first run or paragraph,
+;; by a list of the name and the number.
+(define (property-of k) (if (pair? k) (car k) k))
+
+;; Everything the font panel can do to a run. Underline, strike, letter
+;; spacing, capitals and a raised baseline were each in the representation and
+;; each dropped by the merge.
+(define (run-style r i)
+  (only-stated
+   (list (cons (nth-property 'font i) (trun-family r))
+         (cons (nth-property 'size i) (round-to (trun-size r) 10.0))
+         (cons (nth-property 'bold i) (and (trun-bold? r) #t))
+         (cons (nth-property 'italic i) (and (trun-italic? r) #t))
+         (cons (nth-property 'underline i) (and (trun-underline? r) #t))
+         (cons (nth-property 'strike i) (and (trun-strike? r) #t))
+         (cons (nth-property 'spacing i) (round-to (trun-spacing r) 100.0))
+         (cons (nth-property 'caps i) (trun-caps r))
+         (cons (nth-property 'baseline i) (round-to (trun-baseline r) 1000.0))
+         (cons (nth-property 'text-color i) (or (hex-of (trun-color r)) "")))
+   (trun-stated r)))
+
+;; And everything the paragraph panel can do: its level in a list, the indents
+;; that hang its bullet, and the bullet itself.
 (define (para-style p i)
-  (list (cons (nth-property 'align i) (para-align p))
-        (cons (nth-property 'line-spacing i)
-              (let ([ls (para-line-spacing p)])
-                (cons (car ls) (round-to (cdr ls) 1000.0))))
-        (cons (nth-property 'space-before i) (round-to (para-space-before p) 10.0))
-        (cons (nth-property 'space-after i) (round-to (para-space-after p) 10.0))))
+  (only-stated
+   (list (cons (nth-property 'align i) (para-align p))
+         (cons (nth-property 'line-spacing i)
+               (let ([ls (para-line-spacing p)])
+                 (cons (car ls) (round-to (cdr ls) 1000.0))))
+         (cons (nth-property 'space-before i) (round-to (para-space-before p) 10.0))
+         (cons (nth-property 'space-after i) (round-to (para-space-after p) 10.0))
+         (cons (nth-property 'level i) (para-level p))
+         (cons (nth-property 'margin-left i) (round-to (para-margin-left p) 10.0))
+         (cons (nth-property 'indent i) (round-to (para-indent p) 10.0))
+         (cons (nth-property 'bullet i) (bullet-style (para-bullet p))))
+   (para-stated p)))
+
+;; A bullet as the five things that describe it, so a list turned from dots to
+;; numbers is a difference the merge can see.
+(define (bullet-style b)
+  (and (bullet? b)
+       (not (eq? 'none (bullet-kind b)))
+       (list (bullet-kind b) (bullet-char b) (bullet-font b)
+             (and (bullet-size-frac b) (round-to (bullet-size-frac b) 1000.0))
+             (and (bullet-color b) (hex-of (bullet-color b))))))
 
 (define (body-style body)
   (define paras (and body (text-body-paras body)))
@@ -232,13 +282,15 @@
    ;; How the text sits in its box, which the editor's inspector can change
    ;; without touching a word of it.
    (if body
-       (list (cons 'anchor (text-body-anchor body))
-             (cons 'wrap (and (text-body-wrap? body) #t))
-             (cons 'autofit (text-body-autofit body))
-             (cons 'insets (let ([i (text-body-insets body)])
-                             (map (lambda (x) (round-to x 100.0))
-                                  (list (insets-l i) (insets-t i)
-                                        (insets-r i) (insets-b i))))))
+       (only-stated
+        (list (cons 'anchor (text-body-anchor body))
+              (cons 'wrap (and (text-body-wrap? body) #t))
+              (cons 'autofit (text-body-autofit body))
+              (cons 'insets (let ([i (text-body-insets body)])
+                              (map (lambda (x) (round-to x 100.0))
+                                   (list (insets-l i) (insets-t i)
+                                         (insets-r i) (insets-b i))))))
+        (text-body-stated body))
        '())
    ;; Every paragraph, and every run in them. Centring text is one of the first
    ;; things anyone does in an editor, and bolding one word of a line is
@@ -356,6 +408,7 @@
                                 (if (real? w) (/ (round (* 100.0 w)) 100.0) 0.0)))
                         (cons 'dash (format "~a" (let ([d (stroke-dash l)])
                                                    (if (eq? 'inherit d) 'solid d))))
+                        (cons 'cap (pen-cap-name (stroke-cap l)))
                         (cons 'head (end-style (stroke-head l)))
                         (cons 'tail (end-style (stroke-tail l)))))
           '())))
