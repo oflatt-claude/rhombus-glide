@@ -84,7 +84,11 @@
 ;; the width, `tail` the shaft thickness as a fraction of the height.
 (define (right-arrow-path w h head tail)
   (define hy (* h (/ (- 1.0 tail) 2.0)))
-  (define hx (* w (- 1.0 head)))
+  ;; The head's length is a fraction of the shape's *shorter* side, not of its
+  ;; width -- `dx2 = ss * adj2` in the spec, where ss is min(w, h). Taking it
+  ;; from the width made the head half of a wide arrow instead of a third, which
+  ;; is what LibreOffice and PowerPoint both draw.
+  (define hx (max 0.0 (- w (* (min w h) head))))
   (path-of (list (cons 0 hy) (cons hx hy) (cons hx 0)
                  (cons w (/ h 2.0)) (cons hx h) (cons hx (- h hy)) (cons 0 (- h hy)))))
 

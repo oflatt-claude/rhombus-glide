@@ -128,7 +128,12 @@
                      (if (eq? 'flat (stroke-cap l)) '()
                          (list (kwv "cap" (v:sym (stroke-cap l)))))
                      (end-args "head" (stroke-head l))
-                     (end-args "tail" (stroke-tail l))))]))
+                     (end-args "tail" (stroke-tail l))
+                     (if (stroke-dash-pattern l)
+                         (list (kwv "dash-pattern"
+                                    (v:list (for/list ([d (in-list (stroke-dash-pattern l))])
+                                              (v:pair (v:num (car d)) (v:num (cdr d)))))))
+                         '())))]))
 
 (define (end-args name e)
   (if (not e)

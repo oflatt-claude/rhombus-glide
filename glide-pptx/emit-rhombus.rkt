@@ -27,7 +27,14 @@
   (cond
     [(v:num? v) (num-string (v:num-x v))]
     [(v:str? v) (format "~s" (v:str-s v))]
-    [(v:sym? v) (format "#'~a" (v:sym-s v))]
+    ;; A hyphen is subtraction in Rhombus, so a name that is not an identifier
+    ;; there has to be written the long way: `#'short-dash` reads as `short`
+    ;; minus `dash`, and the program does not compile.
+    [(v:sym? v)
+     (define n (format "~a" (v:sym-s v)))
+     (if (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_]*$" n)
+         (format "#'~a" n)
+         (format "#'#{~a}" n))]
     [(v:bool? v) (if (v:bool-b v) "#true" "#false")]
     [(v:raw? v) (v:raw-s v)]
     [(v:list? v)

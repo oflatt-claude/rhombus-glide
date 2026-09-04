@@ -179,8 +179,6 @@
    'clrFrom                "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"
    'clrTo                  "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"
    'contourClr             "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"
-   'custDash               "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"
-   'ds                     "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"
    'duotone                "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"
    'extrusionClr           "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"
    'fade                   "a fill or effect variant not implemented: image tiling and recolouring, gradient rectangles, preset shadows"

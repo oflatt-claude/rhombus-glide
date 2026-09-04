@@ -84,13 +84,43 @@
      ;; A line width is in EMU, unlike font sizes and spacing, which are
      ;; hundredths of a point.
      (define w (or (string->emu-pt (attr ln 'w)) 'inherit))
-     (define dash (let ([d (child ln 'prstDash)])
-                    (and d (hash-ref dash-map (or (attr d 'val) "") 'solid))))
+     ;; A line can name a preset dash or spell one out. Spelled out is the
+     ;; common case in decks written by Keynote, and ignoring it drew every one
+     ;; of those lines solid.
+     (define custom (parse-cust-dash (child ln 'custDash)))
+     (define dash (cond
+                    [custom (dash-like custom)]
+                    [(child ln 'prstDash)
+                     => (lambda (d) (hash-ref dash-map (or (attr d 'val) "") 'solid))]
+                    [else #f]))
      (define cap (case (attr ln 'cap)
                    [("rnd") 'round] [("sq") 'projecting] [("flat") 'flat] [else #f]))
      (stroke color w (or dash 'inherit) (or cap 'inherit)
              (parse-line-end (child ln 'headEnd))
-             (parse-line-end (child ln 'tailEnd)))]))
+             (parse-line-end (child ln 'tailEnd))
+             custom)]))
+
+;; `<a:custDash><a:ds d="200000" sp="200000"/>...</a:custDash>`: each pair is a
+;; dash and the gap after it, in thousandths of a percent of the line's width.
+;; Kept as percentages, which is how they are written back.
+(define (parse-cust-dash e)
+  (define pairs
+    (for/list ([ds (in-list (if e (children e 'ds) '()))])
+      (cons (/ (or (string->number (or (attr ds 'd) "")) 100000) 1000.0)
+            (/ (or (string->number (or (attr ds 'sp) "")) 100000) 1000.0))))
+  (and (pair? pairs) pairs))
+
+;; The nearest style there is to draw with. A dc pen has a fixed set of dashes,
+;; so a spelled-out pattern is matched to the closest of them by how long its
+;; dashes are relative to the line's width.
+(define (dash-like pattern)
+  (define d (car (first pattern)))
+  (define varied? (> (length (remove-duplicates (map car pattern))) 1))
+  (cond
+    [varied? 'dash-dot]
+    [(<= d 150.0) 'dot]
+    [(>= d 500.0) 'dash]
+    [else 'short-dash]))
 
 ;; `<a:headEnd type="arrow" w="med" len="med"/>`. Only the shape matters here;
 ;; the two size words are kept so the writer can hand them back.
@@ -152,7 +182,8 @@
        ;; shape that draws an arrow is the one that says so.
        [else (stroke color (pick stroke-width 1.0)
                      (pick stroke-dash 'solid) (pick stroke-cap 'flat)
-                     (stroke-head winner) (stroke-tail winner))])]))
+                     (stroke-head winner) (stroke-tail winner)
+                     (stroke-dash-pattern winner))])]))
 
 ;; ---------------------------------------------------------------- transform
 
