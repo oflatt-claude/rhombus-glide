@@ -407,3 +407,17 @@
       ;; foot, which is one size down from its head.
       (check-= got size 0.05
                (format "~apt: the baseline sits one em down, not ~a" size got)))))
+
+;; ------------------------------------------------- a part may open with a BOM
+
+;; Two decks in the corpus begin their XML with a byte-order mark. It is legal,
+;; and Racket's reader treats it as content and refuses the document -- so both
+;; failed to import until it was taken off.
+(let ()
+  (local-require racket/file)
+  (define f (make-temporary-file "bom~a.xml"))
+  (display-to-file (bytes-append (bytes #xEF #xBB #xBF)
+                                 #"<?xml version=\"1.0\"?><a:root xmlns:a=\"x\"/>")
+                   f #:exists 'replace #:mode 'binary)
+  (check-true (xml-element? (read-xexpr-file f)) "a part opening with a BOM reads")
+  (delete-file f))

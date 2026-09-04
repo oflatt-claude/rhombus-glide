@@ -14,9 +14,18 @@
          all-text
          find-descendant find-descendants)
 
+;; A part may begin with a byte-order mark. It is legal, Word and PowerPoint
+;; both write one sometimes, and Racket's reader treats it as content and
+;; refuses the document -- so it comes off first.
 (define (read-xexpr-file path)
   (call-with-input-file path
-    (lambda (in) (xml->xexpr (document-element (read-xml in))))))
+    (lambda (in)
+      (skip-bom! in)
+      (xml->xexpr (document-element (read-xml in))))))
+
+(define (skip-bom! in)
+  (when (equal? (peek-bytes 3 0 in) (bytes #xEF #xBB #xBF))
+    (read-bytes 3 in)))
 
 (define (xml-element? x) (and (pair? x) (symbol? (car x))))
 

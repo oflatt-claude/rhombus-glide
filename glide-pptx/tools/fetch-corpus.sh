@@ -1,29 +1,40 @@
 #!/usr/bin/env bash
 # Downloads a corpus of real .pptx files to test against.
 #
-# The files are LibreOffice's own pptx regression suite: several hundred decks,
-# each written to exercise one awkward corner of the format. They are far better
-# at finding bugs than anything we would write ourselves, and they are not
-# committed here -- they belong to that project, and `tests/corpus/` is ignored.
+# Two projects' regression suites, both written by people fixing bugs in their
+# own readers: LibreOffice's is the larger, and Apache POI's overlaps little
+# with it because the two hit different corners. They find far more than
+# anything we would write ourselves -- an arrowhead we never drew, a path space
+# of zero, a donut whose ring was thicker than the shape.
 #
-# Usage: tools/fetch-corpus.sh [count]
+# The files are not committed: they belong to those projects, and
+# `tests/corpus/` is ignored.
+#
+# Usage: tools/fetch-corpus.sh [count-per-source]
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 out="$here/tests/corpus"
 count="${1:-400}"
-repo="LibreOffice/core"
-path="sd/qa/unit/data/pptx"
 
 mkdir -p "$out"
-echo "listing $repo/$path ..."
-names=$(gh api "repos/$repo/contents/$path" --paginate \
-          --jq '.[] | select(.name|test("[.]pptx$")) | .name' | head -n "$count")
-n=$(echo "$names" | wc -l | tr -d ' ')
-echo "fetching $n decks into $out"
 
-echo "$names" | xargs -P 12 -I {} sh -c \
-  'test -s "'"$out"'/{}" || curl -sSL --retry 2 -o "'"$out"'/{}" \
-     "https://raw.githubusercontent.com/'"$repo"'/master/'"$path"'/{}"'
+fetch() {
+  local repo="$1" path="$2" prefix="$3"
+  echo "listing $repo/$path ..."
+  local names
+  names=$(gh api "repos/$repo/contents/$path" --paginate \
+            --jq '.[] | select(.name|test("[.]pptx$")) | .name' | head -n "$count")
+  local n
+  n=$(printf '%s\n' "$names" | grep -c . || true)
+  echo "  $n decks"
+  # Prefixed, because the two suites use some of the same names.
+  printf '%s\n' "$names" | xargs -P 12 -I {} sh -c \
+    'test -s "'"$out"'/'"$prefix"'{}" || curl -sSL --retry 2 -o "'"$out"'/'"$prefix"'{}" \
+       "https://raw.githubusercontent.com/'"$repo"'/master/'"$path"'/{}"'
+}
+
+fetch "LibreOffice/core" "sd/qa/unit/data/pptx" ""
+fetch "apache/poi" "test-data/slideshow" "poi-"
 
 echo "$(ls -1 "$out"/*.pptx 2>/dev/null | wc -l | tr -d ' ') decks present"
