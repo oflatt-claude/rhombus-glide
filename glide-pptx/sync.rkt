@@ -1009,13 +1009,19 @@
       (unless (unbox found) (for-each walk l))))
   (unbox found))
 
-;; A name the colour cannot be read out of: a gradient's first stop is a
+;; A fill the colour cannot be read out of: a gradient's first stop is a
 ;; `hex(...)` too, and rewriting it would leave the fill a gradient.
-(define (compound-fill? stx)
-  (define bad '(gradient_fill image_fill pattern_fill))
+(define (compound-fill? stx) (and (fill-call-named stx '(gradient_fill image_fill pattern_fill)) #t))
+
+;; A gradient can at least be replaced whole -- by a colour, when that is what
+;; the editor set. An image or a pattern fill cannot: the comparison does not
+;; see one, so a change to a shape wearing one is reported rather than guessed.
+(define (gradient-fill-source? stx) (and (fill-call-named stx '(gradient_fill)) #t))
+
+(define (fill-call-named stx names)
   (let walk ([s stx])
     (define e (and (syntax? s) (syntax-e s)))
-    (cond [(memq e bad) #t]
+    (cond [(memq e names) #t]
           [(list? e) (for/or ([x (in-list e)]) (walk x))]
           [else #f])))
 
@@ -1079,6 +1085,9 @@
   (define (paint-site property kw stx)
     (define hit (and stx (not (compound-fill? stx)) (hex-site stx)))
     (cond
+      [(and stx (gradient-fill-source? stx))
+       (style-site property #f #f #f kw (value-extent stx))]
+      [(and stx (compound-fill? stx)) #f]
       [hit (style-site property
                        (and (eq? 'literal (car hit)) (cdr hit))
                        (and (eq? 'shared (car hit)) (cdr hit))
@@ -1495,6 +1504,11 @@
   (for ([a (in-list actions)] #:unless (eq? 'added-slide (sync-action-kind a)))
     (define site (site-for a))
     (current-source-text source-text)
+    ;; An action either lands or it does not. One that writes part of itself and
+    ;; then finds it cannot write the rest is reported as refused, and what it
+    ;; had written is dropped: a half-applied edit is how a program stops
+    ;; compiling.
+    (define before-edits edits)
     (case (sync-action-kind a)
       [(moved resized)
        (define g (sync-action-detail a))
@@ -1643,24 +1657,30 @@
          (define ch (assq head detail))
          (define hit (and ch (site-for head)))
          (define (took? ok) (and ok (hash-ref STYLE-GROUPS head)))
-         (and hit
+         ;; Only a plain colour has a literal inside the argument that means the
+         ;; whole of it. Anything else -- nothing at all, a gradient -- changes
+         ;; the argument itself.
+         (define (colour? v) (and (string? v) (not (equal? "gradient" v))))
+         (and hit ch
+              (not (and (colour? (second ch)) (colour? (third ch))))
               (cond
-                [(eq? ABSENT (second ch))
-                 (define src (argument->source head detail))
-                 (took?
-                  (cond
-                    [(and (style-site-whole hit) (not (style-site-range hit)))
-                     (edit! (style-site-whole hit) src)]
-                    [(and (style-site-insert-at hit)
-                          (eq? keyword (style-site-keyword hit)))
-                     (define at (style-site-insert-at hit))
-                     (edit! (rng at at)
-                            (format "~a~~~a: ~a"
-                                    (argument-comma (current-source-text) at)
-                                    (keyword->string keyword) src))]
-                    [else #f]))]
-                [(and (eq? ABSENT (third ch)) (style-site-whole hit))
-                 (took? (edit! (style-site-whole hit) "#false"))]
+                [(eq? ABSENT (third ch))
+                 (and (style-site-whole hit)
+                      (took? (edit! (style-site-whole hit) "#false")))]
+                [(argument->source head detail)
+                 => (lambda (src)
+                      (took?
+                       (cond
+                         [(and (style-site-whole hit) (not (style-site-range hit)))
+                          (edit! (style-site-whole hit) src)]
+                         [(and (style-site-insert-at hit)
+                               (eq? keyword (style-site-keyword hit)))
+                          (define at (style-site-insert-at hit))
+                          (edit! (rng at at)
+                                 (format "~a~~~a: ~a"
+                                         (argument-comma (current-source-text) at)
+                                         (keyword->string keyword) src))]
+                         [else #f])))]
                 [else #f])))
        (define wholes (append (or (whole-argument 'fill '#:fill) '())
                               (or (whole-argument 'line '#:line) '())))
@@ -1683,6 +1703,13 @@
                 [else (values done (cons (format "~a was removed, and the program has no way to say that"
                                                  property)
                                          left))])]
+             ;; "gradient" is all the comparison knows of one, and it is not
+             ;; something to write anywhere: not over the colour that was
+             ;; there, and certainly not into a shared definition.
+             [(not (statable? property want))
+              (values done (cons (format "the ~a was made a gradient, which the merge does not write back"
+                                         property)
+                                 left))]
              [(and hit (style-site-range hit)
                    (edit! (style-site-range hit) (style->source property want)))
               (values (cons property done) left)]
@@ -1750,7 +1777,8 @@
           (set! applied (cons a applied))])]
       [(ambiguous restacked)
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
-      [else (set! skipped (cons (cons a "reported only") skipped))]))
+      [else (set! skipped (cons (cons a "reported only") skipped))])
+    (unless (memq a applied) (set! edits before-edits)))
   (when (pair? edits) (splice-file! program-path edits))
   (values (reverse applied) (reverse skipped)))
 
@@ -1819,10 +1847,15 @@
     (let ([ch (assq p changes)]) (and ch (not (eq? ABSENT (third ch))) (third ch))))
   (case head
     [(fill)
+     (define c (val 'fill))
      (define o (val 'fill-opacity))
-     (if (and o (< o 0.999))
-         (format "hex(~s, ~~alpha: ~a)" (or (val 'fill) "FFFFFF") (num->source o))
-         (format "hex(~s)" (or (val 'fill) "FFFFFF")))]
+     ;; "gradient" is all the comparison knows of one: which stops and which
+     ;; angle is not something either side can say, so it is reported instead.
+     (cond
+       [(not (string? c)) #f]
+       [(equal? "gradient" c) #f]
+       [(and o (< o 0.999)) (format "hex(~s, ~~alpha: ~a)" c (num->source o))]
+       [else (format "hex(~s)" c)])]
     [else
      (format "make_stroke(hex(~s)~a~a)"
              (or (val 'line) "000000")
@@ -1838,6 +1871,14 @@
   (case property
     [(text-color) (format "hex(~s)" value)]
     [else (style->source property value)]))
+
+;; Whether the source can be given this value at all. A fill the editor made a
+;; gradient cannot: which stops and which angle is not something either side of
+;; the comparison can say.
+(define (statable? property value)
+  (case property
+    [(fill line text-color) (not (equal? "gradient" value))]
+    [else #t]))
 
 (define (style->source property value)
   (case property
