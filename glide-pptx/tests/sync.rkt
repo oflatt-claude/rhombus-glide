@@ -719,3 +719,97 @@
   (check-regexp-match #rx"~flip_h: #false" src "and so was the mirror")
   (check-equal? (length (regexp-match* #rx"~rotate:" src)) 1 "no second rotation")
   (check-equal? (length (regexp-match* #rx"~flip_h:" src)) 1 "no second mirror"))
+
+;; ------------------------------------------------ recolouring and restyling
+
+;; Appearance is the code's, and it used to be simply dropped: recolouring a
+;; shape in the editor vanished without a word. It is reported now, and written
+;; where the source states it as a literal.
+;;
+;; A colour with a name is different. It belongs to everything that uses it, so
+;; it is rewritten only when everything that uses it changed the same way --
+;; which is the rule a repeated tag already follows.
+(let ()
+  (define dir (build-path work "restyle"))
+  (make-directory* dir)
+  (define program (build-path dir "r.rhm"))
+  (define deck (build-path dir "r.pptx"))
+  (define (reset!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def brand = hex(\"4472C4\")"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  at(60.0, 60.0, ~tag: \"Plain\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\"))),"
+            "  at(240.0, 60.0, ~tag: \"One\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: brand)),"
+            "  at(400.0, 60.0, ~tag: \"Two\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: brand)),"
+            "  at(60.0, 200.0, ~tag: \"Words\","
+            "     textbox(~width: 300.0, ~height: 60.0,"
+            "             para(run(\"hello\", ~font: \"Arial\", ~size: 24.0))))"
+            ")"
+            "def all_slides = [slide_1]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+  (define (recolour! tag hex)
+    (edit-after-tag! deck 1 tag #px"<a:srgbClr val=\"[0-9A-Fa-f]+\"/>"
+                     (format "<a:srgbClr val=\"~a\"/>" hex)))
+  (define (sync!) (sync-once program deck #:workdir (build-path dir "w")))
+
+  ;; A literal colour is rewritten where it stands.
+  (reset!)
+  (check-true (recolour! "Plain" "70AD47") "the shape was recoloured")
+  (define r (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(restyle)
+                "and that is reported as a restyle, not passed over")
+  (check-equal? (length (sync-report-applied r)) 1 "and applied")
+  (check-regexp-match #rx"~fill: hex[(]\"70AD47\"[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A named colour, changed on one of the two that use it: refused, and the
+  ;; report says which name and how many did not change with it.
+  (reset!)
+  (check-true (recolour! "One" "70AD47"))
+  (define r2 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions r2)) '(restyle))
+  (check-equal? (sync-report-applied r2) '() "nothing was written")
+  (check-regexp-match #rx"brand" (cdr (first (sync-report-skipped r2)))
+                      "and the report names the colour")
+  (check-regexp-match #rx"1 other element that did not change"
+                      (cdr (first (sync-report-skipped r2))))
+  (check-regexp-match #rx"def brand = hex[(]\"4472C4\"[)]" (file->string program)
+                      "the definition is untouched")
+
+  ;; Both of them: the definition is rewritten, once.
+  (reset!)
+  (check-true (recolour! "One" "70AD47"))
+  (check-true (recolour! "Two" "70AD47"))
+  (define r3 (sync!))
+  (check-equal? (length (sync-report-applied r3)) 2 "both are applied")
+  (define src (file->string program))
+  (check-regexp-match #rx"def brand = hex[(]\"70AD47\"[)]" src "through the definition")
+  (check-equal? (length (regexp-match* #rx"70AD47" src)) 1 "which is written once")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A font and a size on a single-run body.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Words" #px"typeface=\"[^\"]*\"" "typeface=\"Courier New\""))
+  (check-true (edit-after-tag! deck 1 "Words" #px"sz=\"[0-9]+\"" "sz=\"4000\""))
+  (define r4 (sync!))
+  (check-equal? (length (sync-report-applied r4)) 1 "font and size in one action")
+  (define src4 (file->string program))
+  (check-regexp-match #rx"~font: \"Courier New\"" src4)
+  (check-regexp-match #rx"~size: 40[.]0" src4)
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled"))

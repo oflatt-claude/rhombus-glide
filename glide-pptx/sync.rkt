@@ -31,7 +31,8 @@
 ;; Whether scratch directories are left behind for inspection.
 (define current-keep-work? (make-parameter #f))
 
-;; kind: 'moved, 'resized, 'retext, 'conflict, 'added, 'removed, 'ambiguous
+;; kind: 'moved, 'resized, 'retext, 'restyle, 'conflict, 'added, 'removed,
+;; 'added-slide, 'ambiguous
 ;; `prior` is where the program currently draws the element, which is what a
 ;; correction for a computed position is measured against. It is #f when the
 ;; program has no element by that name.
@@ -141,6 +142,18 @@
           (filter (lambda (b) (not (hash-ref used b #f))) base)))
 
 ;; ------------------------------------------------------------------- merging
+
+;; Which named properties differ, as (name was now). A property missing on one
+;; side is not a difference: a deck states a font where a program leaves it to
+;; the theme, and neither is an edit.
+(define (style-changes was now)
+  (filter values
+          (for/list ([pair (in-list now)])
+            (define k (car pair))
+            (define old (assq k was))
+            (and old
+                 (not (equal? (cdr old) (cdr pair)))
+                 (list k (cdr old) (cdr pair))))))
 
 ;; A tag names one *code site*, and one `at` inside a loop draws several
 ;; elements. So a tag can stand for a family, and an edit to a family only
@@ -261,6 +274,12 @@
                     tag index (el-geometry d)
                     (and p (el-geometry p)))]
       [else #f])
+    ;; What the editor changed about the look of it. Appearance is the code's, so
+    ;; this is reported and written only where the source holds a literal -- but
+    ;; reported it must be: recolouring a shape in the editor used to disappear
+    ;; without a word.
+    (let ([changes (style-changes (el-state-style b) (el-state-style d))])
+      (and (pair? changes) (sync-action 'restyle tag index changes #f)))
     (cond
       ;; Text is the code's, so a program edit wins and a deck-only edit is
       ;; taken.
@@ -406,7 +425,7 @@
 ;; which definition is which slide -- without that, dragging the title on slide 3
 ;; would rewrite slide 1's coordinates.
 (struct at-site (tag x y rot width height texts nudge insert-at scope whole
-                 flip-h flip-v leaf-at) #:transparent)
+                 flip-h flip-v leaf-at styles) #:transparent)
 
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
@@ -628,12 +647,13 @@
     (values (reverse sites) (rhombus-slide-scopes groups)
             (with-indents (rhombus-slide-sites groups text) (reverse sites) text)
             (program-layout (rhombus-name-list groups text)
-                            (rhombus-export-block groups text)))))
+                            (rhombus-export-block groups text)
+                            (rhombus-global-colours groups)))))
 
 ;; Where a slide can be added, and where its name has to be entered for the
 ;; addition to mean anything. A `def slide_N` nobody lists in `all_slides` is
 ;; dead code, so the two edits go together.
-(struct program-layout (slide-list exports) #:transparent)
+(struct program-layout (slide-list exports globals) #:transparent)
 
 ;; `def all_slides = [slide_1, slide_2]` -- the brackets, and each name in them.
 (struct name-list (open close items) #:transparent)
@@ -724,6 +744,20 @@
        (symbol? (syntax-e* (third l)))
        (syntax-e* (third l))))
 
+;; `def brand = hex("4472C4")` -> brand -> the range of that string. A colour
+;; given a name is shared, so recolouring one shape that uses it is not the same
+;; edit as recolouring the name.
+(define (rhombus-global-colours groups)
+  (for/fold ([h (hash)]) ([g (in-list groups)])
+    (define l (let ([e (syntax-e g)]) (and (list? e) e)))
+    (define nm (and l (>= (length l) 5) (eq? 'def (syntax-e* (second l)))
+                    (symbol? (syntax-e* (third l)))
+                    (syntax-e* (third l))))
+    (define hit (and nm (hex-site g)))
+    (if (and hit (eq? 'literal (car hit)))
+        (hash-set h nm (cdr hit))
+        h)))
+
 ;; `def all_slides = [slide_1, slide_2]` -> '(slide_1 slide_2).
 (define (rhombus-slide-scopes groups)
   (for/or ([g (in-list groups)])
@@ -799,7 +833,8 @@
                   #f #f
                   (rhombus-child-flag child '#:flip_h)
                   (rhombus-child-flag child '#:flip_v)
-                  (rhombus-child-insert child)))))
+                  (rhombus-child-insert child)
+                  (style-sites child)))))
 
 ;; `~nudge: [12.0, -4.0]` -> (list range dx dy).
 ;; The text being read, so an extent that syntax cannot give can be found in it.
@@ -846,6 +881,106 @@
   (and parens
        (for/or ([g (in-list (cdr (syntax-e parens)))])
          (and (eq? kw (rhombus-kw-name g)) (literal-range (rhombus-kw-value g) real?)))))
+
+;; The whole group a keyword introduces, rather than the one term inside it: a
+;; `~fill: hex("4472C4")` is a call, not a value.
+(define (rhombus-kw-group g)
+  (define l (and (syntax? g) (let ([e (syntax-e g)]) (and (list? e) e))))
+  (and l (>= (length l) 3) (eq? 'group (syntax-e* (first l)))
+       (rhombus-head? (third l) 'block)
+       (let ([b (syntax-e (third l))])
+         (and (pair? (cdr b)) (second b)))))
+
+;; Every `run(...)` call in a leaf, so a body of one run can have its typeface
+;; and size rewritten and a body of several can be told apart from it.
+(define (rhombus-run-calls child)
+  (define acc '())
+  (let walk ([s child])
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (when l
+      (define call (rhombus-call l))
+      (when (and call (memq (car call) '(run run*)))
+        (set! acc (cons s acc)))
+      (for-each walk l)))
+  (reverse acc))
+
+;; A keyword's literal value inside a particular call.
+(define (rhombus-child-kw-in call kw pred)
+  (define l (and (syntax? call) (let ([e (syntax-e call)]) (and (list? e) e))))
+  (define parens (and l (findf (lambda (x) (rhombus-head? x 'parens)) l)))
+  (and parens
+       (for/or ([g (in-list (cdr (syntax-e parens)))])
+         (and (eq? kw (rhombus-kw-name g)) (literal-range (rhombus-kw-value g) pred)))))
+
+(define (rhombus-child-flag-in call kw)
+  (define l (and (syntax? call) (let ([e (syntax-e call)]) (and (list? e) e))))
+  (define parens (and l (findf (lambda (x) (rhombus-head? x 'parens)) l)))
+  (and parens
+       (for/or ([g (in-list (cdr (syntax-e parens)))])
+         (and (eq? kw (rhombus-kw-name g))
+              (let ([v (rhombus-kw-value g)]) (and v (range-of v)))))))
+
+;; Where a style property is written in the source, if it is written as a
+;; literal at all. A `~fill: hex("4472C4")` can be rewritten; a
+;; `~fill: brand_blue` names something shared, and changing that would recolour
+;; every shape using it -- so it is reported with the name instead.
+(struct style-site (property range shared) #:transparent)
+
+;; The literal inside the first `hex("...")` under `stx`, or the name it is given
+;; instead.
+(define (hex-site stx)
+  (define found (box #f))
+  ;; A call is a name followed by parentheses, and the two are siblings wherever
+  ;; they appear: `~fill: hex("4472C4")` puts them in a group of their own, and
+  ;; `def brand = hex("4472C4")` puts them at the end of a longer one.
+  (let walk ([s stx])
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (when (and l (not (unbox found)))
+      (for ([a (in-list l)] [b (in-list (cdr l))])
+        (when (and (not (unbox found))
+                   (eq? 'hex (syntax-e* a))
+                   (rhombus-head? b 'parens))
+          (define args (cdr (syntax-e b)))
+          (define v (and (pair? args) (rhombus-group-value (first args))))
+          (when (and v (string? (syntax-e* v)))
+            (set-box! found (cons 'literal (range-of v))))))
+      (unless (unbox found) (for-each walk l))))
+  (cond
+    [(unbox found) => values]
+    [else
+     ;; Not a `hex(...)`: a bare name is something shared.
+     (define nm (let ([l (and (syntax? stx) (let ([e (syntax-e stx)]) (and (list? e) e)))])
+                  (and l (= 2 (length l)) (symbol? (syntax-e* (second l)))
+                       (syntax-e* (second l)))))
+     (and nm (cons 'shared nm))]))
+
+(define (kw-value-stx child kw)
+  (define l (and (syntax? child) (syntax-e child)))
+  (define parens (and (list? l) (findf (lambda (x) (rhombus-head? x 'parens)) l)))
+  (and parens
+       (for/or ([g (in-list (cdr (syntax-e parens)))])
+         (and (eq? kw (rhombus-kw-name g)) (rhombus-kw-group g)))))
+
+;; The properties this can find in one `at` form.
+(define (style-sites child)
+  (define (colour-of kw name)
+    (define v (kw-value-stx child kw))
+    (define hit (and v (hex-site v)))
+    (and hit (style-site name
+                         (and (eq? 'literal (car hit)) (cdr hit))
+                         (and (eq? 'shared (car hit)) (cdr hit)))))
+  (define runs (rhombus-run-calls child))
+  (define (run-kw kw name pred)
+    (and (= 1 (length runs))
+         (let ([r (rhombus-child-kw-in (first runs) kw pred)])
+           (and r (style-site name r #f)))))
+  (filter values
+          (list (colour-of '#:fill 'fill)
+                (run-kw '#:size 'size real?)
+                (run-kw '#:font 'font string?)
+                (let ([v (and (= 1 (length runs))
+                              (rhombus-child-flag-in (first runs) '#:bold))])
+                  (and v (style-site 'bold v #f))))))
 
 ;; A boolean keyword on the leaf, as (range . value) -- so a flip that is
 ;; already there can be set either way. `#:width` and friends carry a number and
@@ -1271,6 +1406,51 @@
           (set! skipped (cons (cons a "its `at` form has no source extent") skipped))]
          [else (edit! (deletion-range (file->string program-path) whole) "")
                (set! applied (cons a applied))])]
+      ;; Appearance: written where the source states it as a literal, and
+      ;; reported by name where it does not.
+      [(restyle)
+       (define sites (if site (at-site-styles site) '()))
+       (define-values (done left)
+         (for/fold ([done '()] [left '()]) ([ch (in-list (sync-action-detail a))])
+           (define hit (findf (lambda (st) (eq? (style-site-property st) (first ch))) sites))
+           (cond
+             [(and hit (style-site-range hit)
+                   (edit! (style-site-range hit) (style->source (first ch) (third ch))))
+              (values (cons (first ch) done) left)]
+             [(and hit (style-site-shared hit))
+              ;; A named colour belongs to everything that uses it, so it is
+              ;; rewritten only when everything that uses it changed the same
+              ;; way -- the same rule as a tag that names several elements.
+              (define name (style-site-shared hit))
+              (define users (sites-using all-sites (first ch) name))
+              (define agreed?
+                (and (hash-ref (program-layout-globals layout) name #f)
+                     (for/and ([st (in-list users)])
+                       (for/or ([b (in-list actions)])
+                         (and (eq? 'restyle (sync-action-kind b))
+                              (equal? (at-site-tag st) (sync-action-tag b))
+                              (for/or ([c (in-list (sync-action-detail b))])
+                                (and (eq? (first c) (first ch))
+                                     (equal? (third c) (third ch)))))))))
+              (cond
+                [agreed?
+                 (edit! (hash-ref (program-layout-globals layout) name)
+                        (style->source (first ch) (third ch)))
+                 (values (cons (format "~a via ~a" (first ch) name) done) left)]
+                [else
+                 (values done (cons (format "~a is ~a, shared with ~a other element~a that did not change with it"
+                                            (first ch) name (max 0 (sub1 (length users)))
+                                            (if (= 2 (length users)) "" "s"))
+                                    left))])]
+             [else (values done (cons (format "~a is not a literal here" (first ch)) left))])))
+       (cond
+         [(null? left) (set! applied (cons a applied))]
+         [else
+          (set! skipped
+                (cons (cons a (string-append
+                               (if (null? done) "" (format "~a written; " (reverse done)))
+                               (string-join (reverse left) "; ")))
+                      skipped))])]
       [(ambiguous)
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
       [else (set! skipped (cons (cons a "reported only") skipped))]))
@@ -1316,6 +1496,24 @@
       [else #f]))
   (and (one (at-site-flip-h site) (and fh #t) "flip_h")
        (one (at-site-flip-v site) (and fv #t) "flip_v")))
+
+;; Every `at` in the program whose `property` is the shared name `name`.
+(define (sites-using sites property name)
+  (for/list ([st (in-list sites)]
+             #:when (for/or ([sy (in-list (at-site-styles st))])
+                      (and (eq? property (style-site-property sy))
+                           (eq? name (style-site-shared sy)))))
+    st))
+
+;; A style value as it reads in source: a colour is the string inside `hex`, a
+;; size is a number, a typeface a string, boldness a boolean.
+(define (style->source property value)
+  (case property
+    [(fill line text-color) (format "~s" value)]
+    [(size line-width) (num->source value)]
+    [(font) (format "~s" value)]
+    [(bold italic) (if value "#true" "#false")]
+    [else (format "~a" value)]))
 
 ;; The correction's value, as a Rhombus list.
 (define (nudge->source dx dy)

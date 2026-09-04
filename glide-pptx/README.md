@@ -103,16 +103,23 @@ with the reason, because no single correction produces it.
 | paste a slide in | a `def slide_N` and an entry in `all_slides` |
 | move a group | the group, as one element |
 | move all of a repeated tag together | one correction on the one `at` |
+| recolour a shape | the `hex("...")` where it stands |
+| recolour one that uses a named colour | the `def`, when everything using it changed with it |
+| change a font, a size, boldness | the `run`'s own arguments, for a body of one run |
 
 Refused, with the reason, rather than guessed at: moving or deleting *one* of
 several elements that share a tag, deleting a slide, retyping text that spans
 several runs, and moving something whose position is computed and whose tag is
 not a literal.
 
-Not carried back at all, by design: **appearance**. A colour, a font, a size, a
-bullet, a z-order -- PowerPoint owns geometry and the code owns everything else,
-which is what makes the ordinary cycle conflict-free. Change a colour in the
-editor and the next export will paint it back the way the program says.
+Appearance follows the same rule as geometry: written where the source states
+it as a literal, and **reported by name where it does not**. A colour with a
+name of its own belongs to everything that uses it, so `def brand = hex(...)` is
+rewritten only when every shape using it changed the same way -- and when they
+did not, the report says which name and how many did not change with it. What
+is still not carried back is anything with no literal to write to: a bullet, a
+z-order, a gradient's stops, a font on a body of several runs. Those are
+reported and left, never passed over in silence.
 
 Slides are matched on their contents, not by index, so pasting one in from
 another deck does not shift the ones after it. A pasted slide becomes a
