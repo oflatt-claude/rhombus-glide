@@ -813,3 +813,91 @@
   (check-regexp-match #rx"~font: \"Courier New\"" src4)
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
+
+;; --------------------------------- the rest of what an editor can do to a deck
+
+;; Surveyed by simulating each action and seeing what the merge made of it. Four
+;; were silent -- a dashed line, a translucent fill, bringing a shape to the
+;; front, reordering the slides -- and one was worse than silent: duplicating a
+;; shape wrote a second `at` under the same tag, which left the program in a
+;; state no later sync could read.
+(let ()
+  (define dir (build-path work "actions"))
+  (make-directory* dir)
+  (define program (build-path dir "a.rhm"))
+  (define deck (build-path dir "a.pptx"))
+  (define (reset!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  at(60.0, 60.0, ~tag: \"Box\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\"),"
+            "                ~line: make_stroke(hex(\"203040\"), ~width: 2.0))),"
+            "  at(240.0, 60.0, ~tag: \"Other\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"4472C4\")))"
+            ")"
+            "def slide_2 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  at(60.0, 60.0, ~tag: \"Second\","
+            "     shape_pict(~width: 100.0, ~height: 60.0, ~fill: hex(\"70AD47\")))"
+            ")"
+            "def all_slides = [slide_1, slide_2]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+  (define (sync!) (sync-once program deck #:workdir (build-path dir "w")))
+
+  ;; A line's colour and width are literals inside `make_stroke`.
+  (reset!)
+  (check-true (edit-after-tag!
+               deck 1 "Box"
+               #px"<a:ln[^>]*><a:solidFill><a:srgbClr val=\"[0-9A-Fa-f]+\"/>"
+               "<a:ln w=\"76200\"><a:solidFill><a:srgbClr val=\"FF0000\"/>"))
+  (define r (sync!))
+  (check-equal? (length (sync-report-applied r)) 1 "the line was restyled")
+  (define src (file->string program))
+  (check-regexp-match #rx"make_stroke[(]hex[(]\"FF0000\"[)]" src "its colour written")
+  (check-regexp-match #rx"~width: 6[.]0" src "and its width")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Bringing a shape to the front is reported, since rewriting it would mean
+  ;; moving the `at` form rather than a literal in it.
+  (reset!)
+  (check-true (bring-to-front! deck 1 "Box") "the shape was brought to the front")
+  (define r2 (sync!))
+  (check-true (and (memq 'restacked (map sync-action-kind (sync-report-actions r2))) #t)
+              "the drawing order is reported")
+  (check-regexp-match #rx"move its `at` form"
+                      (cdr (first (sync-report-skipped r2)))
+                      "and the report says what to do about it")
+
+  ;; Reordering the slides is `all_slides`, which is a literal list.
+  (reset!)
+  (check-true (move-slide! deck 2 1) "the slides were reordered")
+  (define r3 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions r3)) '(reordered))
+  (check-equal? (length (sync-report-applied r3)) 1 "and applied")
+  (check-regexp-match #rx"all_slides = [[]slide_2, slide_1[]]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Duplicating a shape gives the copy a name of its own, so the program stays
+  ;; readable.
+  (reset!)
+  (check-true (duplicate-in-deck! deck 1 "Other") "the shape was duplicated")
+  (define r4 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions r4)) '(added))
+  (check-equal? (length (sync-report-applied r4)) 1 "the copy was added")
+  (check-regexp-match #rx"~tag: \"Other [(]2[)]\"" (file->string program)
+                      "under a name of its own")
+  (check-equal? (sync-report-actions (sync!)) '()
+                "and the program is still one a sync can read"))
