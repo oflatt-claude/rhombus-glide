@@ -852,6 +852,46 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; ------------------------------------------------- a scratch from another program
+
+;; The scratch is picked up rather than cleared when a session starts, so edits
+;; made while nothing was watching are merged rather than thrown away. A folder
+;; that came from somewhere else -- copied with a project, left by another
+;; program -- holds a deck and a base that have nothing to do with this one, and
+;; merging those would be merging someone else's edits.
+(let ()
+  (define dir (build-path work "foreign-base"))
+  (make-directory* dir)
+  (define program (build-path dir "a.rhm"))
+  (define other (build-path dir "b.rhm"))
+  (define deck (build-path dir "a.pptx"))
+  (define text
+    (string-join
+     (list "#lang rhombus/and_meta"
+           "import:"
+           "  lib(\"glide-pptx/runtime.rhm\") open"
+           "export:"
+           "  all_slides"
+           "def slide_1 = slide_canvas("
+           "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+           "  at(60.0, 60.0, ~tag: \"Box\","
+           "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\")))"
+           ")"
+           "def all_slides = [slide_1]"
+           "")
+     "\n"))
+  (display-to-file text program #:exists 'replace)
+  (display-to-file text other #:exists 'replace)
+  (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+  ;; A base recorded for `b.rhm`, sitting where `a.rhm`'s belongs.
+  (void (sync-once other deck #:workdir (build-path dir "w")))
+  (copy-file (base-path-for other) (base-path-for program) #t)
+  (define msg (with-handlers ([exn:fail? exn-message])
+                (sync-once program deck #:workdir (build-path dir "w"))))
+  (check-regexp-match #rx"written for a different program" msg)
+  (check-regexp-match #rx"b[.]rhm" msg "and says which one")
+  (check-regexp-match #rx"Delete" msg "and what to do about it"))
+
 ;; -------------------------------------------- an editor that states less than we do
 
 ;; Reported from live use: a Keynote round trip produced 298 refusals and

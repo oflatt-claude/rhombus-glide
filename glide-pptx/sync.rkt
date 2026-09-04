@@ -2830,6 +2830,13 @@
 ;; next pass just records where things stand -- so it lives in scratch with the
 ;; deck rather than beside the program, which holds the program and its images
 ;; and nothing else.
+;; Two paths naming one file, as far as anything here can tell.
+(define (same-file-path? a b)
+  (define (norm p)
+    (with-handlers ([exn:fail? (lambda (_e) (format "~a" p))])
+      (path->string (simplify-path (path->complete-path (if (path? p) p (string->path p))) #f))))
+  (equal? (norm a) (norm b)))
+
 (define (base-path-for program-path)
   (define full (path->complete-path program-path))
   (define dir (or (path-only full) (current-directory)))
@@ -2850,7 +2857,25 @@
                    #:dry-run? [dry-run? #f]
                    #:atomic? [atomic? #f])
   (define base-file (base-path-for program-path))
-  (define-values (base _p _d) (read-sync-base base-file))
+  (define-values (base recorded-program _d) (read-sync-base base-file))
+  ;; The scratch is picked up rather than cleared when a session starts, so
+  ;; that edits made while nothing was watching are merged rather than thrown
+  ;; away. That only holds while it is *this* program's scratch: a folder
+  ;; copied along with a project, or left by another program, holds a deck and
+  ;; a base that have nothing to do with this one.
+  (when (and base recorded-program
+             (not (same-file-path? recorded-program program-path)))
+    (error 'glide
+           (string-append
+            "~a was written for a different program.\n"
+            "  it says:  ~a\n"
+            "  this is:  ~a\n"
+            "  Delete ~a and start again -- it holds a deck and an agreed base\n"
+            "  from another session, and merging those into this program would\n"
+            "  be merging someone else's edits.")
+           (file-name-from-path base-file) recorded-program
+           (path->string (path->complete-path program-path))
+           (let ([d (path-only base-file)]) (if d (path->string d) base-file))))
   (define prog (program-slide-states program-path))
   ;; The program has been loaded now, so the typeface it falls back on is known.
   (define fallback-font (current-default-font))
