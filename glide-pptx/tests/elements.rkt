@@ -22,12 +22,13 @@
 (make-directory* work)
 
 (define MARGIN 12.0)
-;; What is left at the top of the list is text: a title's glyphs all shift
-;; together when the baseline is a point out, so a third of its ink can differ
-;; while the words are right. Shapes sit far below that, which is what this is
-;; for -- it found an arrowhead that was never drawn, and an arrow whose head was
-;; half the shape instead of a third, both invisible in a whole-slide diff.
-(define INK-LIMIT 0.35)
+;; Text used to sit at the top of this list around 30%, because a title's glyphs
+;; all shift together when the baseline is a point out. With the baseline fixed
+;; the worst element is under 8%, so the limit is low enough to catch a shape
+;; drawn wrong: it has already found an arrowhead that was never drawn and an
+;; arrow whose head was half the shape instead of a third, both invisible in a
+;; whole-slide diff.
+(define INK-LIMIT 0.15)
 
 ;; The share of the drawing that differs: pixels that disagree, over pixels
 ;; either side inked.

@@ -376,3 +376,34 @@
     (check-equal? (line-end-length (stroke-head l)) "lg" "at the size it was given")
     (check-equal? (line-end-kind (stroke-tail l)) 'arrow "and its tail"))
   (delete-file out))
+
+;; ------------------------------------------------ where the baseline sits
+
+;; Single spacing is 1.2 times the font size and the baseline sits 1.0 of it
+;; down -- so the descent that positions a line is a fifth of the size, not the
+;; font's own, which varies (Liberation Sans reports 0.212, Carlito 0.269).
+;;
+;; Measured against LibreOffice at 96pt: with the font's descent our text sat
+;; 1.08pt high and its glyph box was otherwise identical -- same left edge, same
+;; height, ink within 0.02%. With a fifth of the size the two agree exactly, and
+;; the worst element in the per-element comparison went from 31% to under 8%.
+(let ()
+  (local-require glide-pptx/runtime glide-pptx/draw-ir glide-pptx/record-adapt
+                 pict racket/list)
+  ;; Where the first line's baseline lands in a top-anchored box with no insets.
+  (define (baseline size)
+    (define box
+      (textbox #:width 900.0 #:height 400.0 #:insets (insets 0.0 0.0 0.0 0.0)
+               (para* (run* "Hxg" #:size size #:font "Liberation Sans"))))
+    (define page (pict->display-page (lambda (dc) (draw-pict box dc 0 0)) 900.0 400.0))
+    (define t (findf it:text? (display-page-items page)))
+    (and t (+ (it:text-y t) (it:text-ascent t))))
+
+  (for ([size (in-list '(12.0 32.0 48.0 96.0 116.0))])
+    (define got (baseline size))
+    (check-true (and got #t) (format "~apt drew a line" size))
+    (when got
+      ;; The line box is 1.2 times the size and the baseline a fifth up from its
+      ;; foot, which is one size down from its head.
+      (check-= got size 0.05
+               (format "~apt: the baseline sits one em down, not ~a" size got)))))
