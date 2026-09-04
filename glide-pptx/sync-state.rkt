@@ -87,7 +87,8 @@
                (it:picture-flip-h? i) (it:picture-flip-v? i)
                "" (format "~a" (it:picture-src i))
                (append (pen-style (it:picture-pen i))
-                       (list (cons 'opacity (/ (round (* 100.0 (it:picture-opacity i))) 100.0))))
+                       (list (cons 'opacity (round-to (it:picture-opacity i) 100.0))
+                             (cons 'crop (crop-style (it:picture-crop i)))))
                z)]
     ;; A flattened element is a picture on both sides of the sync, so it is
     ;; described as one here too and the signature matcher agrees.
@@ -237,6 +238,12 @@
 
 ;; Rounded, so that a value that differs in the last decimal place is not read
 ;; as an edit.
+;; How much of a picture is cropped away, as four fractions or #f for none. A
+;; crop is a value the editor sets with the crop tool and the program states as
+;; a list, so both ends of it are comparable.
+(define (crop-style c)
+  (and (list? c) (= 4 (length c)) (for/list ([v (in-list c)]) (round-to v 10000.0))))
+
 (define (round-to v scale) (/ (round (* scale (exact->inexact v))) scale))
 
 ;; ------------------------------------------------------------ from a deck IR
@@ -324,7 +331,8 @@
   (define text (if (shape? e) (body-style (shape-body e)) '()))
   (define opacity
     (if (picture? e)
-        (list (cons 'opacity (/ (round (* 100.0 (picture-opacity e))) 100.0)))
+        (list (cons 'opacity (round-to (picture-opacity e) 100.0))
+              (cons 'crop (crop-style (picture-crop e))))
         '()))
   (append fill line text opacity))
 
