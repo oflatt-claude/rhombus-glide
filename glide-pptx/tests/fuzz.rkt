@@ -1,0 +1,199 @@
+#lang racket/base
+;; Random decks, checked against an oracle that needs no reference renderer.
+;;
+;; The schema is completely specified, so a generator can stay inside it: every
+;; preset geometry with random adjustments, fills, strokes with dashes and ends,
+;; text with runs and paragraphs, groups, rotations and flips. What is *not*
+;; specified is how any of it should be laid out -- text especially -- so the
+;; property checked here is not "does it look right" but "does it survive":
+;;
+;;   * writing a deck and reading it back gives the same deck, and
+;;   * every stage of the pipeline runs without raising.
+;;
+;; That oracle is exact and cheap, which is what makes fuzzing worth doing: a
+;; whole-slide pixel diff has a tolerance, and this does not.
+(require rackunit racket/list racket/string racket/file racket/path racket/math
+         racket/format
+         glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
+         glide-pptx/export glide-pptx/geometry glide-pptx/sync-state)
+
+(define work (build-path (find-system-path 'temp-dir) "glide-pptx-fuzz"))
+(delete-directory/files work #:must-exist? #f)
+(make-directory* work)
+
+;; Seeded, so a failure names the case that produced it: re-run one with
+;; `GLIDE_FUZZ_SEED=<n> GLIDE_FUZZ_ROUNDS=1`. The default is a number of rounds
+;; that keeps the suite quick; widen it when hunting.
+(define ROUNDS (string->number (or (getenv "GLIDE_FUZZ_ROUNDS") "150")))
+(define BASE-SEED (string->number (or (getenv "GLIDE_FUZZ_SEED") "20260904")))
+
+(define (pick rng . xs) (list-ref xs (random (length xs) rng)))
+(define (chance rng p) (< (random rng) p))
+(define (real-in rng lo hi) (+ lo (* (- hi lo) (random rng))))
+
+(define (a-color rng)
+  (rgba (random 256 rng) (random 256 rng) (random 256 rng) 1.0))
+
+(define (a-fill rng)
+  (cond
+    [(chance rng 0.15) #f]
+    [(chance rng 0.2)
+     (gradient-fill (list (cons 0.0 (a-color rng)) (cons 1.0 (a-color rng)))
+                    (real-in rng 0.0 360.0))]
+    [else (solid-fill (a-color rng))]))
+
+(define (an-end rng)
+  (and (chance rng 0.4)
+       (line-end (pick rng 'arrow 'triangle 'stealth 'diamond 'oval)
+                 (pick rng "sm" "med" "lg") (pick rng "sm" "med" "lg"))))
+
+(define (a-line rng)
+  (cond
+    [(chance rng 0.25) #f]
+    [else
+     (stroke (a-color rng) (real-in rng 0.25 8.0)
+             (pick rng 'solid 'dash 'dot 'dash-dot 'short-dash)
+             (pick rng 'flat 'round 'projecting)
+             (an-end rng) (an-end rng)
+             (and (chance rng 0.2)
+                  (list (cons (real-in rng 50.0 600.0) (real-in rng 50.0 600.0)))))]))
+
+(define (a-run rng)
+  (trun (pick rng "Ag" "hello world" "x" "a longer piece of text to lay out" "σʹ")
+        (pick rng "Arial" "Liberation Sans" "PT Mono")
+        (real-in rng 8.0 60.0)
+        (chance rng 0.3) (chance rng 0.2) (chance rng 0.1) (chance rng 0.1)
+        (a-color rng) (real-in rng -2.0 2.0) 'none 0.0))
+
+(define (a-body rng)
+  (and (chance rng 0.5)
+       (text-body (for/list ([_ (in-range (add1 (random 2 rng)))])
+                    ;; runs align level margin-left indent line-spacing
+                    ;; space-before space-after bullet
+                    (para (for/list ([_ (in-range (add1 (random 2 rng)))]) (a-run rng))
+                          (pick rng 'left 'center 'right)
+                          0 0.0 0.0
+                          (cons 'percent (real-in rng 0.7 1.6))
+                          (real-in rng 0.0 12.0) 0.0
+                          (if (chance rng 0.3)
+                              (bullet 'char "\u2022" "Arial" 1.0 #f)
+                              no-bullet)))
+                  (pick rng 'top 'center 'bottom)
+                  (chance rng 0.3)
+                  (chance rng 0.7)
+                  (pick rng 'none 'shrink 'grow)
+                  default-insets
+                  0.0)))
+
+(define (a-geom rng)
+  (define names (preset-names))
+  (preset-geom (list-ref names (random (length names) rng))
+               ;; An adjustment's value is a formula, and "val N" is the
+               ;; literal form the presets read.
+               (if (chance rng 0.4)
+                   (list (cons "adj" (format "val ~a" (random 5000 90000 rng)))
+                         (cons "adj1" (format "val ~a" (random 5000 90000 rng)))
+                         (cons "adj2" (format "val ~a" (random 5000 90000 rng))))
+                   '())))
+
+(define (a-bbox rng w h)
+  ;; Sometimes degenerate on purpose: a zero-width connector and a hairline box
+  ;; are both things real decks contain, and both have crashed something here.
+  (define bw (if (chance rng 0.08) (real-in rng 0.0 0.5) (real-in rng 8.0 (/ w 2.0))))
+  (define bh (if (chance rng 0.08) (real-in rng 0.0 0.5) (real-in rng 8.0 (/ h 2.0))))
+  (make-bbox (real-in rng 0.0 (- w bw)) (real-in rng 0.0 (- h bh)) bw bh
+             #:rot (if (chance rng 0.3) (real-in rng 0.0 360.0) 0.0)
+             #:flip-h? (chance rng 0.2) #:flip-v? (chance rng 0.2)))
+
+(define (a-custom-geom rng)
+  ;; A path in its own space, with the space sometimes declared 0 -- which means
+  ;; the coordinates are EMU, and is what several real decks write.
+  (define span (pick rng 0 1 21600 100000))
+  (define (coord) (random 21600 rng))
+  (custom-geom
+   (list (append (list (list 'move (cons (coord) (coord))))
+                 (for/list ([_ (in-range (add1 (random 4 rng)))])
+                   (if (chance rng 0.4)
+                       (list 'curve (cons (coord) (coord)) (cons (coord) (coord))
+                             (cons (coord) (coord)))
+                       (list 'line (cons (coord) (coord)))))
+                 (if (chance rng 0.5) (list (list 'close)) '())))
+   span span))
+
+(define (a-shape rng id w h)
+  (shape id (format "Shape ~a" id) (a-bbox rng w h)
+         (if (chance rng 0.25) (a-custom-geom rng) (a-geom rng))
+         (a-fill rng) (a-line rng) (a-body rng)))
+
+(define (an-element rng id w h [depth 0])
+  (cond
+    ;; A group, whose children sit inside its own box.
+    [(and (< depth 2) (chance rng 0.15))
+     (define b (a-bbox rng w h))
+     (group id (format "Group ~a" id) b
+            (for/list ([k (in-range (add1 (random 3 rng)))])
+              (a-shape rng (+ (* 1000 id) k) (max 8.0 (bbox-w b)) (max 8.0 (bbox-h b))))
+            b)]
+    [else (a-shape rng id w h)]))
+
+(define (a-deck rng)
+  (define w (pick rng 720.0 960.0 1920.0))
+  (define h (* w (pick rng 0.5625 0.75)))
+  (define n (add1 (random 5 rng)))
+  (deck w h
+        (for/list ([i (in-range (add1 (random 2 rng)))])
+          (define k (add1 (random 5 rng)))
+          (slide (add1 i) (format "Slide ~a" (add1 i)) w h
+                 (solid-fill (a-color rng)) '()
+                 (for/list ([j (in-range k)]) (an-element rng (+ 100 (* 10 i) j) w h))))
+        #f "fuzz"))
+
+;; What a round trip may not change.
+(define (element-facts d)
+  (for/list ([s (in-list (deck-slides d))])
+    (for/list ([e (in-list (slide-elements s))])
+      (define b (element-bbox e))
+      (list (element-name e)
+            (map (lambda (v) (/ (round (* 100.0 v)) 100.0))
+                 (list (bbox-x b) (bbox-y b) (bbox-w b) (bbox-h b)))
+            (bbox-flip-h? b) (bbox-flip-v? b)))))
+
+(define failures 0)
+
+(for ([round-n (in-range ROUNDS)])
+  (define seed (+ BASE-SEED round-n))
+  (define rng (make-pseudo-random-generator))
+  (parameterize ([current-pseudo-random-generator rng])
+    (random-seed seed))
+  (define d (a-deck rng))
+  (define dir (build-path work (format "r~a" seed)))
+  (make-directory* dir)
+  (define out (build-path dir "out.pptx"))
+  (define (stage what thunk)
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (set! failures (add1 failures))
+                                 (fail (format "seed ~a: ~a raised: ~a" seed what
+                                               (first (string-split (exn-message e) "\n"))))
+                                 #f)])
+      (thunk)))
+  (define picts (stage 'render (lambda () (deck->picts d))))
+  (when picts
+    (when (stage 'export (lambda () (picts->pptx picts out
+                                                 #:width (deck-width d)
+                                                 #:height (deck-height d))))
+      (define back (stage 'reimport (lambda () (pptx->deck out #:workdir (build-path dir "u")))))
+      (when back
+        ;; Only what differs, so a failure names the field rather than printing
+        ;; two decks to compare by eye.
+        (define was (append* (element-facts d)))
+        (define now (append* (element-facts back)))
+        (define diffs
+          (append
+           (if (= (length was) (length now))
+               '()
+               (list (format "~a elements became ~a" (length was) (length now))))
+           (for/list ([a (in-list was)] [b (in-list now)] #:unless (equal? a b))
+             (format "~a: ~a -> ~a" (first a) (rest a) (rest b)))))
+        (check-equal? diffs '() (format "seed ~a" seed))))))
+
+(printf "fuzz done; ~a rounds from seed ~a\n" ROUNDS BASE-SEED)

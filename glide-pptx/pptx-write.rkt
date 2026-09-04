@@ -365,7 +365,8 @@
   (define bh (if (< bh0 EMU-PT) EMU-PT bh0))
   (format "<p:sp>~a<p:spPr>~a~a~a~a</p:spPr>~a</p:sp>"
           (nv-xml id (format "Freeform ~a" id) #:tag (it:shape-path-tag i))
-          (xfrm-xml bx by bw bh (it:shape-path-rot i))
+          (xfrm-xml bx by bw bh (it:shape-path-rot i)
+                    (it:shape-path-flip-h? i) (it:shape-path-flip-v? i))
           (path-geom-xml segs bx by bw bh)
           (fill-xml (it:shape-path-fill i)) (line-xml (it:shape-path-pen i))
           (body-or-empty (it:shape-path-body i))))
@@ -491,8 +492,11 @@
           (xml-escape (or (it:group-tag i) (format "Group ~a" id)))
           (if (it:group-tag i)
               (format " descr=\"glide-pptx:~a\"" (xml-escape (it:group-tag i))) "")
-          (if (zero? (it:group-rot i)) ""
-              (format " rot=\"~a\"" (angle-60k (it:group-rot i))))
+          (string-append
+           (if (zero? (it:group-rot i)) ""
+               (format " rot=\"~a\"" (angle-60k (it:group-rot i))))
+           (if (it:group-flip-h? i) " flipH=\"1\"" "")
+           (if (it:group-flip-v? i) " flipV=\"1\"" ""))
           (emu (it:group-x i)) (emu (it:group-y i))
           (max 1 (emu (it:group-w i))) (max 1 (emu (it:group-h i)))
           (emu (it:group-x i)) (emu (it:group-y i))

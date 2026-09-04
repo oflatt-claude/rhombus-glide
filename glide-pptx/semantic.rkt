@@ -185,7 +185,9 @@
     ;; still travels with it.
     [else
      (define segs (custom-geom->segs geom x y w h))
-     (list (it:shape-path segs fill pen (list x y w h) rot body tag))]))
+     (list (it:shape-path segs fill pen (list x y w h) rot
+                          (shape-desc-flip-h? d) (shape-desc-flip-v? d)
+                          body tag))]))
 
 ;; Custom geometry arrives in its own coordinate space; scale it onto the box.
 (define (custom-geom->segs g x y w h)
@@ -222,7 +224,9 @@
 (define (group-item d gx gy rot t tag page-w page-h)
   (define w (* (abs (xf-sx t)) (group-desc-width d)))
   (define h (* (abs (xf-sy t)) (group-desc-height d)))
-  (it:group gx gy w h rot (group-items d gx gy t page-w page-h) tag))
+  (it:group gx gy w h rot
+            (group-desc-flip-h? d) (group-desc-flip-v? d)
+            (group-items d gx gy t page-w page-h) tag))
 
 (define (group-items d gx gy t page-w page-h)
   (define cw (max 1e-9 (group-desc-child-width d)))

@@ -61,6 +61,7 @@
             #:width w #:height h
             #:child-x (bbox-x cb) #:child-y (bbox-y cb)
             #:child-width (max 1.0 (bbox-w cb)) #:child-height (max 1.0 (bbox-h cb))
+            #:flip-h? (bbox-flip-h? b) #:flip-v? (bbox-flip-v? b)
             (for/list ([c (in-list (group-children e))]) (element->placed c)))]
     [(tbl? e)
      (table-pict #:width w #:height h
