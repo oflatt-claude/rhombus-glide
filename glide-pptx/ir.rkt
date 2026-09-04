@@ -56,12 +56,15 @@
 ;; `head` and `tail` are the decorations at the two ends of a line -- an arrow on
 ;; a connector, most often -- as (line-end kind width length) or #f for none.
 ;; PowerPoint calls the start of the path the head.
-(struct stroke (color width dash cap head tail) #:prefab)
+;; `dash` is the style to draw with; `dash-pattern` is the exact
+;; `<a:custDash>` when the file gave one, as a list of (dash . space) in
+;; hundredths of the line's width, so the writer can hand it back unchanged.
+(struct stroke (color width dash cap head tail dash-pattern) #:prefab)
 (struct line-end (kind width length) #:prefab)
 
 (define (make-stroke color #:width [w 1.0] #:dash [d 'solid] #:cap [c 'flat]
-                     #:head [head #f] #:tail [tail #f])
-  (stroke color w d c head tail))
+                     #:head [head #f] #:tail [tail #f] #:dash-pattern [dp #f])
+  (stroke color w d c head tail dp))
 
 ;; -------------------------------------------------------------------- text
 

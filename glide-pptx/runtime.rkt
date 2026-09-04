@@ -102,7 +102,8 @@
                                             (pattern-density (pattern-fill-name f))))])]
     [else (new brush% [style 'transparent])]))
 
-(define dash-styles (hash 'solid 'solid 'dash 'long-dash 'dot 'dot 'dash-dot 'dot-dash))
+(define dash-styles (hash 'solid 'solid 'dash 'long-dash 'short-dash 'short-dash
+                          'dot 'dot 'dash-dot 'dot-dash))
 
 (define (stroke->pen s)
   (cond

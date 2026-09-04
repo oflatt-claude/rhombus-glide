@@ -101,7 +101,7 @@
            (case (fifth spec) [(round) 'round] [(bevel) 'bevel] [else 'miter])
            ;; A recorded pen is what a dc drew with; the ends were already drawn
            ;; as filled shapes by then.
-           #f #f)]))
+           #f #f #f)]))
 
 (define (brush-of spec alpha ctm)
   (define style (second spec))

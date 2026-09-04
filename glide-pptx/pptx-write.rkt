@@ -82,7 +82,21 @@
 
 (define dash-xml
   (hash 'solid "" 'dash "<a:prstDash val=\"dash\"/>"
+        'short-dash "<a:prstDash val=\"sysDash\"/>"
         'dot "<a:prstDash val=\"sysDot\"/>" 'dash-dot "<a:prstDash val=\"dashDot\"/>"))
+
+;; A spelled-out dash goes back as it came, so a line that was drawn with one
+;; keeps its exact pattern rather than the nearest preset.
+(define (dash-part p)
+  (define custom (pen*-dash-pattern p))
+  (if custom
+      (format "<a:custDash>~a</a:custDash>"
+              (apply string-append
+                     (for/list ([ds (in-list custom)])
+                       (format "<a:ds d=\"~a\" sp=\"~a\"/>"
+                               (inexact->exact (round (* 1000 (car ds))))
+                               (inexact->exact (round (* 1000 (cdr ds))))))))
+      (hash-ref dash-xml (pen*-dash p) "")))
 
 (define (line-xml p)
   (cond
@@ -94,7 +108,7 @@
              (emu w)
              (case (pen*-cap p) [(round) "rnd"] [(square) "sq"] [else "flat"])
              (clr (pen*-color p))
-             (hash-ref dash-xml (pen*-dash p) "")
+             (dash-part p)
              (case (pen*-join p) [(round) "round"] [(bevel) "bevel"] [else "miter"])
              (end-xml "headEnd" (pen*-head p))
              (end-xml "tailEnd" (pen*-tail p)))]))

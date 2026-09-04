@@ -151,8 +151,10 @@ fun run(text,
 fun hex(s, ~alpha: alpha = 1.0): rt.#{hex}(s, ~alpha: alpha)
 
 fun make_stroke(color, ~width: w = 1.0, ~dash: dash = #'solid, ~cap: cap = #'flat,
-                ~head: head = #false, ~tail: tail = #false):
-  rt.#{make-stroke}(color, ~width: w, ~dash: dash, ~cap: cap, ~head: head, ~tail: tail)
+                ~head: head = #false, ~tail: tail = #false,
+                ~dash_pattern: dash_pattern = #false):
+  rt.#{make-stroke}(color, ~width: w, ~dash: dash, ~cap: cap, ~head: head, ~tail: tail,
+                    ~#{dash-pattern}: to_rkt_list(dash_pattern))
 
 // What a line is decorated with at one end: an arrow on a connector, most
 // often. `kind` is #'arrow, #'triangle, #'stealth, #'diamond or #'oval.
