@@ -17,7 +17,7 @@
 ;; `flip-h?`/`flip-v?` are here because dragging a line's endpoint past the
 ;; other end mirrors the shape rather than moving it: without them that edit was
 ;; invisible to a merge.
-(struct el-state (tag kind x y w h rot flip-h? flip-v? text paint z) #:prefab)
+(struct el-state (tag kind x y w h rot flip-h? flip-v? text paint style z) #:prefab)
 (struct slide-state (index width height elements) #:prefab)
 
 (define GEOM-EPSILON 0.05)
@@ -61,33 +61,42 @@
      (el-state (it:preset-tag i) 'shape (it:preset-x i) (it:preset-y i)
                (it:preset-w i) (it:preset-h i) (it:preset-rot i)
                (it:preset-flip-h? i) (it:preset-flip-v? i)
-               (body-text (it:preset-body i)) (fill-digest (it:preset-fill i)) z)]
+               (body-text (it:preset-body i)) (fill-digest (it:preset-fill i))
+               (append (fill-style (it:preset-fill i)) (pen-style (it:preset-pen i))
+                       (body-style (it:preset-body i)))
+               z)]
     [(it:textbox? i)
      (el-state (it:textbox-tag i) 'text (it:textbox-x i) (it:textbox-y i)
                (it:textbox-w i) (it:textbox-h i) (it:textbox-rot i) #f #f
-               (body-text (it:textbox-body i)) "" z)]
+               (body-text (it:textbox-body i)) ""
+               (body-style (it:textbox-body i)) z)]
     [(it:picture? i)
      (el-state (it:picture-tag i) 'picture (it:picture-x i) (it:picture-y i)
                (it:picture-w i) (it:picture-h i) (it:picture-rot i)
                (it:picture-flip-h? i) (it:picture-flip-v? i)
-               "" (format "~a" (it:picture-src i)) z)]
+               "" (format "~a" (it:picture-src i))
+               (pen-style (it:picture-pen i)) z)]
     ;; A flattened element is a picture on both sides of the sync, so it is
     ;; described as one here too and the signature matcher agrees.
     [(it:image? i)
      (el-state (it:image-tag i) 'picture (it:image-x i) (it:image-y i)
                (it:image-w i) (it:image-h i) (it:image-rot i) #f #f
-               "" "flattened" z)]
+               "" "flattened" '() z)]
     ;; A group is one element to drag, whatever it holds.
     [(it:group? i)
      (el-state (it:group-tag i) 'group (it:group-x i) (it:group-y i)
                (it:group-w i) (it:group-h i) (it:group-rot i)
-               (it:group-flip-h? i) (it:group-flip-v? i) "" "group" z)]
+               (it:group-flip-h? i) (it:group-flip-v? i) "" "group" '() z)]
     [(it:shape-path? i)
      (define-values (x y w h) (apply values (it:shape-path-box i)))
      (el-state (it:shape-path-tag i) 'shape x y w h (it:shape-path-rot i)
                (it:shape-path-flip-h? i) (it:shape-path-flip-v? i)
                (body-text (it:shape-path-body i))
-               (fill-digest (it:shape-path-fill i)) z)]
+               (fill-digest (it:shape-path-fill i))
+               (append (fill-style (it:shape-path-fill i))
+                       (pen-style (it:shape-path-pen i))
+                       (body-style (it:shape-path-body i)))
+               z)]
     ;; Not a fall-through: a new kind of semantic item should say so here rather
     ;; than be read as whatever the last branch happened to be. This branch used
     ;; to be the shape-path one, and a group -- which became a semantic item when
@@ -119,6 +128,57 @@
     [else ""]))
 
 (define (round* v) (inexact->exact (round v)))
+
+;; ------------------------------------------------------------------- style
+
+;; What an element looks like, as named properties, so a merge can say *which*
+;; one changed rather than only that something did. Both sides build this the
+;; same way -- one from the display list a program draws, one from a deck's IR --
+;; which is what makes them comparable.
+;;
+;; Appearance is the code's to own, so these are reported and only written where
+;; the source holds a literal to write to. Reporting them at all is the point:
+;; recolouring a shape in the editor used to vanish without a word.
+;; A colour is `rgba*` when it came from a display list and `rgba` when it came
+;; from a deck's IR. Both sides build the same properties, so this takes either.
+(define (hex-of c)
+  (cond
+    [(rgba*? c) (format "~a~a~a" (byte->hex (rgba*-r c)) (byte->hex (rgba*-g c))
+                        (byte->hex (rgba*-b c)))]
+    [(rgba? c) (format "~a~a~a" (byte->hex (rgba-r c)) (byte->hex (rgba-g c))
+                       (byte->hex (rgba-b c)))]
+    [else #f]))
+
+(define (byte->hex v)
+  (define n (max 0 (min 255 (inexact->exact (round v)))))
+  (string-upcase (if (< n 16) (format "0~x" n) (format "~x" n))))
+
+(define (pen-style p)
+  (if (not p)
+      '()
+      (append (let ([h (hex-of (pen*-color p))]) (if h (list (cons 'line h)) '()))
+              (list (cons 'line-width (/ (round (* 100.0 (pen*-width p))) 100.0))))))
+
+(define (fill-style f)
+  (cond
+    [(fill:solid? f) (let ([h (hex-of (fill:solid-color f))])
+                       (if h (list (cons 'fill h)) '()))]
+    [(or (fill:linear? f) (fill:radial? f)) (list (cons 'fill "gradient"))]
+    [else '()]))
+
+;; The first run's typeface and size stand for the body: an edit to one run of
+;; many is refused anyway, and this is what a report needs to name.
+(define (body-style body)
+  (define r (and body
+                 (for/or ([p (in-list (text-body-paras body))])
+                   (and (pair? (para-runs p)) (first (para-runs p))))))
+  (if (not r)
+      '()
+      (list (cons 'font (trun-family r))
+            (cons 'size (/ (round (* 10.0 (trun-size r))) 10.0))
+            (cons 'bold (and (trun-bold? r) #t))
+            (cons 'italic (and (trun-italic? r) #t))
+            (cons 'text-color (or (hex-of (trun-color r)) "")))))
 
 ;; ------------------------------------------------------------ from a deck IR
 
@@ -159,10 +219,34 @@
                                  (bbox-flip-h? b) (bbox-flip-v? b)
                                  (if (shape? e) (body-text (shape-body e)) "")
                                  (if (shape? e) (ir-fill-digest (shape-fill e)) "")
+                                 (ir-style e)
                                  z)
                        acc))
            (set! z (add1 z))])))
     (slide-state (slide-index s) (slide-width s) (slide-height s) (reverse acc))))
+
+;; The same properties as `fill-style`/`pen-style`/`body-style`, from a deck's
+;; IR rather than from a display list, so the two sides compare.
+(define (ir-style e)
+  (define hex hex-of)
+  (define fill
+    (let ([f (and (shape? e) (shape-fill e))])
+      (cond
+        [(solid-fill? f) (let ([h (hex (solid-fill-color f))])
+                           (if h (list (cons 'fill h)) '()))]
+        [(gradient-fill? f) (list (cons 'fill "gradient"))]
+        [else '()])))
+  (define line
+    (let ([l (and (or (shape? e) (picture? e))
+                  (if (shape? e) (shape-line e) (picture-line e)))])
+      (if (stroke? l)
+          (append (let ([h (hex (stroke-color l))]) (if h (list (cons 'line h)) '()))
+                  (list (cons 'line-width
+                              (let ([w (stroke-width l)])
+                                (if (real? w) (/ (round (* 100.0 w)) 100.0) 0.0)))))
+          '())))
+  (define text (if (shape? e) (body-style (shape-body e)) '()))
+  (append fill line text))
 
 (define (ir-fill-digest f)
   (cond
