@@ -32,7 +32,8 @@
 (define current-keep-work? (make-parameter #f))
 
 ;; kind: 'moved, 'resized, 'retext, 'restyle, 'restacked, 'reordered,
-;; 'conflict, 'added, 'removed, 'added-slide, 'ambiguous
+;; 'repainted, 'conflict, 'added, 'removed, 'grouped, 'added-slide,
+;; 'removed-slide, 'ambiguous
 ;; `prior` is where the program currently draws the element, which is what a
 ;; correction for a computed position is measured against. It is #f when the
 ;; program has no element by that name.
@@ -211,7 +212,28 @@
                         (map (lambda (p) (el-state-tag (cdr p))) in-deck-order)
                         #f))]))
 
-(define (merge-slide index base prog deck size)
+;; What each group on one deck slide holds, as group tag -> child tags. The
+;; merge's own view of a slide has a group as one element, which is what the
+;; editor drags; grouping and ungrouping are the two edits that need to see
+;; inside one.
+(define (deck-group-children d index)
+  (define s (and d (for/first ([s (in-list (deck-slides d))]
+                               #:when (= index (slide-index s)))
+                     s)))
+  (for/fold ([h (hash)]) ([e (in-list (if s (slide-elements s) '()))])
+    (cond
+      [(and (group? e) (not (string=? "" (element-name e))))
+       (hash-set h (element-name e)
+                 (let leaves ([es (group-children e)])
+                   (append*
+                    (for/list ([c (in-list es)])
+                      (cond
+                        [(group? c) (leaves (group-children c))]
+                        [(string=? "" (element-name c)) '()]
+                        [else (list (element-name c))])))))]
+      [else h])))
+
+(define (merge-slide index base prog deck size #:group-children [group-children (hash)])
   (define-values (deck-pairs deck-added deck-removed)
     (match-elements deck base #:slide-size size))
   ;; By tag, not one per tag: a tag can name several elements from one `at`.
@@ -225,6 +247,22 @@
       (hash-update h (el-state-tag e) (lambda (v) (cons e v)) '())))
   (define prog-by-tag (by-tag prog))
   (define (prog-count tag) (length (hash-ref prog-by-tag tag '())))
+  ;; The elements the deck no longer has, by tag, and the groups that turn out
+  ;; to hold exactly them.
+  (define removed-by-tag
+    (for/hash ([b (in-list deck-removed)] #:when (el-state-tag b))
+      (values (el-state-tag b) b)))
+  (define groupings
+    (for/list ([d (in-list deck-added)]
+               #:when (let ([kids (and (el-state-tag d)
+                                       (hash-ref group-children (el-state-tag d) #f))])
+                        (and (pair? kids)
+                             (for/and ([k (in-list kids)]) (hash-ref removed-by-tag k #f)))))
+      d))
+  (define into-a-group
+    (for*/hash ([d (in-list groupings)]
+                [k (in-list (hash-ref group-children (el-state-tag d)))])
+      (values k #t)))
   ;; Pairs grouped by tag, so a family is decided once rather than per element.
   ;; In the order the tags first appear, so the report reads down the slide.
   (define groups
@@ -253,9 +291,19 @@
    ;; on the slide rather than one per shape -- and it only makes sense when
    ;; every shape on the slide is accounted for and answers to its own tag.
    (restacking index deck-pairs deck-added deck-removed prog-by-tag)
-   (for/list ([d (in-list deck-added)])
+   ;; Grouping is one edit, not an addition and two deletions: a group the deck
+   ;; has that the base does not, holding exactly elements the base has that
+   ;; the deck does not. Read as three separate edits it looks like most of the
+   ;; slide being thrown away, which is a slide the merge refuses to touch.
+   (for/list ([d (in-list groupings)])
+     (sync-action 'grouped (el-state-tag d) index
+                  (list (el-geometry d)
+                        (for/list ([t (in-list (hash-ref group-children (el-state-tag d)))])
+                          (cons t (el-geometry (hash-ref removed-by-tag t)))))
+                  #f))
+   (for/list ([d (in-list deck-added)] #:unless (memq d groupings))
      (sync-action 'added (or (el-state-tag d) "(unnamed)") index (el-geometry d) #f))
-   (for/list ([b (in-list deck-removed)])
+   (for/list ([b (in-list deck-removed)] #:unless (hash-ref into-a-group (el-state-tag b) #f))
      (define tag (el-state-tag b))
      ;; One of a family deleted: the others are still drawn by the same `at`.
      (if (and tag (> (prog-count tag) 1))
@@ -376,6 +424,19 @@
                (not (hash-ref used-b (third c) #f)))
       (hash-set! used-d (second c) (third c))
       (hash-set! used-b (third c) #t)))
+  ;; Whatever is left over pairs up by where it sits, when a slide of the same
+  ;; number is left over on the other side too. Tag overlap cannot follow every
+  ;; edit -- grouping two shapes of three leaves a slide looking like a
+  ;; different one -- and reading that as a slide deleted and another added is
+  ;; the worse of the two guesses. `wholesale-change?` is what catches a slide
+  ;; that really was swapped.
+  (for* ([d (in-list deck)]
+         #:unless (hash-ref used-d d #f)
+         [b (in-list base)]
+         #:unless (hash-ref used-b b #f)
+         #:when (= (slide-state-index d) (slide-state-index b)))
+    (hash-set! used-d d b)
+    (hash-set! used-b b #t))
   (values (for/list ([d (in-list deck)] #:when (hash-ref used-d d #f))
             (cons d (hash-ref used-d d)))
           (for/list ([d (in-list deck)] #:unless (hash-ref used-d d #f)) d)
@@ -389,6 +450,9 @@
 
 (define (wholesale-change? base-elements actions)
   (define n (length base-elements))
+  ;; A shape that went into a group is still on the slide -- the group is what
+  ;; the editor drags now. Counting it as gone read grouping as a slide swapped
+  ;; for a different one.
   (define gone (for/sum ([a (in-list actions)]
                          #:when (memq (sync-action-kind a) '(removed))) 1))
   (and (> n 1) (> gone (* WHOLESALE n))))
@@ -404,7 +468,7 @@
     (sync-action 'removed-slide (format "slide ~a" (slide-state-index s))
                  (slide-state-index s) (list (slide-state-index s)) #f)))
 
-(define (merge-states base prog deck [program-path "the program"])
+(define (merge-states base prog deck [program-path "the program"] #:deck-ir [deck-ir #f])
   (define-values (pairs added removed) (match-slides base deck))
   ;; A slide the base has that the deck does not, *and* a slide the deck has
   ;; that the base does not, in the same merge: that is a slide the matching
@@ -435,7 +499,9 @@
         [ps
          (define as (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
                                  (slide-state-elements ds)
-                                 (max 1.0 (slide-state-width bs))))
+                                 (max 1.0 (slide-state-width bs))
+                                 #:group-children
+                                 (deck-group-children deck-ir (slide-state-index ds))))
          (define bg
            (let ([was (slide-state-background bs)] [now (slide-state-background ds)])
              (if (equal? was now)
@@ -1586,13 +1652,16 @@
     (let ([dups (map car (duplicate-tags (map at-site-tag all-sites)))])
       (for/hash ([s (in-list all-sites)] #:unless (member (at-site-tag s) dups))
         (values (at-site-tag s) s))))
-  (define (site-for a)
+  (define (site-for a) (site-for-tag a (sync-action-tag a)))
+  ;; The same, for a tag other than the action's own: a grouping names the
+  ;; group, and what it moves are the elements inside it.
+  (define (site-for-tag a tag)
     (define scope (and scopes
                        (<= 1 (sync-action-slide a) (length scopes))
                        (list-ref scopes (sub1 (sync-action-slide a)))))
     (if scope
-        (hash-ref by-scope (cons scope (sync-action-tag a)) #f)
-        (hash-ref by-tag (sync-action-tag a) #f)))
+        (hash-ref by-scope (cons scope tag) #f)
+        (hash-ref by-tag tag #f)))
   ;; Where a new element goes, for the slide an action names.
   (define (slide-site-for a)
     (define scope (and scopes
@@ -1609,6 +1678,15 @@
   (define edits '())
   (define applied '())
   (define skipped '())
+  ;; Ungrouping is several actions at once -- the group gone, and each shape it
+  ;; held arriving on its own -- so it is worked out before anything is
+  ;; written. Lifting the `at` forms out of the `group_pict` keeps what the
+  ;; code says about them; deleting the group and writing the shapes from the
+  ;; deck would replace a shared colour with a literal and drop every comment.
+  (define lifts (ungroupings actions all-sites site-for-tag))
+  (define consumed
+    (for*/hasheq ([l (in-list lifts)] [a (in-list (cons (first l) (second l)))])
+      (values a #t)))
   ;; An edit with no range writes nothing, so it must not be counted as applied:
   ;; a merge that reports success and changes nothing is the one failure the user
   ;; cannot see. Every caller checks the result.
@@ -1636,7 +1714,31 @@
        (for ([a (in-list added-slides)]
              #:unless (memq a (map first refused)))
          (set! applied (cons a applied)))]))
-  (for ([a (in-list actions)] #:unless (eq? 'added-slide (sync-action-kind a)))
+  ;; The lifts, before the loop: each replaces one `at` form with the forms it
+  ;; held, and the actions it answers are done with.
+  (for ([l (in-list lifts)])
+    (current-source-text source-text)
+    (define gone (first l))
+    (define inner (third l))
+    (define g (sync-action-detail gone))
+    (define ind (indent-at source-text (rng-start (at-site-whole (site-for gone)))))
+    (define pieces
+      (for/list ([st (in-list inner)])
+        (define whole (at-site-whole st))
+        (reindent
+         (splice-string
+          (substring source-text (rng-start whole) (rng-end whole))
+          (list (cons (shift-range (at-site-x st) (rng-start whole))
+                      (num->source (+ (first g) (at-site-number st at-site-x source-text))))
+                (cons (shift-range (at-site-y st) (rng-start whole))
+                      (num->source (+ (second g) (at-site-number st at-site-y source-text))))))
+         (- ind (indent-at source-text (rng-start whole))))))
+    (edit! (at-site-whole (site-for gone))
+           (string-join pieces (string-append ",\n" (spaces ind))))
+    (for ([a (in-list (cons gone (second l)))])
+      (set! applied (cons a applied))))
+  (for ([a (in-list actions)] #:unless (or (eq? 'added-slide (sync-action-kind a))
+                                           (hash-ref consumed a #f)))
     (define site (site-for a))
     (current-source-text source-text)
     ;; An action either lands or it does not. One that writes part of itself and
@@ -1949,6 +2051,61 @@
           (set! applied (cons a applied))]
          [else
           (set! skipped (cons (cons a "its definition is not one the merge can remove") skipped))])]
+      ;; Two shapes grouped in the editor: their `at` forms move inside a
+      ;; `group_pict`, so everything the code says about them survives -- the
+      ;; comment above one, a colour shared with something else, a size that is
+      ;; computed. Writing the group from the deck instead would throw all of
+      ;; that away and rewrite the shapes as literals.
+      [(grouped)
+       (define g (first (sync-action-detail a)))
+       (define kids (second (sync-action-detail a)))
+       (define sites (for/list ([k (in-list kids)]) (site-for-tag a (car k))))
+       (define clash (site-for-tag a (sync-action-tag a)))
+       (cond
+         [clash
+          (set! skipped (cons (cons a (format "the program already has an `at` tagged ~s"
+                                              (sync-action-tag a)))
+                              skipped))]
+         [(not (andmap values sites))
+          (set! skipped (cons (cons a "not all of the shapes it holds are tagged `at` forms here")
+                              skipped))]
+         [(not (for/and ([st (in-list sites)])
+                 (and (at-site-whole st) (at-site-x st) (at-site-y st))))
+          (set! skipped (cons (cons a "one of the shapes it holds has a computed position")
+                              skipped))]
+         [else
+          (define text source-text)
+          (define pieces
+            (for/list ([st (in-list sites)] [k (in-list kids)])
+              (define whole (at-site-whole st))
+              (define kid (cdr k))
+              (splice-string
+               (substring text (rng-start whole) (rng-end whole))
+               (list (cons (shift-range (at-site-x st) (rng-start whole))
+                           (num->source (- (first kid) (first g))))
+                     (cons (shift-range (at-site-y st) (rng-start whole))
+                           (num->source (- (second kid) (second g))))))))
+          ;; The group goes where the first of them was, so it is drawn where
+          ;; they were drawn.
+          (define anchor (argmin (lambda (st) (rng-start (at-site-whole st))) sites))
+          (define ind (indent-at text (rng-start (at-site-whole anchor))))
+          (define head (format "at(~a, ~a, ~~tag: ~s,"
+                               (num->source (first g)) (num->source (second g))
+                               (sync-action-tag a)))
+          (define open (format "group_pict(~~width: ~a, ~~height: ~a,"
+                               (num->source (third g)) (num->source (fourth g))))
+          (define kid-col (+ ind 3 (string-length "group_pict(")))
+          (define body
+            (for/list ([piece (in-list pieces)] [st (in-list sites)])
+              (reindent piece (- kid-col (indent-at text (rng-start (at-site-whole st)))))))
+          (edit! (at-site-whole anchor)
+                 (string-append
+                  head "\n" (spaces (+ ind 3)) open "\n" (spaces kid-col)
+                  (string-join body (string-append ",\n" (spaces kid-col)))
+                  "))"))
+          (for ([st (in-list sites)] #:unless (eq? st anchor))
+            (edit! (deletion-range text (at-site-whole st)) ""))
+          (set! applied (cons a applied))])]
       ;; The slide's own paint, which the canvas states.
       [(repainted)
        (define ss (slide-site-for a))
@@ -1973,11 +2130,20 @@
       [(restacked)
        (define scope (let ([i (sync-action-slide a)])
                        (and scopes (<= 1 i (length scopes)) (list-ref scopes (sub1 i)))))
-       (define here (sort (for/list ([st (in-list all-sites)]
-                                     #:when (and (equal? scope (at-site-scope st))
-                                                 (at-site-whole st)))
-                            st)
-                          < #:key (lambda (st) (rng-start (at-site-whole st)))))
+       (define on-slide (sort (for/list ([st (in-list all-sites)]
+                                         #:when (and (equal? scope (at-site-scope st))
+                                                     (at-site-whole st)))
+                                st)
+                              < #:key (lambda (st) (rng-start (at-site-whole st)))))
+       ;; An `at` inside a `group_pict` is drawn by its group, not by the
+       ;; canvas: only the forms the canvas itself holds have an order of their
+       ;; own to change.
+       (define here
+         (for/list ([st (in-list on-slide)]
+                    #:unless (for/or ([o (in-list on-slide)])
+                               (and (not (eq? o st))
+                                    (encloses? (at-site-whole o) (at-site-whole st)))))
+           st))
        (define want (sync-action-detail a))
        (define pieces (reorder-pieces here want source-text))
        (cond
@@ -2273,6 +2439,77 @@
     (define v (read (open-input-string (substring text (rng-start r) (rng-end r)))))
     (and (string? v) v)))
 
+;; A group the deck no longer has, whose `at` form holds exactly the `at` forms
+;; the deck now has at top level: that is the editor's Ungroup, and the shapes
+;; can be lifted out rather than deleted and written again.
+;;
+;; Returns (list removed-action added-actions inner-sites) for each.
+(define (ungroupings actions all-sites site-of)
+  (define (inner-of site)
+    (for/list ([st (in-list all-sites)]
+               #:when (and (not (eq? st site))
+                           (at-site-whole st) (at-site-whole site)
+                           (encloses? (at-site-whole site) (at-site-whole st))))
+      st))
+  (filter
+   values
+   (for/list ([a (in-list actions)] #:when (eq? 'removed (sync-action-kind a)))
+     (define site (site-of a (sync-action-tag a)))
+     (define inner (and site (inner-of site)))
+     (define tags (and inner (map at-site-tag inner)))
+     (define arrived
+       (and (pair? (or tags '()))
+            (for/list ([b (in-list actions)]
+                       #:when (and (eq? 'added (sync-action-kind b))
+                                   (= (sync-action-slide a) (sync-action-slide b))
+                                   (member (sync-action-tag b) tags)))
+              b)))
+     (and (pair? (or arrived '()))
+          ;; Every shape it held, and nothing else: a group half of which was
+          ;; ungrouped is not something to guess at.
+          (= (length arrived) (length tags))
+          (for/and ([st (in-list inner)])
+            (and (at-site-x st) (at-site-y st)))
+          (list a arrived inner)))))
+
+;; A number the source states, read back out of it.
+(define (at-site-number st get text)
+  (define r (get st))
+  (or (and r (string->number (string-trim (substring text (rng-start r) (rng-end r))))) 0.0))
+
+(define (spaces n) (make-string (max 0 n) #\space))
+
+;; Whether one range holds another, which is how a nested `at` is told from one
+;; the canvas holds itself.
+(define (encloses? a b)
+  (and (<= (rng-start a) (rng-start b)) (<= (rng-end b) (rng-end a))))
+
+;; A range read out of one place, used inside a copy of it.
+(define (shift-range r start) (rng (- (rng-start r) start) (- (rng-end r) start)))
+
+;; Edits inside a string, back to front so the offsets hold.
+(define (splice-string str edits)
+  (for/fold ([s str])
+            ([e (in-list (sort edits > #:key (lambda (e) (rng-start (car e)))))])
+    (string-append (substring s 0 (rng-start (car e))) (cdr e)
+                   (substring s (rng-end (car e))))))
+
+;; A piece of source moved to another column. Its first line goes wherever it
+;; is put; the lines under it keep their shape relative to that one.
+(define (reindent str delta)
+  (define lines (string-split str "\n" #:trim? #f))
+  (cond
+    [(or (zero? delta) (null? (cdr lines))) str]
+    [(positive? delta)
+     (string-join lines (string-append "\n" (spaces delta)))]
+    [else
+     (string-append
+      (first lines)
+      (apply string-append
+             (for/list ([l (in-list (cdr lines))])
+               (define drop (min (- delta) (- (string-length l) (string-length (string-trim l #:right? #f)))))
+               (string-append "\n" (substring l drop)))))]))
+
 (define (background->source want)
   (cond
     [(eq? ABSENT want) "#false"]
@@ -2389,7 +2626,7 @@
                         #:deck (path->string (path->complete-path pptx-path))))
      (done! (sync-report '() '() '() (not dry-run?)))]
     [else
-     (define actions (merge-states base prog deck program-path))
+     (define actions (merge-states base prog deck program-path #:deck-ir deck-ir))
      (cond
        [dry-run? (done! (sync-report actions '() '() #f))]
        [else

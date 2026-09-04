@@ -274,17 +274,32 @@
 
 ;; Grouping two shapes, which the editor does with one command and which the
 ;; program has a form for.
+;; Grouping, which moves two `at` forms inside a `group_pict`. The drawing
+;; order follows in the pass after, since the group only exists once it is
+;; written.
 (scenario "group two shapes"
           (lambda (deck)
             (check-true (group-in-deck! deck 1 "Box" "Bare" #:name "Pair")))
-          ;; Two of the slide's three elements are inside the group now, so the
-          ;; slide no longer looks like the one the base recorded. That is
-          ;; reported and nothing is written: the alternative, before this was
-          ;; guarded, was deleting the slide's definition and writing a new one.
-          #:applied 0 #:refused 1
+          #:applied 1
           #:then (lambda (program deck)
-                   (check-regexp-match #rx"def slide_1 = " (file->string program))
-                   (check-false (regexp-match? #rx"slide_4" (file->string program)))))
+                   (define src (file->string program))
+                   (check-regexp-match #rx"~tag: \"Pair\"" src)
+                   (check-regexp-match #rx"group_pict[(]" src)
+                   (check-regexp-match #rx"~tag: \"Box\"" src "with its shapes inside it")
+                   (check-regexp-match #rx"~tag: \"Bare\"" src)))
+
+;; And the other way: the forms come back out of the group rather than being
+;; written afresh from the deck.
+(scenario "ungroup two shapes"
+          (lambda (deck)
+            (check-true (group-in-deck! deck 1 "Box" "Bare" #:name "Pair"))
+            (check-true (ungroup-in-deck! deck 1 "Pair")))
+          ;; Grouping and ungrouping leaves the shapes where they were but at
+          ;; the end of the deck's drawing order, so what is left to merge is
+          ;; that order.
+          #:applied 1
+          #:then (lambda (program deck)
+                   (check-false (regexp-match? #rx"group_pict" (file->string program)))))
 
 ;; Moving a shape to another slide.
 (scenario "move a shape to another slide"
