@@ -135,7 +135,10 @@
   (let ([p (new dc-path%)]) (send p ellipse 0 0 w h) p))
 
 (define-preset ("donut") (w h adjust)
-  (let* ([t (adj-value adjust "adj" 0.25)]
+  ;; The ring cannot be thicker than half the shape -- the spec pins this
+  ;; adjustment to 50% -- and a file that says otherwise gave a negative inner
+  ;; radius, which is not a shape a dc will draw.
+  (let* ([t (max 0.0 (min 0.5 (adj-value adjust "adj" 0.25)))]
          [p (new dc-path%)]
          [ix (* w t)] [iy (* h t)])
     (send p ellipse 0 0 w h)

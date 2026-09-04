@@ -640,14 +640,27 @@
 (define (group-pict #:width w #:height h
                     #:child-x [cx 0.0] #:child-y [cy 0.0]
                     #:child-width [cw w] #:child-height [ch h]
+                    #:flip-h? [fh #f] #:flip-v? [fv #f]
                     . placeds)
   (define inner
     (for/fold ([base (blank (max cw 1.0) (max ch 1.0))]) ([pl (in-list placeds)])
       (pin-placed base pl (- cx) (- cy))))
   (define sx (if (zero? cw) 1.0 (/ w cw)))
   (define sy (if (zero? ch) 1.0 (/ h ch)))
-  (with-desc (scale inner sx sy)
-             (group-desc w h cx cy cw ch placeds)))
+  (define scaled (scale inner sx sy))
+  ;; A flipped group mirrors everything inside it. `pict` has no negative
+  ;; scale, so the drawing goes through a dc transform.
+  (define shown
+    (if (or fh fv)
+        (dc (lambda (dc* dx dy)
+              (define t (send dc* get-transformation))
+              (send dc* translate (+ dx (if fh w 0.0)) (+ dy (if fv h 0.0)))
+              (send dc* scale (if fh -1.0 1.0) (if fv -1.0 1.0))
+              (draw-pict scaled dc* 0 0)
+              (send dc* set-transformation t))
+            w h)
+        scaled))
+  (with-desc shown (group-desc w h cx cy cw ch placeds fh fv)))
 
 (define (table-pict #:width w #:height h #:col-widths cols #:row-heights rows
                     #:cells cells)

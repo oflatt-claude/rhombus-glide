@@ -104,9 +104,11 @@ fun image_pict(src, w, h,
 fun group_pict(~width: w, ~height: h,
                ~child_x: cx = 0.0, ~child_y: cy = 0.0,
                ~child_width: cw = w, ~child_height: ch = h,
+               ~flip_h: fh = #false, ~flip_v: fv = #false,
                & elems):
   rt.#{group-pict}(~width: w, ~height: h, ~#{child-x}: cx, ~#{child-y}: cy,
-                   ~#{child-width}: cw, ~#{child-height}: ch, & elems)
+                   ~#{child-width}: cw, ~#{child-height}: ch,
+                   ~#{flip-h?}: fh, ~#{flip-v?}: fv, & elems)
 
 fun table_pict(~width: w, ~height: h, ~col_widths: cols, ~row_heights: rows,
                ~cells: cells):

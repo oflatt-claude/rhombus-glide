@@ -64,13 +64,13 @@
 (struct it:preset (x y w h rot name adjust flip-h? flip-v? fill pen body tag) #:prefab)
 (struct it:textbox (x y w h rot body tag) #:prefab)
 ;; A path whose geometry came from a known shape, so it keeps its text and tag.
-(struct it:shape-path (segs fill pen box rot body tag) #:prefab)
+(struct it:shape-path (segs fill pen box rot flip-h? flip-v? body tag) #:prefab)
 ;; `src` is a file path; the writer reads and embeds it.
 (struct it:picture (x y w h rot src crop flip-h? flip-v? pen opacity tag) #:prefab)
 ;; A group, kept as one. Dissolving it into its children would lose the
 ;; grouping the author made in the editor -- and anything attached to the group,
 ;; an appear animation most of all, would have nothing left to attach to.
-(struct it:group (x y w h rot items tag) #:prefab)
+(struct it:group (x y w h rot flip-h? flip-v? items tag) #:prefab)
 
 ;; An item that stands for one element of a slide, and so takes part in a sync.
 ;; A flattened element counts: it is a picture rather than a shape, but it is

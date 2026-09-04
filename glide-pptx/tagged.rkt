@@ -36,6 +36,7 @@
 (struct shape-desc (width height geom fill line body flip-h? flip-v?) #:transparent)
 (struct text-desc (width height body) #:transparent)
 (struct image-desc (width height src crop line flip-h? flip-v? opacity) #:transparent)
-(struct group-desc (width height child-x child-y child-width child-height placeds)
+(struct group-desc (width height child-x child-y child-width child-height placeds
+                    flip-h? flip-v?)
   #:transparent)
 (struct table-desc (width height col-widths row-heights cells) #:transparent)
