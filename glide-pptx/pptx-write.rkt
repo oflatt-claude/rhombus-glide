@@ -50,10 +50,29 @@
 
 ;; ------------------------------------------------------------------- paint
 
+;; Set while one slide is being written, so a fill that is a picture can add its
+;; file to the package the way a picture item does. Threading it through every
+;; item writer would mean a new argument on each of them for one kind of fill.
+(define current-image-register (make-parameter #f))
+
 (define (fill-xml f)
   (cond
     [(not f) "<a:noFill/>"]
     [(fill:solid? f) (format "<a:solidFill>~a</a:solidFill>" (clr (fill:solid-color f)))]
+    ;; A picture as a fill: the file goes in the package and the shape points
+    ;; at it. Without a registrar there is nowhere to put the file, so the
+    ;; shape is left unfilled rather than pointing at nothing.
+    [(fill:image? f)
+     (define reg (current-image-register))
+     (cond
+       [(not reg) "<a:noFill/>"]
+       [else
+        (define rid (reg f "fill" (src-extension (fill:image-src f))))
+        (format (string-append "<a:blipFill rotWithShape=\"0\"><a:blip r:embed=\"~a\">~a</a:blip>"
+                               "<a:stretch><a:fillRect/></a:stretch></a:blipFill>")
+                rid
+                (let ([o (fill:image-opacity f)])
+                  (if (< o 0.999) (format "<a:alphaModFix amt=\"~a\"/>" (pct o)) "")))])]
     [(fill:linear? f)
      (define dx (- (fill:linear-x1 f) (fill:linear-x0 f)))
      (define dy (- (fill:linear-y1 f) (fill:linear-y0 f)))
@@ -431,6 +450,9 @@
     (define name (format "ppt/media/~a~a-~a~a" stem index k ext))
     (set! images (cons (list name rid i) images))
     rid)
+  ;; A fill that is a picture registers its file the same way, and the same
+  ;; registrar counts both so the ids do not collide.
+  (define (register-fill! f stem ext) (register-image! f stem ext))
 
   ;; Recursive, so a group's children are written the same way its siblings are.
   (define (item->xml i)
@@ -449,7 +471,10 @@
        (picture-item-xml n i (register-image! i "pic" (picture-extension i)))]
       [else ""]))
 
-  (define shapes (for/list ([i (in-list (display-page-items page))]) (item->xml i)))
+  (define shapes
+    (parameterize ([current-image-register register-fill!])
+      (for/list ([i (in-list (display-page-items page))]) (item->xml i))))
+  (parameterize ([current-image-register register-fill!])
   (values
    (format (string-append xml-decl
                           "<p:sld xmlns:a=\"~a\" xmlns:r=\"~a\" xmlns:p=\"~a\">"
@@ -467,12 +492,13 @@
            (let ([bg (display-page-background page)])
              (if bg (format "<p:bg><p:bgPr>~a<a:effectLst/></p:bgPr></p:bg>" (fill-xml bg)) ""))
            (apply string-append shapes))
-   (reverse images)))
+   (reverse images))))
 
 ;; A picture whose relationship resolved to nothing has no source and so no
 ;; extension to read; a blank png stands in for it.
-(define (picture-extension i)
-  (define src (it:picture-src i))
+(define (picture-extension i) (src-extension (it:picture-src i)))
+
+(define (src-extension src)
   (define p (and src (if (path? src) src (string->path src))))
   (define e (and p (path-get-extension p)))
   (define e* (if e (string-downcase (bytes->string/utf-8 e)) ".png"))
@@ -706,13 +732,15 @@
 ;; only has pixels, and has to be encoded.
 (define (item-bytes i)
   (cond
-    [(it:picture? i)
-     (define src (it:picture-src i))
-     (if (and src (file-exists? src))
-         (file->bytes src)
-         (begin (warn! "image ~a is missing; a blank stands in" src)
-                (blank-png)))]
+    [(it:picture? i) (src-bytes (it:picture-src i))]
+    [(fill:image? i) (src-bytes (fill:image-src i))]
     [else (png-bytes i)]))
+
+(define (src-bytes src)
+  (if (and src (file-exists? src))
+      (file->bytes src)
+      (begin (warn! "image ~a is missing; a blank stands in" src)
+             (blank-png))))
 
 (define (blank-png)
   (define bm (make-bitmap 1 1))
