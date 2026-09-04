@@ -120,6 +120,7 @@ with the reason, because no single correction produces it.
 | anchor text, unwrap it, autofit it, inset it | the `textbox`'s own arguments |
 | retype a word of a styled line | the run the change fell inside |
 | crop a picture, or fade it | the picture's `~crop:`/`~opacity:` |
+| swap a picture's image | the new file, copied beside the program, and `media("...")` |
 | group two shapes | their `at` forms, moved inside a `group_pict` |
 | ungroup them | their `at` forms, lifted back out of it |
 
@@ -127,6 +128,13 @@ An argument the source does not state is **added** rather than reported: a
 solid line has no `~dash:` to rewrite, and adding one is the answer. An
 argument it does state is rewritten in place -- never both, since a second
 `~width:` in one call would not compile.
+
+A picture is known by the size of its file, which is the one thing the two
+sides can compare: the program names a path and a deck names a part inside
+itself. Swapping the image copies the new file next to the program under a name
+that does not clobber what is there, and points `media("...")` at it -- two
+pictures of exactly the same size are a miss worth taking for a stat instead of
+a read of every image on every save.
 
 Every run and every paragraph answers for itself: the k-th `run(...)` call in
 the source is the k-th run of the body, because both sides read them paragraph
@@ -513,10 +521,6 @@ and every number above will be noise.
 
 ## What is not handled yet
 
-- Swapping a picture's image is invisible to a merge: the program names the
-  file and an exported deck names the same bytes differently -- one a path, the
-  other a package part -- so there is no identity to compare yet. A picture's
-  crop and opacity do merge.
 - Charts and SmartArt (`graphicFrame` content other than tables) draw as an
   empty box and are reported.
 - Effects: shadows, glow, reflection, 3-D, soft edges.
