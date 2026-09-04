@@ -89,7 +89,8 @@
                "" (format "~a" (it:picture-src i))
                (append (pen-style (it:picture-pen i))
                        (list (cons 'opacity (round-to (it:picture-opacity i) 100.0))
-                             (cons 'crop (crop-style (it:picture-crop i)))))
+                             (cons 'crop (crop-style (it:picture-crop i)))
+                             (cons 'image (bytes-of (it:picture-src i)))))
                z)]
     ;; A flattened element is a picture on both sides of the sync, so it is
     ;; described as one here too and the signature matcher agrees.
@@ -260,6 +261,14 @@
 
 ;; Rounded, so that a value that differs in the last decimal place is not read
 ;; as an edit.
+;; Which picture it is, as the size of the file. The two sides name the same
+;; bytes differently -- the program a path, a deck a part inside itself -- so
+;; the file is what they have in common. Size rather than a digest because it
+;; is a stat rather than a read, and a picture swapped for another of exactly
+;; the same size is a miss worth taking.
+(define (bytes-of p)
+  (and p (file-exists? p) (file-size p)))
+
 ;; How much of a picture is cropped away, as four fractions or #f for none. A
 ;; crop is a value the editor sets with the crop tool and the program states as
 ;; a list, so both ends of it are comparable.
@@ -307,7 +316,7 @@
                                  (bbox-flip-h? b) (bbox-flip-v? b)
                                  (if (shape? e) (body-text (shape-body e)) "")
                                  (if (shape? e) (ir-fill-digest (shape-fill e)) "")
-                                 (ir-style e)
+                                 (ir-style e (deck-media-dir d))
                                  z)
                        acc))
            (set! z (add1 z))])))
@@ -326,7 +335,7 @@
 
 ;; The same properties as `fill-style`/`pen-style`/`body-style`, from a deck's
 ;; IR rather than from a display list, so the two sides compare.
-(define (ir-style e)
+(define (ir-style e [media-dir #f])
   (define hex hex-of)
   (define fill
     (let ([f (and (shape? e) (shape-fill e))])
@@ -354,7 +363,9 @@
   (define opacity
     (if (picture? e)
         (list (cons 'opacity (round-to (picture-opacity e) 100.0))
-              (cons 'crop (crop-style (picture-crop e))))
+              (cons 'crop (crop-style (picture-crop e)))
+              (cons 'image (bytes-of (and media-dir (picture-src e)
+                                          (build-path media-dir (picture-src e))))))
         '()))
   (append fill line text opacity))
 

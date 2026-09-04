@@ -1206,6 +1206,21 @@
   (define n (call-name stx))
   (and n (rhombus-call-extent (current-source-text) n)))
 
+;; The first string a named call is given, wherever it appears: `media("x.png")`
+;; is a call like `hex("...")`, and its argument is what says which file.
+(define (call-string-range stx name)
+  (define found (box #f))
+  (let walk ([s stx])
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (when (and l (not (unbox found)))
+      (for ([a (in-list l)] [b (in-list (cdr l))])
+        (when (and (not (unbox found)) (eq? name (syntax-e* a)) (rhombus-head? b 'parens))
+          (define args (cdr (syntax-e b)))
+          (define v (and (pair? args) (rhombus-group-value (first args))))
+          (when (and v (string? (syntax-e* v))) (set-box! found (range-of v)))))
+      (unless (unbox found) (for-each walk l))))
+  (unbox found))
+
 (define (kw-single-stx child kw)
   (define l (and (syntax? child) (syntax-e child)))
   (define parens (and (list? l) (findf (lambda (x) (rhombus-head? x 'parens)) l)))
@@ -1249,6 +1264,11 @@
                              [else (literal-range (kw-single-stx call kw) how)])
                            #f #f kw #f)
                (style-site property #f #f (call-append-at call) kw #f)))))
+  ;; Which file a picture draws, which the source names inside `media(...)`.
+  (define (media-site call)
+    (and call
+         (let ([r (call-string-range call 'media)])
+           (and r (style-site 'image r #f #f #f #f)))))
   ;; How much of a picture is cropped away: a list when there is a crop and
   ;; nothing at all when there is not, so it is added and removed like a fill.
   (define (crop-site call)
@@ -1362,6 +1382,7 @@
                 (end-site 'tail stroke '#:tail)
 
                 ;; A picture's own arguments.
+                (media-site (leaf-taking 'image_pict))
                 (kw-site 'opacity (leaf-taking 'image_pict) '#:opacity real?)
                 (crop-site (leaf-taking 'image_pict))
                 (kw-site 'anchor body-call '#:anchor 'quoted)
@@ -1995,6 +2016,26 @@
                 [else (values done (cons (format "~a was removed, and the program has no way to say that"
                                                  (property-name property))
                                          left))])]
+             ;; A picture swapped for another: the file comes to sit beside the
+             ;; program and the source is pointed at it. Rewriting the name
+             ;; alone would leave it naming a file that is not there.
+             [(equal? 'image property)
+              (define file (and d (picture-file-for d a)))
+              (define hit (site-for 'image))
+              (cond
+                [(not media?)
+                 (values done (cons "the picture was replaced and the program has no media directory"
+                                    left))]
+                [(or (not file) (not hit) (not (style-site-range hit)))
+                 (values done (cons "the picture was replaced and the program does not name its file"
+                                    left))]
+                [else
+                 (define name (copy-media-in! file program-path media-subdir))
+                 (cond
+                   [(and name (edit! (style-site-range hit) (format "~s" name)))
+                    (values (cons 'image done) left)]
+                   [else (values done (cons "the picture was replaced and its file could not be copied"
+                                            left))])])]
              ;; "gradient" is all the comparison knows of one, and it is not
              ;; something to write anywhere: not over the colour that was
              ;; there, and certainly not into a shared definition.
@@ -2525,6 +2566,37 @@
 (define (at-site-number st get text)
   (define r (get st))
   (or (and r (string->number (string-trim (substring text (rng-start r) (rng-end r))))) 0.0))
+
+;; The file behind a deck's picture, for the element an action names.
+(define (picture-file-for d a)
+  (define e (added-element d (sync-action-slide a) (sync-action-tag a)))
+  (define src (and (picture? e) (picture-src e)))
+  (define p (and src (build-path (deck-media-dir d) src)))
+  (and p (file-exists? p) p))
+
+;; A file copied to sit beside the program, under a name that is not already
+;; taken by different bytes. Returns the name the program should use.
+(define (copy-media-in! from program-path subdir)
+  (define dir (build-path (or (path-only (path->complete-path program-path))
+                              (current-directory))
+                          subdir))
+  (define base (path->string (file-name-from-path from)))
+  (define-values (stem ext)
+    (let ([m (regexp-match #px"^(.*?)([.][^.]*)?$" base)])
+      (values (second m) (or (third m) ""))))
+  (define name
+    (let loop ([n 1])
+      (define try (if (= n 1) base (format "~a-~a~a" stem n ext)))
+      (define to (build-path dir try))
+      (cond
+        [(not (file-exists? to)) try]
+        [(equal? (file-size to) (file-size from)) try]
+        [(> n 99) try]
+        [else (loop (add1 n))])))
+  (with-handlers ([exn:fail? (lambda (_e) #f)])
+    (make-directory* dir)
+    (copy-file from (build-path dir name) #t)
+    name))
 
 (define (spaces n) (make-string (max 0 n) #\space))
 

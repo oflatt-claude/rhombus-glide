@@ -1061,6 +1061,35 @@
   (check-regexp-match #rx"~crop: #false" (file->string program))
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
+  ;; Swapped for another image. The two sides name the same bytes differently
+  ;; -- the program a path, the deck a part inside itself -- so the file is
+  ;; what they have in common: it comes to sit beside the program, under a name
+  ;; that does not clobber what is already there, and the source is pointed at
+  ;; it. Rewriting the name alone would leave it naming a file that is absent.
+  (reset!)
+  (define before-media (sort (map path->string (directory-list (build-path dir "media")))
+                             string<?))
+  (check-equal? before-media '("checker.png") "one picture to begin with")
+  (check-true (with-unpacked-deck deck
+                (lambda (d)
+                  (for ([f (in-list (directory-list (build-path d "ppt" "media")))])
+                    (copy-file (build-path media-dir "gradient.png")
+                               (build-path d "ppt" "media" f) #t))
+                  #t))
+              "the picture in the deck was swapped for another")
+  (define rs (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions rs)) '(restyle))
+  (one! rs "and it was written")
+  (define srcs (file->string program))
+  (check-false (regexp-match? #rx"media[(]\"checker[.]png\"[)]" srcs)
+               "the source no longer names the old file")
+  (define named (second (regexp-match #px"media[(]\"([^\"]*)\"[)]" srcs)))
+  (check-true (file-exists? (build-path dir "media" named))
+              "and the file it does name is there")
+  (check-true (file-exists? (build-path dir "media" "checker.png"))
+              "with the one that was there left alone")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
   ;; Faded with the opacity slider.
   (reset!)
   (check-true (edit-after-tag! deck 1 "Photo" #px"></a:blip>"
