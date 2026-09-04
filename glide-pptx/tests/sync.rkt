@@ -852,6 +852,75 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; ------------------------------------------------ where a new shape is written
+
+;; A shape drawn in the editor is somewhere in the drawing order, and that
+;; order is the order of the `at` forms. Writing every new form last put every
+;; new shape on top -- and since the deck is rewritten from the program as soon
+;; as the merge has written it, there was no second pass in which to fix it.
+(let ()
+  (define dir (build-path work "adding"))
+  (make-directory* dir)
+  (define program (build-path dir "a.rhm"))
+  (define deck (build-path dir "a.pptx"))
+  (define (reset!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  at(60.0, 60.0, ~tag: \"Bottom\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\"))),"
+            "  at(240.0, 60.0, ~tag: \"Middle\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"4472C4\"))),"
+            "  at(420.0, 60.0, ~tag: \"Top\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"70AD47\")))"
+            ")"
+            "def all_slides = [slide_1]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+  (define (sync!) (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (define (order)
+    (map second (regexp-match* #px"~tag: \"([^\"]*)\"" (file->string program)
+                               #:match-select values)))
+
+  ;; Drawn, then sent one step back: the form goes between the two it is drawn
+  ;; between.
+  (reset!)
+  (check-true (and (add-shape-to-deck! deck 1 "Inserted" #:after "Bottom") #t)
+              "a shape was added over the bottom one")
+  (define r (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(added))
+  (check-equal? (length (sync-report-applied r)) 1 "and it was written")
+  (check-equal? (order) '("Bottom" "Inserted" "Middle" "Top")
+                "in the order the deck draws them")
+  (check-equal? (sync-report-actions (sync!)) '()
+                "and it settled -- no second pass to fix the order")
+
+  ;; And one sent all the way back goes first.
+  (reset!)
+  (check-true (and (add-shape-to-deck! deck 1 "Backdrop" #:under? #t) #t)
+              "a shape was added under everything")
+  (check-equal? (length (sync-report-applied (sync!))) 1 "and written")
+  (check-equal? (order) '("Backdrop" "Bottom" "Middle" "Top"))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Drawn on top, which is where a shape starts: last, as before.
+  (reset!)
+  (check-true (and (add-shape-to-deck! deck 1 "Above") #t))
+  (check-equal? (length (sync-report-applied (sync!))) 1)
+  (check-equal? (order) '("Bottom" "Middle" "Top" "Above"))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
+
 ;; ------------------------------------------------------- grouping and ungrouping
 
 ;; Grouping two shapes in the editor is one edit, not an addition and two

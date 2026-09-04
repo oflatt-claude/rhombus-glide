@@ -98,7 +98,7 @@ with the reason, because no single correction produces it.
 | rotate it | `~rotate:`, added if it was not there |
 | drag an endpoint past the other end | `~flip_h:`/`~flip_v:`, added if not there |
 | retype text | the string literal, when the text is one run |
-| draw a new shape | a new `at(...)` in that slide |
+| draw a new shape | a new `at(...)`, where the deck draws it in the order |
 | delete a shape | its `at` form removed |
 | paste a slide in | a `def slide_N` and an entry in `all_slides` |
 | move a group | the group, as one element |
@@ -515,8 +515,6 @@ and every number above will be noise.
 - Swapping a picture's image is invisible to a merge: the program names the
   file and an exported deck names the same bytes differently, so there is no
   identity to compare yet. A picture's crop and opacity do merge.
-- A shape added in the editor is written last in its slide rather than where
-  the editor put it in the drawing order; the next merge moves it.
 - Charts and SmartArt (`graphicFrame` content other than tables) draw as an
   empty box and are reported.
 - Effects: shadows, glow, reflection, 3-D, soft edges.

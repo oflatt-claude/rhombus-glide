@@ -233,6 +233,16 @@
                         [else (list (element-name c))])))))]
       [else h])))
 
+;; The tag of the element the deck draws just under this one, out of those the
+;; program already has: what a new `at` form should follow.
+(define (drawn-under d pairs)
+  (define under (for/list ([p (in-list pairs)]
+                           #:when (and (el-state-tag (cdr p))
+                                       (< (el-state-z (car p)) (el-state-z d))))
+                  p))
+  (and (pair? under)
+       (el-state-tag (cdr (argmax (lambda (p) (el-state-z (car p))) under)))))
+
 (define (merge-slide index base prog deck size #:group-children [group-children (hash)])
   (define-values (deck-pairs deck-added deck-removed)
     (match-elements deck base #:slide-size size))
@@ -301,8 +311,14 @@
                         (for/list ([t (in-list (hash-ref group-children (el-state-tag d)))])
                           (cons t (el-geometry (hash-ref removed-by-tag t)))))
                   #f))
+   ;; A shape drawn in the editor sits somewhere in the drawing order, and
+   ;; that order is the order of the `at` forms -- so the new form says which
+   ;; form it goes after. Writing it last instead put every new shape on top,
+   ;; and the deck is rewritten from the program before the order could be
+   ;; merged separately.
    (for/list ([d (in-list deck-added)] #:unless (memq d groupings))
-     (sync-action 'added (or (el-state-tag d) "(unnamed)") index (el-geometry d) #f))
+     (sync-action 'added (or (el-state-tag d) "(unnamed)") index
+                  (list (el-geometry d) (drawn-under d deck-pairs)) #f))
    (for/list ([b (in-list deck-removed)] #:unless (hash-ref into-a-group (el-state-tag b) #f))
      (define tag (el-state-tag b))
      ;; One of a family deleted: the others are still drawn by the same `at`.
@@ -1884,8 +1900,30 @@
              named (slide-site-indent ss)
              #:media-names media-names
              #:font (and d (dominant-font d))))
-          (edit! (rng (slide-site-insert-at ss) (slide-site-insert-at ss))
-                 (string-append ",\n" src-text))
+          ;; After the form it is drawn over, or before the first of them when
+          ;; it is drawn under everything. A slide whose forms cannot be found
+          ;; takes it last, which is where the editor usually put it anyway.
+          (define under
+            (let ([d (sync-action-detail a)])
+              (and (list? d) (= 2 (length d)) (second d))))
+          (define after (and under (site-for-tag a under)))
+          (define first-form
+            (let ([here (for/list ([st (in-list all-sites)]
+                                   #:when (and (equal? (slide-site-scope ss) (at-site-scope st))
+                                               (at-site-whole st)))
+                          st)])
+              (and (pair? here)
+                   (argmin (lambda (st) (rng-start (at-site-whole st))) here))))
+          (cond
+            [(and after (at-site-whole after))
+             (define at (rng-end (at-site-whole after)))
+             (edit! (rng at at) (string-append ",\n" src-text))]
+            [(and (not under) first-form)
+             (define at (line-start source-text (rng-start (at-site-whole first-form))))
+             (edit! (rng at at) (string-append src-text ",\n"))]
+            [else
+             (edit! (rng (slide-site-insert-at ss) (slide-site-insert-at ss))
+                    (string-append ",\n" src-text))])
           (set! applied (cons a applied))])]
       ;; Deleted in the editor: the `at` form goes, and nothing else.
       [(removed)
