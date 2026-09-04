@@ -832,6 +832,91 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; ------------------------------------------------------ retyping styled text
+
+;; A line with a bold word in it is two runs, and there is no one literal
+;; holding the line. Retyping a word of it used to be refused for that. The run
+;; the change fell inside is the one that gets it -- and when the change falls
+;; across two of them, that is a guess, so it is still refused.
+(let ()
+  (define dir (build-path work "runs"))
+  (make-directory* dir)
+  (define program (build-path dir "t.rhm"))
+  (define deck (build-path dir "t.pptx"))
+  (define (reset!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  at(60.0, 60.0, ~tag: \"Mixed\","
+            "     textbox(~width: 400.0, ~height: 60.0,"
+            "             para(run(\"hello \", ~size: 24.0),"
+            "                  run(\"world\", ~size: 24.0, ~bold: #true)))),"
+            "  at(60.0, 200.0, ~tag: \"Bullets\","
+            "     textbox(~width: 400.0, ~height: 120.0,"
+            "             para(run(\"first line\", ~size: 18.0)),"
+            "             para(run(\"second line\", ~size: 18.0))))"
+            ")"
+            "def all_slides = [slide_1]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+  (define (sync!) (sync-once program deck #:workdir (build-path dir "w")))
+  (define (one! r why) (check-equal? (length (sync-report-applied r)) 1 why))
+  (define (retype! tag from to)
+    (edit-after-tag! deck 1 tag (pregexp (format "<a:t>~a</a:t>" (regexp-quote from)))
+                     (format "<a:t>~a</a:t>" to)))
+
+  ;; The bold word, retyped.
+  (reset!)
+  (check-true (retype! "Mixed" "world" "planet") "the bold word was retyped")
+  (define r (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(retext))
+  (one! r "and it was written")
+  (define src (file->string program))
+  (check-regexp-match #rx"run[(]\"planet\", ~size: 24[.]0, ~bold: #true[)]" src
+                      "into the run it belongs to")
+  (check-regexp-match #rx"run[(]\"hello \"" src "the other run is untouched")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; The plain half, retyped.
+  (reset!)
+  (check-true (retype! "Mixed" "hello " "goodbye "))
+  (one! (sync!) "the first run was written")
+  (check-regexp-match #rx"run[(]\"goodbye \", ~size: 24[.]0[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; One line of two paragraphs.
+  (reset!)
+  (check-true (retype! "Bullets" "second line" "second thoughts"))
+  (one! (sync!) "the second paragraph was written")
+  (define srcb (file->string program))
+  (check-regexp-match #rx"run[(]\"second thoughts\"" srcb)
+  (check-regexp-match #rx"run[(]\"first line\"" srcb "the first is untouched")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A retyping that swallows the whole line: it spans both runs, and which of
+  ;; them it belongs to is not something to guess at.
+  (reset!)
+  (check-true (retype! "Mixed" "hello " "one "))
+  (check-true (retype! "Mixed" "world" "two"))
+  (define rc (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions rc)) '(retext))
+  (check-equal? (sync-report-applied rc) '() "nothing is written")
+  (check-regexp-match #rx"crosses runs" (cdr (first (sync-report-skipped rc)))
+                      "and the report says why")
+  (check-regexp-match #rx"run[(]\"hello \"" (file->string program)
+                      "the program is left as it was"))
+
 ;; ------------------------------------------- appearance the source never states
 
 ;; Most of what an editor does to a shape's appearance is not a value the

@@ -901,7 +901,7 @@
                   (literal-range (hash-ref kws '#:rotate #f) real?)
                   (rhombus-child-kw child '#:width)
                   (rhombus-child-kw child '#:height)
-                  (rhombus-child-texts child)
+                  (rhombus-child-paragraph-texts child)
                   (rhombus-nudge (hash-ref kws '#:nudge #f))
                   (let ([r (range-of tag-stx)]) (and r (rng-end r)))
                   #f #f
@@ -1291,6 +1291,15 @@
 (define (argument-comma text at)
   (if (and (> at 0) (char=? #\( (string-ref text (sub1 at)))) "" ", "))
 
+;; The runs' string literals, grouped by the paragraph they are in: the text of
+;; a body is its paragraphs joined by newlines, so where the paragraphs are is
+;; what says which run a retyped word landed in.
+(define (rhombus-child-paragraph-texts child)
+  (define paras (rhombus-para-calls child))
+  (if (pair? paras)
+      (filter pair? (for/list ([p (in-list paras)]) (rhombus-child-texts p)))
+      (let ([rs (rhombus-child-texts child)]) (if (null? rs) '() (list rs)))))
+
 (define (rhombus-child-texts child)
   (define acc '())
   (let walk ([s child])
@@ -1648,14 +1657,21 @@
                              skipped)))]
             [else (set! applied (cons a applied))])])]
       [(retext)
-       (define texts (and site (at-site-texts site)))
+       (define paras (and site (at-site-texts site)))
+       (define want (sync-action-detail a))
+       (define hit (and paras (retyped-run paras want source-text)))
        (cond
          [(not site) (set! skipped (cons (cons a "no tagged `at` form in the source") skipped))]
-         [(not (= 1 (length texts)))
-          (set! skipped (cons (cons a (format "its text spans ~a runs; edit it by hand"
-                                              (length texts)))
-                              skipped))]
-         [else (edit! (first texts) (format "~s" (sync-action-detail a)))
+         [(or (not paras) (null? paras))
+          (set! skipped (cons (cons a "its text is not written as literals here") skipped))]
+         [(eq? 'crosses hit)
+          (set! skipped
+                (cons (cons a (string-append "the retyping crosses runs or paragraphs,"
+                                             " so which of them it belongs to is a guess"))
+                      skipped))]
+         [(not hit)
+          (set! skipped (cons (cons a "its text is not written as literals here") skipped))]
+         [else (edit! (car hit) (format "~s" (cdr hit)))
                (set! applied (cons a applied))])]
       ;; A shape added in the editor is written into the slide it was added to,
       ;; last, which is where the editor put it in the z-order.
@@ -2130,6 +2146,67 @@
                (apply string-append
                       (for/list ([t (in-list texts)] [i (in-naturals)])
                         (string-append t (if (< i (length gaps)) (list-ref gaps i) ""))))))))
+
+;; Which run a retyping landed in, as (range . new-value). A body's text is its
+;; runs joined, with a newline between paragraphs, so the run to rewrite is the
+;; one the changed stretch falls inside. When it falls across two of them --
+;; or across a paragraph break -- there is no answer, only a guess, and
+;; 'crosses says so.
+;;
+;; This is what makes retyping a word of a styled line work: `run("hello ")`
+;; followed by a bold `run("world")` has no single literal for the whole line,
+;; and one of the two is where the edit belongs.
+(define (retyped-run paras want text)
+  (define runs
+    (append*
+     (for/list ([p (in-list paras)] [i (in-naturals)])
+       (append (if (zero? i) '() (list (cons #f "\n")))
+               (for/list ([r (in-list p)]) (cons r (literal-string r text)))))))
+  (define (value-of c) (cdr c))
+  (cond
+    [(for/or ([c (in-list runs)]) (not (value-of c))) #f]
+    [else
+     (define was (apply string-append (map value-of runs)))
+     ;; The stretch that changed: what is left after the shared ends.
+     (define keep-front
+       (let loop ([i 0])
+         (if (and (< i (string-length was)) (< i (string-length want))
+                  (char=? (string-ref was i) (string-ref want i)))
+             (loop (add1 i))
+             i)))
+     (define keep-back
+       (let loop ([j 0])
+         (if (and (< j (- (string-length was) keep-front))
+                  (< j (- (string-length want) keep-front))
+                  (char=? (string-ref was (- (string-length was) 1 j))
+                          (string-ref want (- (string-length want) 1 j))))
+             (loop (add1 j))
+             j)))
+     (define from keep-front)
+     (define to (- (string-length was) keep-back))
+     ;; Which run holds [from, to), and where it starts.
+     (define-values (found start)
+       (for/fold ([found #f] [at 0]) ([c (in-list runs)])
+         (define end (+ at (string-length (value-of c))))
+         (values (if (and (not found) (<= at from) (<= to end) (car c)) (cons c at) found)
+                 end)))
+     (void start)
+     (cond
+       [(not found) 'crosses]
+       [else
+        (define c (car found))
+        (define at (cdr found))
+        (define old (value-of c))
+        (cons (car c)
+              (string-append (substring old 0 (- from at))
+                             (substring want from (- (string-length want) keep-back))
+                             (substring old (- to at))))])]))
+
+;; A string literal's value, read out of the source it is written in.
+(define (literal-string r text)
+  (with-handlers ([exn:fail? (lambda (_e) #f)])
+    (define v (read (open-input-string (substring text (rng-start r) (rng-end r)))))
+    (and (string? v) v)))
 
 (define (background->source want)
   (cond
