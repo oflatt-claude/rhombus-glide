@@ -501,17 +501,35 @@
   (picts->pptx (load-program-picts program) again #:width 959.976 #:height 540.0)
   (check-equal? (deck-shape again dir "s2") shape "and the deck round-trips"))
 
-;; Deleting a slide is not merged back yet, and it says so rather than taking
-;; the difference for edits.
+;; Deleting a slide in the editor deletes its definition and its entry in
+;; `all_slides`. Nothing else: a program that names the slide somewhere else is
+;; one the merge would be rewriting rather than following, and it says so.
 (let ()
   (define-values (dir program exported) (fixture "delslide" "05-realistic.pptx"))
   (define before (file->string program))
+  (define slides-before (length (regexp-match* #rx"def slide_[0-9]+ =" before)))
   (check-true (delete-slide! exported 2) "a slide was deleted in the editor")
-  (define msg (with-handlers ([exn:fail? exn-message])
-                (sync-once program exported #:workdir (build-path dir "w2"))))
-  (check-regexp-match #rx"not in the deck any more" msg)
-  (check-regexp-match #rx"all_slides" msg "and says what to do about it")
-  (check-equal? (file->string program) before "the program is untouched"))
+  (define r (sync-once program exported #:workdir (build-path dir "w2")))
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(removed-slide))
+  (check-equal? (length (sync-report-applied r)) 1 "and it was applied")
+  (define after (file->string program))
+  (check-equal? (length (regexp-match* #rx"def slide_[0-9]+ =" after)) (sub1 slides-before)
+                "one definition fewer")
+  (check-false (regexp-match? #rx"slide_2" after) "and nothing names it any more")
+  (check-equal? (sync-report-actions (sync-once program exported #:workdir (build-path dir "w2")))
+                '() "and it settled")
+
+  ;; The same deletion, on a program that mentions the slide elsewhere.
+  (define-values (dir2 program2 exported2) (fixture "delslide-used" "05-realistic.pptx"))
+  (display-to-file (string-append (file->string program2) "\ndef also = slide_2\n")
+                   program2 #:exists 'replace)
+  (define kept (file->string program2))
+  (check-true (delete-slide! exported2 2))
+  (define r2 (sync-once program2 exported2 #:workdir (build-path dir2 "w2")))
+  (check-equal? (sync-report-applied r2) '() "nothing is written")
+  (check-regexp-match #rx"named 1 more time" (cdr (first (sync-report-skipped r2)))
+                      "and the report says why")
+  (check-equal? (file->string program2) kept "the program is untouched"))
 
 ;; ------------------------------------------------- a program holding a group
 
@@ -859,6 +877,14 @@
     (void (sync-once program deck #:workdir (build-path dir "w"))))
   (define (sync!) (sync-once program deck #:workdir (build-path dir "w")))
   (define (applied! r why) (check-equal? (length (sync-report-applied r)) 1 why))
+  ;; The slide part itself, for what no element carries.
+  (define (edit-slide! pptx slide rx to)
+    (with-unpacked-deck pptx
+      (lambda (d)
+        (define part (build-path d "ppt" "slides" (format "slide~a.xml" slide)))
+        (define t (file->string part))
+        (and (regexp-match? rx t)
+             (begin (display-to-file (regexp-replace rx t to) part #:exists 'replace) #t)))))
   ;; Keynote writes a colour into the run's properties, whether or not the run
   ;; had one.
   (define (recolour-run! tag hex)
@@ -1074,6 +1100,31 @@
                       (file->string program))
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
+  ;; The slide's own paint, which no element carries: repainting a background
+  ;; used to be as invisible to the merge as it is obvious on the screen.
+  (reset!)
+  (check-true (edit-slide! deck 1 #px"<a:srgbClr val=\"FFFFFF\"/>"
+                           "<a:srgbClr val=\"102040\"/>")
+              "the slide was repainted")
+  (define rb (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions rb)) '(repainted))
+  (check-equal? (length (sync-report-applied rb)) 1 "and it was written")
+  (check-regexp-match #rx"~background: hex[(]\"102040\"[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Renaming a shape in the editor's object list is not renaming its tag: the
+  ;; tag lives in the description, and the merge still knows which `at` it is.
+  (reset!)
+  (check-true (edit-slide! deck 1 #px"name=\"Box\" descr="
+                           "name=\"Blue rectangle\" descr=")
+              "the shape was renamed")
+  (check-true (drag-in-deck! deck 1 "Box" 120.0 140.0) "and dragged")
+  (define rn (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions rn)) '(moved)
+                "the rename is not a change, the drag is")
+  (check-equal? (length (sync-report-applied rn)) 1 "and it was written")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
   ;; A gradient the source does stand behind: it cannot be told which stops the
   ;; editor picked, but a plain colour replaces the whole of it.
   (reset!)
@@ -1170,11 +1221,33 @@
   (reset!)
   (check-true (bring-to-front! deck 1 "Box") "the shape was brought to the front")
   (define r2 (sync!))
-  (check-true (and (memq 'restacked (map sync-action-kind (sync-report-actions r2))) #t)
-              "the drawing order is reported")
-  (check-regexp-match #rx"move its `at` form"
-                      (cdr (first (sync-report-skipped r2)))
-                      "and the report says what to do about it")
+  (check-equal? (map sync-action-kind (sync-report-actions r2)) '(restacked)
+                "one action for the slide, not one per shape")
+  (check-equal? (length (sync-report-applied r2)) 1 "and it was applied")
+  ;; The order of the `at` forms is the order they are drawn in, so the form
+  ;; itself moves -- and the commas and indentation stay where they were.
+  (define src2 (file->string program))
+  (check-true (> (caar (regexp-match-positions #rx"\"Box\"" src2))
+                 (caar (regexp-match-positions #rx"\"Other\"" src2)))
+              "`Box` is written after `Other` now")
+  (check-equal? (length (regexp-match* #rx"  at[(]" src2)) 3
+                "every `at` in the file is still there")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A comment between two `at` forms is a reason not to move them: it would
+  ;; end up describing the wrong one.
+  (reset!)
+  (display-to-file
+   (regexp-replace #rx"  at[(]240[.]0" (file->string program)
+                   "  // the blue one\n  at(240.0")
+   program #:exists 'replace)
+  (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+  (void (sync!))
+  (check-true (bring-to-front! deck 1 "Box"))
+  (define rc (sync!))
+  (check-equal? (sync-report-applied rc) '() "nothing is moved")
+  (check-regexp-match #rx"move them yourself" (cdr (first (sync-report-skipped rc)))
+                      "and the report says so")
 
   ;; Reordering the slides is `all_slides`, which is a literal list.
   (reset!)

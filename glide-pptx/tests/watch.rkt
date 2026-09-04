@@ -152,35 +152,45 @@
 ;; regenerated the deck and threw those edits away. So a refusal latches: while
 ;; it stands the deck is not rewritten, and a change on either side retries.
 ;;
-;; Deleting a slide is the refusal used here, since it is one that stands: a
-;; slide *added* in the editor is merged back.
+;; A tag on two `at` forms is the refusal used here, since it is one that
+;; stands: an edit under that tag could land on either, and only the program can
+;; say which. Deleting a slide is merged back now, and a slide added in the
+;; editor always was.
 (let ()
   (define dir (build-path work "stuck"))
   (make-directory* dir)
   (define program (build-path dir "deck.rhm"))
   (define pptx (build-path dir "deck.pptx"))
-  (define (write-program! color)
+  (define (write-program! color #:duplicate-tag? [duplicate-tag? #f])
     (call-with-output-file program #:exists 'replace
       (lambda (o)
         (write-string
          (string-join
-          (list "#lang rhombus/and_meta"
-                "import:"
-                "  lib(\"glide-pptx/runtime.rhm\") open"
-                "export:"
-                "  all_slides"
-                "def slide_1 = slide_canvas("
-                "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
-                "  at(40.0, 60.0, ~tag: \"Box\","
-                (format "     shape_pict(~~width: 100.0, ~~height: 40.0, ~~fill: hex(~s)))" color)
-                ")"
-                "def slide_2 = slide_canvas("
-                "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
-                "  at(60.0, 90.0, ~tag: \"Other\","
-                "     shape_pict(~width: 80.0, ~height: 30.0, ~fill: hex(\"70AD47\")))"
-                ")"
-                "def all_slides = [slide_1, slide_2]"
-                "")
+          (append
+           (list "#lang rhombus/and_meta"
+                 "import:"
+                 "  lib(\"glide-pptx/runtime.rhm\") open"
+                 "export:"
+                 "  all_slides"
+                 "def slide_1 = slide_canvas("
+                 "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+                 "  at(40.0, 60.0, ~tag: \"Box\","
+                 (format "     shape_pict(~~width: 100.0, ~~height: 40.0, ~~fill: hex(~s)))~a"
+                         color (if duplicate-tag? "," "")))
+           ;; A second `at` under the same tag: an edit under it could land on
+           ;; either, so the merge refuses the program rather than guessing.
+           (if duplicate-tag?
+               (list "  at(200.0, 60.0, ~tag: \"Box\","
+                     "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"ED7D31\")))")
+               '())
+           (list ")"
+                 "def slide_2 = slide_canvas("
+                 "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+                 "  at(60.0, 90.0, ~tag: \"Other\","
+                 "     shape_pict(~width: 80.0, ~height: 30.0, ~fill: hex(\"70AD47\")))"
+                 ")"
+                 "def all_slides = [slide_1, slide_2]"
+                 ""))
           "\n") o))))
   (write-program! "4472C4")
 
@@ -189,14 +199,16 @@
   (sync-once program pptx #:workdir (build-path dir "w"))
   (check-equal? (deck-slide-count pptx) 2 "the deck starts with the program's two slides")
 
-  ;; A slide deleted in the editor: the merge refuses it, and the whole message
-  ;; comes through, because what to do about it is not on the first line.
-  (check-true (delete-slide! pptx 2) "a slide was deleted")
+  ;; A program the merge cannot read at all: two `at` forms answering to one
+  ;; tag, so an edit could land on either. The whole message comes through,
+  ;; because what to do about it is not on the first line.
+  (write-program! "4472C4" #:duplicate-tag? #t)
   (check-false (merge-back-once program pptx (build-path dir "w"))
-               "and merging that back is refused")
+               "and merging into it is refused")
   (define msg (merge-back-message program pptx (build-path dir "w")))
-  (check-regexp-match #rx"not in the deck any more" msg)
-  (check-regexp-match #rx"all_slides" msg "the message keeps its later lines")
+  (check-regexp-match #rx"Box" msg)
+  (check-regexp-match #rx"different tags" msg "the message keeps its later lines")
+  (write-program! "4472C4")
 
   ;; Now the trap, with the loop actually running: the refusal has to happen
   ;; inside a run and a program save has to follow it in the same run.
@@ -226,15 +238,22 @@
   ;; worth writing -- so wait for it to say it wrote the deck.
   (wait! "the loop to finish starting" (lambda () (said? #rx"slides written")))
   (sleep 0.3)
-  ;; Delete a slide while the loop is watching.
-  (check-true (delete-slide! pptx 2) "the second slide was deleted again")
+  ;; Break the program's tags, then edit in the editor: the merge cannot read
+  ;; the program, so the edit stays where it is.
+  (write-program! "4472C4" #:duplicate-tag? #t)
+  (wait! "the loop to write the broken program's deck"
+         (lambda () (>= (length (regexp-match* #rx"slides written" (string-join lines "\n"))) 2)))
+  (sleep 0.3)
+  (check-true (resize-in-deck! pptx 1 "Box" 200.0 80.0) "a shape was resized")
   (wait! "the merge to be refused" (lambda () (said? #rx"merge refused")))
-  ;; Then save the program, which is what the message asks for.
-  (write-program! "70AD47")
+  ;; Then save the program, which is what the message asks for -- but not the
+  ;; part of it the refusal is about.
+  (write-program! "70AD47" #:duplicate-tag? #t)
   (wait! "the loop to notice the program" (lambda () (said? #rx"not being rewritten")))
   (sleep 0.4)
-  (check-equal? (deck-slide-count pptx) 1
-                "the deletion survived a program save -- the deck was not regenerated")
+  (check-regexp-match #rx"cx=\"2540000\""
+                      (deck-part pptx "ppt/slides/slide1.xml")
+                      "the resize survived a program save -- the deck was not regenerated")
   (kill-thread runner))
 
 ;; ------------------------------------------- closing the editor ends the session
