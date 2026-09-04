@@ -521,12 +521,16 @@ python3 -m venv .venv && .venv/bin/pip install python-pptx
 ## Tests
 
 ```console
-raco test tests/all.rkt      # everything
-raco test tests/unit.rkt     # fast, no external tools
+raco test tests/fast.rkt     # ~90s, needs nothing but Racket -- run this while working
+raco test tests/slow.rkt     # ~4min, renders through LibreOffice and sweeps the corpus
+raco test tests/all.rkt      # both
 ```
 
-`tests/fidelity.rkt` and `tests/export.rkt` need LibreOffice and poppler;
-`tests/unit.rkt` needs nothing.
+The split is what a test needs, not how long it takes: `fast.rkt` is everything
+with an exact answer -- the round trip through the IR, the sync, the fuzzer, the
+parser's units -- and `slow.rkt` is everything that renders through LibreOffice
+to compare against, or sweeps the corpus. `tools/fetch-corpus.sh` downloads the
+decks; without them those modules say so and pass.
 
 `tests/corpus.rkt` runs the whole pipeline -- import, render, draw, export,
 re-import -- over LibreOffice's own pptx regression suite, several hundred decks
