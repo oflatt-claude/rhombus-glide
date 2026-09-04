@@ -920,13 +920,17 @@
 
 ;; Every `run(...)` call in a leaf, so a body of one run can have its typeface
 ;; and size rewritten and a body of several can be told apart from it.
-(define (rhombus-run-calls child)
+(define (rhombus-para-calls child) (rhombus-calls-named child '(para para*)))
+
+(define (rhombus-run-calls child) (rhombus-calls-named child '(run run*)))
+
+(define (rhombus-calls-named child names)
   (define acc '())
   (let walk ([s child])
     (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
     (when l
       (define call (rhombus-call l))
-      (when (and call (memq (car call) '(run run*)))
+      (when (and call (memq (car call) names))
         (set! acc (cons s acc)))
       (for-each walk l)))
   (reverse acc))
@@ -1015,6 +1019,25 @@
           [(list? e) (for/or ([x (in-list e)]) (walk x))]
           [else #f])))
 
+;; The same, as the single term a literal is written as: `kw-value-stx` answers
+;; with the whole group, which is what a colour has to be walked for.
+;; A quoted name, `#'center`, which is two terms: the quote and the name. The
+;; group around them carries no position of its own, so the extent comes from
+;; the two ends.
+(define (quoted-range g)
+  (define l (and (syntax? g) (let ([e (syntax-e g)]) (and (list? e) e))))
+  (define terms (if (and (pair? l) (eq? 'group (syntax-e* (first l)))) (cdr l) (or l '())))
+  (and (= 2 (length terms))
+       (let ([a (range-of (first terms))] [b (range-of (second terms))])
+         (and a b (rng (rng-start a) (rng-end b))))))
+
+(define (kw-single-stx child kw)
+  (define l (and (syntax? child) (syntax-e child)))
+  (define parens (and (list? l) (findf (lambda (x) (rhombus-head? x 'parens)) l)))
+  (and parens
+       (for/or ([g (in-list (cdr (syntax-e parens)))])
+         (and (eq? kw (rhombus-kw-name g)) (rhombus-kw-value g)))))
+
 (define (kw-value-stx child kw)
   (define l (and (syntax? child) (syntax-e child)))
   (define parens (and (list? l) (findf (lambda (x) (rhombus-head? x 'parens)) l)))
@@ -1025,13 +1048,31 @@
 ;; The properties this can find in one `at` form.
 (define (style-sites child)
   (define fill-stx (kw-value-stx child '#:fill))
-  ;; The whole value of a keyword argument, which is what has to be rewritten to
-  ;; say that the property is gone.
+  ;; The whole value of a keyword argument, which is what has to be rewritten
+  ;; when there is no single literal inside it that says the same thing: an
+  ;; outline being taken away, or a line spacing that is a `pair(...)`.
   (define (value-extent stx)
-    (define l (and (syntax? stx) (let ([e (syntax-e stx)]) (and (list? e) e))))
-    (define name (for/or ([a (in-list (or l '()))] [b (in-list (cdr (or l '(1))))])
-                   (and (symbol? (syntax-e* a)) (rhombus-head? b 'parens) a)))
+    (define name (call-name stx))
     (and name (rhombus-call-extent (current-source-text) name)))
+  ;; Stated, or not stated. What the source states is rewritten where it
+  ;; stands; what it does not is added. Never both: a second `~width:` in one
+  ;; call would not compile, so an argument that is there but not a literal is
+  ;; reported instead.
+  ;;
+  ;; `how` says what the value looks like: a predicate for a literal, `'call`
+  ;; for a value that is a call of its own, `'flag` for a boolean.
+  (define (kw-site property call kw how)
+    (and call
+         (let ([g (kw-value-stx call kw)])
+           (if g
+               (style-site property
+                           (case how
+                             [(call) (value-extent g)]
+                             [(quoted) (quoted-range g)]
+                             [(flag) (literal-range (kw-single-stx call kw) boolean?)]
+                             [else (literal-range (kw-single-stx call kw) how)])
+                           #f #f kw #f)
+               (style-site property #f #f (call-append-at call) kw #f)))))
   ;; The colour argument, however the source states it: a `hex(...)` to rewrite,
   ;; a shared name, `#false` for a shape that has none, or nothing at all -- in
   ;; which case the whole argument is added.
@@ -1048,27 +1089,29 @@
       [else #f]))
   ;; A colour's alpha lives inside its own `hex(...)`, so a shape made
   ;; translucent in the editor is an `~alpha:` written or added there.
-  (define (opacity-site property stx)
-    (define call (and stx (not (compound-fill? stx)) (hex-call stx)))
-    (and call
-         (style-site property
-                     (parens-kw-in (cdr call) '#:alpha real?)
-                     #f (call-append-at stx) '#:alpha #f)))
-  (define runs (rhombus-run-calls child))
+  (define opacity
+    (and fill-stx (not (compound-fill? fill-stx)) (hex-call fill-stx)
+         (kw-site 'fill-opacity fill-stx '#:alpha real?)))
   ;; The stroke is a call of its own, so its colour, width and dash sit inside
-  ;; it -- and where it does not state one, it can be added.
+  ;; it.
   (define stroke-stx (kw-value-stx child '#:line))
-  (define (in-stroke property kw pred)
-    (and stroke-stx
-         (style-site property
-                     (rhombus-child-kw-in stroke-stx kw pred)
-                     #f
-                     (call-append-at stroke-stx)
-                     kw #f)))
+  (define stroke (and stroke-stx (call-name stroke-stx) stroke-stx))
+  ;; The call that carries the body's own properties: a `textbox(...)` is one,
+  ;; and a shape's `~body: body(...)` is the other.
+  (define body-call
+    (let ([nm (call-name child)])
+      (if (and nm (memq (syntax-e* nm) '(textbox text_box)))
+          child
+          (kw-value-stx child '#:body))))
+  ;; One run and one paragraph stand for the body, the same way the state
+  ;; reports them: an edit to one run of many is refused anyway.
+  (define run (let ([rs (rhombus-run-calls child)]) (and (= 1 (length rs)) (first rs))))
+  (define one-para
+    (let ([ps (rhombus-para-calls child)]) (and (= 1 (length ps)) (first ps))))
   ;; A run's colour is a call too.
   (define text-colour
-    (and (= 1 (length runs))
-         (let* ([v (kw-value-stx (first runs) '#:color)]
+    (and run
+         (let* ([v (kw-value-stx run '#:color)]
                 [hit (and v (hex-site v))])
            (cond
              [hit (style-site 'text-color
@@ -1077,29 +1120,27 @@
                               #f #f #f)]
              ;; Text whose colour the source never states, recoloured in the
              ;; editor: the argument is added to the run.
-             [(not v) (style-site 'text-color #f #f
-                                  (call-append-at (first runs)) '#:color #f)]
+             [(not v) (style-site 'text-color #f #f (call-append-at run) '#:color #f)]
              [else #f]))))
-  (define (in-run property kw pred)
-    (and (= 1 (length runs))
-         (style-site property
-                     (if pred
-                         (rhombus-child-kw-in (first runs) kw pred)
-                         (rhombus-child-flag-in (first runs) kw))
-                     #f
-                     (call-append-at (first runs))
-                     kw #f)))
   (filter values
           (list (paint-site 'fill '#:fill fill-stx)
-                (opacity-site 'fill-opacity fill-stx)
+                opacity
                 (paint-site 'line '#:line stroke-stx)
                 text-colour
-                (in-stroke 'line-width '#:width real?)
-                (in-stroke 'dash '#:dash symbol?)
-                (in-run 'size '#:size real?)
-                (in-run 'font '#:font string?)
-                (in-run 'bold '#:bold #f)
-                (in-run 'italic '#:italic #f))))
+                (kw-site 'line-width stroke '#:width real?)
+                (kw-site 'dash stroke '#:dash 'quoted)
+                (kw-site 'size run '#:size real?)
+                (kw-site 'font run '#:font string?)
+                (kw-site 'bold run '#:bold 'flag)
+                (kw-site 'italic run '#:italic 'flag)
+                (kw-site 'align one-para '#:align 'quoted)
+                (kw-site 'line-spacing one-para '#:line_spacing 'call)
+                (kw-site 'space-before one-para '#:space_before real?)
+                (kw-site 'space-after one-para '#:space_after real?)
+                (kw-site 'anchor body-call '#:anchor 'quoted)
+                (kw-site 'wrap body-call '#:wrap 'flag)
+                (kw-site 'autofit body-call '#:autofit 'quoted)
+                (kw-site 'insets body-call '#:insets 'call))))
 
 ;; A boolean keyword on the leaf, as (range . value) -- so a flip that is
 ;; already there can be set either way. `#:width` and friends carry a number and
@@ -1133,13 +1174,39 @@
 (define (call-name-range stx)
   (let ([n (call-name stx)]) (and n (range-of n))))
 
-;; Just before a call's closing paren, and back over the whitespace that was
-;; indenting it: where a new last argument belongs. Adding at the front would
-;; work too, but `hex(~alpha: 0.5, "ED7D31")` is not how anyone writes it.
+;; Where a new argument belongs: after the last keyword argument there is, which
+;; is how a call is laid out to begin with -- options first, content after. So
+;; `textbox(~width: 300.0, ~anchor: #'center, para(...))` rather than an anchor
+;; trailing the paragraphs. A call stating no options takes it at the end, which
+;; is where `hex("ED7D31", ~alpha: 0.5)` wants it anyway.
 (define (call-append-at stx)
+  (define parens (call-parens stx))
+  (define last-kw
+    (and parens
+         (for/fold ([best #f]) ([g (in-list (cdr (syntax-e parens)))])
+           (if (rhombus-kw-name g)
+               (let ([e (group-end g)]) (if (and e (> e (or best 0))) e best))
+               best))))
   (define name (call-name stx))
-  (define r (and name (rhombus-call-extent (current-source-text) name)))
-  (and r (back-over-space (current-source-text) (sub1 (rng-end r)))))
+  (define r (and (not last-kw) name (rhombus-call-extent (current-source-text) name)))
+  (cond
+    [last-kw last-kw]
+    [r (back-over-space (current-source-text) (sub1 (rng-end r)))]
+    [else #f]))
+
+;; A call's argument list.
+(define (call-parens stx)
+  (define l (and (syntax? stx) (let ([e (syntax-e stx)]) (and (list? e) e))))
+  (and l (findf (lambda (x) (rhombus-head? x 'parens)) l)))
+
+;; How far a group reaches. The group itself carries no position, but every term
+;; in it does -- including the head of a nested `(...)`, which spans the lot.
+(define (group-end stx)
+  (let walk ([s stx] [best #f])
+    (define r (and (syntax? s) (range-of s)))
+    (define here (if (and r (> (rng-end r) (or best 0))) (rng-end r) best))
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (if l (for/fold ([b here]) ([x (in-list l)]) (walk x b)) here)))
 
 ;; The comma a new last argument needs, which is none when the call had none.
 (define (argument-comma text at)
@@ -1778,9 +1845,14 @@
     [(size line-width fill-opacity) (num->source value)]
     [(font) (format "~s" value)]
     [(bold italic) (if value "#true" "#false")]
+    [(space-before space-after) (num->source value)]
+    [(wrap) (if value "#true" "#false")]
+    [(insets) (format "insets(~a)" (string-join (map num->source value) ", "))]
+    ;; `(percent . 1.5)` and `(points . 18.0)` -- the runtime takes either.
+    [(line-spacing) (format "pair(#'~a, ~a)" (car value) (num->source (cdr value)))]
     ;; A hyphen is subtraction in Rhombus, so a name that is not an identifier
     ;; there has to be written the long way.
-    [(dash) (let ([n (format "~a" value)])
+    [(dash align anchor autofit) (let ([n (format "~a" value)])
               (if (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_]*$" n)
                   (format "#'~a" n)
                   (format "#'#{~a}" n)))]
