@@ -158,7 +158,7 @@
 ;; a property missing from either side is reported with `ABSENT` rather than
 ;; passed over.
 (define (style-changes was now)
-  (define (value l k) (let ([p (assq k l)]) (if p (cdr p) ABSENT)))
+  (define (value l k) (let ([p (assoc k l)]) (if p (cdr p) ABSENT)))
   (define keys (remove-duplicates (append (map car was) (map car now))))
   (filter values
           (for/list ([k (in-list keys)])
@@ -1294,54 +1294,64 @@
       (if (and nm (memq (syntax-e* nm) '(textbox text_box)))
           child
           (kw-value-stx child '#:body))))
-  ;; The first run and the first paragraph stand for the body, because that is
-  ;; where the state reads its typeface, its size and its alignment from. A
-  ;; change lands where it was read: writing the size into the first run of
-  ;; three is what makes the two sides agree again, and refusing it -- which is
-  ;; what used to happen to any body of more than one run -- left them
-  ;; disagreeing with nothing to do about it.
-  (define run (let ([rs (rhombus-run-calls child)]) (and (pair? rs) (first rs))))
-  (define one-para
-    (let ([ps (rhombus-para-calls child)]) (and (pair? ps) (first ps))))
+  ;; Every run and every paragraph, numbered as the state numbers them: the
+  ;; k-th `run(...)` call in the source is the k-th run of the body, because
+  ;; both read them paragraph by paragraph. Bolding one word of a line is a
+  ;; change to the run that word is in.
+  (define runs (rhombus-run-calls child))
+  (define paras (rhombus-para-calls child))
+  (define run (and (pair? runs) (first runs)))
+  (define one-para (and (pair? paras) (first paras)))
   ;; A run's colour is a call too.
-  (define text-colour
-    (and run
-         (let* ([v (kw-value-stx run '#:color)]
+  (define (run-colour-site property r)
+    (and r
+         (let* ([v (kw-value-stx r '#:color)]
                 [hit (and v (hex-site v))])
            (cond
-             [hit (style-site 'text-color
+             [hit (style-site property
                               (and (eq? 'literal (car hit)) (cdr hit))
                               (and (eq? 'shared (car hit)) (cdr hit))
                               #f #f #f)]
              ;; Text whose colour the source never states, recoloured in the
              ;; editor: the argument is added to the run.
-             [(not v) (style-site 'text-color #f #f (call-append-at run) '#:color #f)]
+             [(not v) (style-site property #f #f (call-append-at r) '#:color #f)]
              [else #f]))))
-  (filter values
+  ;; The runs and the paragraphs, each under its own number.
+  (define run-sites
+    (append*
+     (for/list ([r (in-list runs)] [i (in-naturals 1)])
+       (list (kw-site (nth-property 'size i) r '#:size real?)
+             (kw-site (nth-property 'font i) r '#:font string?)
+             (kw-site (nth-property 'bold i) r '#:bold 'flag)
+             (kw-site (nth-property 'italic i) r '#:italic 'flag)
+             (run-colour-site (nth-property 'text-color i) r)))))
+  (define para-sites
+    (append*
+     (for/list ([p (in-list paras)] [i (in-naturals 1)])
+       (list (kw-site (nth-property 'align i) p '#:align 'quoted)
+             (kw-site (nth-property 'line-spacing i) p '#:line_spacing 'call)
+             (kw-site (nth-property 'space-before i) p '#:space_before real?)
+             (kw-site (nth-property 'space-after i) p '#:space_after real?)))))
+  (append
+   (filter values run-sites)
+   (filter values para-sites)
+   (filter values
           (list (paint-site 'fill '#:fill fill-stx (leaf-taking 'shape_pict))
                 opacity
                 (paint-site 'line '#:line stroke-stx
                             (leaf-taking 'shape_pict 'image_pict))
-                text-colour
                 (kw-site 'line-width stroke '#:width real?)
                 (kw-site 'dash stroke '#:dash 'quoted)
                 (end-site 'head stroke '#:head)
                 (end-site 'tail stroke '#:tail)
-                (kw-site 'size run '#:size real?)
-                (kw-site 'font run '#:font string?)
-                (kw-site 'bold run '#:bold 'flag)
-                (kw-site 'italic run '#:italic 'flag)
-                (kw-site 'align one-para '#:align 'quoted)
-                (kw-site 'line-spacing one-para '#:line_spacing 'call)
-                (kw-site 'space-before one-para '#:space_before real?)
-                (kw-site 'space-after one-para '#:space_after real?)
+
                 ;; A picture's own arguments.
                 (kw-site 'opacity (leaf-taking 'image_pict) '#:opacity real?)
                 (crop-site (leaf-taking 'image_pict))
                 (kw-site 'anchor body-call '#:anchor 'quoted)
                 (kw-site 'wrap body-call '#:wrap 'flag)
                 (kw-site 'autofit body-call '#:autofit 'quoted)
-                (kw-site 'insets body-call '#:insets 'call))))
+                (kw-site 'insets body-call '#:insets 'call)))))
 
 ;; A boolean keyword on the leaf, as (range . value) -- so a flip that is
 ;; already there can be set either way. `#:width` and friends carry a number and
@@ -1891,14 +1901,14 @@
       [(restyle)
        (define sites (if site (at-site-styles site) '()))
        (define (site-for property)
-         (findf (lambda (st) (eq? property (style-site-property st))) sites))
+         (findf (lambda (st) (equal? property (style-site-property st))) sites))
        (define detail (sync-action-detail a))
        ;; A fill or an outline the shape did not have, or one the editor took
        ;; away, is a whole argument: everything inside it is written or removed
        ;; at once, because none of those properties has anywhere of its own to
        ;; sit.
        (define (whole-argument head keyword)
-         (define ch (assq head detail))
+         (define ch (assoc head detail))
          (define hit (and ch (site-for head)))
          (define (took? ok) (and ok (hash-ref STYLE-GROUPS head)))
          ;; Only a plain colour has a literal inside the argument that means the
@@ -1929,7 +1939,7 @@
        (define wholes (append (or (whole-argument 'fill '#:fill) '())
                               (or (whole-argument 'line '#:line) '())))
        (define changes
-         (filter (lambda (ch) (not (memq (first ch) wholes))) detail))
+         (filter (lambda (ch) (not (member (first ch) wholes))) detail))
        (define-values (done left)
          (for/fold ([done (filter (lambda (p) (memq p '(fill line))) wholes)]
                     [left '()])
@@ -1945,14 +1955,14 @@
                 [(and hit (style-site-whole hit) (edit! (style-site-whole hit) "#false"))
                  (values (cons property done) left)]
                 [else (values done (cons (format "~a was removed, and the program has no way to say that"
-                                                 property)
+                                                 (property-name property))
                                          left))])]
              ;; "gradient" is all the comparison knows of one, and it is not
              ;; something to write anywhere: not over the colour that was
              ;; there, and certainly not into a shared definition.
              [(not (statable? property want))
               (values done (cons (format "the ~a was made a gradient, which the merge does not write back"
-                                         property)
+                                         (property-name property))
                                  left))]
              [(and hit (style-site-range hit)
                    (edit! (style-site-range hit) (style->source property want)))
@@ -1981,19 +1991,20 @@
                          (and (eq? 'restyle (sync-action-kind b))
                               (equal? (at-site-tag st) (sync-action-tag b))
                               (for/or ([c (in-list (sync-action-detail b))])
-                                (and (eq? (first c) property)
+                                (and (equal? (first c) property)
                                      (equal? (third c) want))))))))
               (cond
                 [agreed?
                  (edit! (hash-ref (program-layout-globals layout) name)
                         (style->source property want))
-                 (values (cons (format "~a via ~a" property name) done) left)]
+                 (values (cons (format "~a via ~a" (property-name property) name) done) left)]
                 [else
                  (values done (cons (format "~a is ~a, shared with ~a other element~a that did not change with it"
-                                            property name (max 0 (sub1 (length users)))
+                                            (property-name property) name (max 0 (sub1 (length users)))
                                             (if (= 2 (length users)) "" "s"))
                                     left))])]
-             [else (values done (cons (format "~a is not a literal here" property) left))])))
+             [else (values done (cons (format "~a is not a literal here" (property-name property))
+                                      left))])))
        (cond
          [(null? left) (set! applied (cons a applied))]
          [else
@@ -2211,7 +2222,7 @@
 (define (sites-using sites property name)
   (for/list ([st (in-list sites)]
              #:when (for/or ([sy (in-list (at-site-styles st))])
-                      (and (eq? property (style-site-property sy))
+                      (and (equal? property (style-site-property sy))
                            (eq? name (style-site-shared sy)))))
     st))
 
@@ -2229,7 +2240,7 @@
 ;; shape was given in the editor is a stroke call, and a fill is a colour.
 (define (argument->source head changes)
   (define (val p)
-    (let ([ch (assq p changes)]) (and ch (not (eq? ABSENT (third ch))) (third ch))))
+    (let ([ch (assoc p changes)]) (and ch (not (eq? ABSENT (third ch))) (third ch))))
   (case head
     [(fill)
      (define c (val 'fill))
@@ -2259,7 +2270,7 @@
 ;; An argument being added rather than rewritten: a colour is a call of its own,
 ;; where the literal inside an existing one is just the string.
 (define (added->source property value)
-  (case property
+  (case (property-head property)
     [(text-color) (format "hex(~s)" value)]
     [else (style->source property value)]))
 
@@ -2267,7 +2278,7 @@
 ;; gradient cannot: which stops and which angle is not something either side of
 ;; the comparison can say.
 (define (statable? property value)
-  (case property
+  (case (property-head property)
     [(fill line text-color background) (not (equal? "gradient" value))]
     [else #t]))
 
@@ -2518,7 +2529,22 @@
      (format "hex(~s, ~~alpha: ~a)" (first want) (num->source (second want)))]
     [else #f]))
 
-(define (style->source property value)
+;; `font` and `(font 2)` are written the same way; which run they belong to is
+;; the site's business, not the value's.
+(define (property-head property) (if (pair? property) (first property) property))
+
+;; How a report names one: "font" for the first run, "font of run 2" for the
+;; rest, since a body of one run should read the way it always did.
+(define (property-name property)
+  (if (pair? property)
+      (format "~a of ~a ~a" (first property)
+              (if (memq (first property) '(align line-spacing space-before space-after))
+                  "paragraph" "run")
+              (second property))
+      (format "~a" property)))
+
+(define (style->source property0 value)
+  (define property (property-head property0))
   (case property
     [(fill line text-color) (format "~s" value)]
     [(size line-width fill-opacity) (num->source value)]

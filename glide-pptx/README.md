@@ -111,12 +111,12 @@ with the reason, because no single correction produces it.
 | bring a shape to the front | the `at` forms, moved into the new order |
 | delete a slide | its `def`, its comment, its `export:` entry and its `all_slides` entry |
 | repaint a slide's background | the canvas's `~background:` |
-| change a font, a size, boldness, italics | the `run`'s own arguments |
+| change a font, a size, boldness, italics | that `run`'s own arguments, whichever run it is |
 | make a line dashed, or put an arrowhead on it | `~dash:`/`~head:`/`~tail:`, added to the stroke |
 | give a shape a fill or an outline it had none of | a whole `~fill:`/`~line:` argument, added |
 | take a fill or an outline away | `~fill: #false`/`~line: #false` |
 | make a fill translucent | `~alpha:` inside its colour |
-| centre text, space its lines, space its paragraphs | the `para`'s own arguments |
+| centre text, space its lines, space its paragraphs | that `para`'s own arguments, whichever paragraph it is |
 | anchor text, unwrap it, autofit it, inset it | the `textbox`'s own arguments |
 | retype a word of a styled line | the run the change fell inside |
 | crop a picture, or fade it | the picture's `~crop:`/`~opacity:` |
@@ -127,6 +127,11 @@ An argument the source does not state is **added** rather than reported: a
 solid line has no `~dash:` to rewrite, and adding one is the answer. An
 argument it does state is rewritten in place -- never both, since a second
 `~width:` in one call would not compile.
+
+Every run and every paragraph answers for itself: the k-th `run(...)` call in
+the source is the k-th run of the body, because both sides read them paragraph
+by paragraph. So bolding one word of a line lands on the run that word is in,
+and a report that cannot write one says which -- "font of run 2", not "font".
 
 Refused, with the reason, rather than guessed at: moving or deleting *one* of
 several elements that share a tag, retyping that spans two runs or a paragraph
@@ -510,9 +515,6 @@ and every number above will be noise.
 - Swapping a picture's image is invisible to a merge: the program names the
   file and an exported deck names the same bytes differently, so there is no
   identity to compare yet. A picture's crop and opacity do merge.
-- The styling of any run but the first is invisible to a merge: the state reads
-  a body's typeface, size and weight from its first run, so a change to the
-  second one is neither written nor reported.
 - A shape added in the editor is written last in its slide rather than where
   the editor put it in the drawing order; the next merge moves it.
 - Charts and SmartArt (`graphicFrame` content other than tables) draw as an
