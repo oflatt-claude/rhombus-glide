@@ -199,10 +199,15 @@
 
 ;; Adds a rectangle to slide `slide`, last in the tree, which is what drawing
 ;; one in PowerPoint or Keynote amounts to. Returns the name it was given.
+;; `after` puts it just over the shape with that tag rather than over
+;; everything, which is what drawing a shape and sending it backward amounts
+;; to; `under?` puts it under the lot.
 (define (add-shape-to-deck! pptx slide name
                             #:x [x 100.0] #:y [y 100.0]
                             #:width [w 120.0] #:height [h 80.0]
-                            #:fill [fill "FF0000"])
+                            #:fill [fill "FF0000"]
+                            #:after [after #f]
+                            #:under? [under? #f])
   (define (emu v) (inexact->exact (round (* 12700 v))))
   (with-unpacked-deck
    pptx
@@ -218,11 +223,21 @@
                 "<a:solidFill><a:srgbClr val=\"~a\"/></a:solidFill></p:spPr>"
                 "<p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>")
                name (emu x) (emu y) (emu w) (emu h) fill))
-     (call-with-output-file part #:exists 'replace
-       (lambda (o) (write-string (string-replace d "</p:spTree>"
-                                                 (string-append sp "</p:spTree>"))
-                                 o)))
-     name)))
+     (define placed
+       (cond
+         [after
+          (define m (regexp-match (shape-rx after) d))
+          (and m (string-replace d (first m) (string-append (first m) sp)))]
+         [under?
+          (define m (regexp-match #px"(?s:</p:grpSpPr>)" d))
+          (and m (string-replace d (first m) (string-append (first m) sp)))]
+         [else (string-replace d "</p:spTree>" (string-append sp "</p:spTree>"))]))
+     (cond
+       [(not placed) #f]
+       [else
+        (call-with-output-file part #:exists 'replace
+          (lambda (o) (write-string placed o)))
+        name]))))
 
 ;; Deletes the shape tagged `tag` from slide `slide`. Returns #t when it was
 ;; there to delete.
