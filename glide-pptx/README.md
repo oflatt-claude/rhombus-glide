@@ -120,6 +120,8 @@ with the reason, because no single correction produces it.
 | anchor text, unwrap it, autofit it, inset it | the `textbox`'s own arguments |
 | retype a word of a styled line | the run the change fell inside |
 | crop a picture, or fade it | the picture's `~crop:`/`~opacity:` |
+| group two shapes | their `at` forms, moved inside a `group_pict` |
+| ungroup them | their `at` forms, lifted back out of it |
 
 An argument the source does not state is **added** rather than reported: a
 solid line has no `~dash:` to rewrite, and adding one is the answer. An
@@ -129,8 +131,15 @@ argument it does state is rewritten in place -- never both, since a second
 Refused, with the reason, rather than guessed at: moving or deleting *one* of
 several elements that share a tag, retyping that spans two runs or a paragraph
 break, moving something whose position is computed and whose tag is not a
-literal, a fill the editor made a gradient, grouping shapes, and reordering
-`at` forms with a comment standing between them.
+literal, a fill the editor made a gradient, grouping shapes whose positions the
+program computes, and reordering `at` forms with a comment standing between
+them.
+
+Grouping and ungrouping move the `at` forms rather than writing new ones, which
+is the difference between keeping what the code says about a shape and
+replacing it with what the deck shows: a colour shared through a `def` stays
+shared, a computed size stays computed, and the comment above a shape goes with
+it.
 
 Appearance follows the same rule as geometry: written where the source states
 it, added where it does not, and **reported by name where neither is possible**.
@@ -498,10 +507,6 @@ and every number above will be noise.
 
 ## What is not handled yet
 
-- Grouping shapes in the editor is reported, not merged: two of a slide's
-  shapes disappearing into a group makes the slide stop looking like the one
-  the base recorded, and rewriting the slide on that guess is worse than
-  saying so.
 - Swapping a picture's image is invisible to a merge: the program names the
   file and an exported deck names the same bytes differently, so there is no
   identity to compare yet. A picture's crop and opacity do merge.

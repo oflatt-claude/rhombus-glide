@@ -9,7 +9,7 @@
          add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!
          resize-in-deck! rotate-in-deck! edit-after-tag! shape-rx find-tag
          bring-to-front! duplicate-in-deck!
-         group-in-deck! move-element-to-slide! edit-slide-part!)
+         group-in-deck! ungroup-in-deck! move-element-to-slide! edit-slide-part!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -133,6 +133,46 @@
         (call-with-output-file part #:exists 'replace
           (lambda (o) (write-string (string-replace stripped "</p:spTree>"
                                                     (string-append grp "</p:spTree>"))
+                                    o)))
+        #t]))))
+
+;; Dissolves a group, which is what the editor's Ungroup does: the children
+;; come back out at the level the group was at. The child coordinate space is
+;; the same as the group's own, so nothing needs rescaling.
+(define (ungroup-in-deck! pptx slide tag)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     ;; `shape-rx` cannot match a group that holds shapes -- it stops at the
+     ;; first closing tag -- so the group is found by counting its own.
+     (define at (find-tag d tag))
+     (define open (and at (let loop ([j at])
+                            (cond [(< j 0) #f]
+                                  [(regexp-match? #px"^<p:grpSp>" d j) j]
+                                  [else (loop (sub1 j))]))))
+     (define shut
+       (and open
+            (let loop ([j (+ open (string-length "<p:grpSp>"))] [depth 1])
+              (cond
+                [(>= j (string-length d)) #f]
+                [(zero? depth) j]
+                [(regexp-match? #px"^<p:grpSp>" d j) (loop (add1 j) (add1 depth))]
+                [(regexp-match? #px"^</p:grpSp>" d j)
+                 (if (= 1 depth)
+                     (+ j (string-length "</p:grpSp>"))
+                     (loop (add1 j) (sub1 depth)))]
+                [else (loop (add1 j) depth)]))))
+     (define whole (and shut (substring d open shut)))
+     (define inner
+       (and whole (regexp-match #px"(?s:</p:grpSpPr>(.*)</p:grpSp>$)" whole)))
+     (cond
+       [(not inner) #f]
+       [else
+        (call-with-output-file part #:exists 'replace
+          (lambda (o) (write-string (string-append (substring d 0 open) (second inner)
+                                                   (substring d shut))
                                     o)))
         #t]))))
 

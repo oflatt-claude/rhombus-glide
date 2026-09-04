@@ -852,6 +852,91 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; ------------------------------------------------------- grouping and ungrouping
+
+;; Grouping two shapes in the editor is one edit, not an addition and two
+;; deletions -- read as three it looked like most of a slide being thrown away,
+;; and the merge refused the whole slide. The `at` forms move inside a
+;; `group_pict`, so what the code says about them survives: a colour shared
+;; with something else stays shared, and a comment stays where it was.
+(let ()
+  (define dir (build-path work "grouping"))
+  (make-directory* dir)
+  (define program (build-path dir "g.rhm"))
+  (define deck (build-path dir "g.pptx"))
+  (define (reset!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def brand = hex(\"4472C4\")"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  // the orange one"
+            "  at(60.0, 60.0, ~tag: \"Box\","
+            "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\"))),"
+            "  at(240.0, 60.0, ~tag: \"Bare\","
+            "     shape_pict(~width: 90.0, ~height: 60.0, ~fill: brand)),"
+            "  at(60.0, 200.0, ~tag: \"Words\","
+            "     textbox(~width: 300.0, ~height: 60.0, para(run(\"hi\", ~size: 24.0))))"
+            ")"
+            "def all_slides = [slide_1]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+  (define (sync!) (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  ;; A pass can leave the drawing order for the next one, so this settles.
+  (define (settle!)
+    (let loop ([n 0])
+      (define r (sync!))
+      (cond
+        [(null? (sync-report-actions r)) n]
+        [(or (> n 3) (null? (sync-report-applied r)))
+         (fail (format "stuck on ~s, refusing ~s"
+                       (map sync-action-kind (sync-report-actions r))
+                       (map cdr (sync-report-skipped r))))
+         n]
+        [else (loop (add1 n))])))
+
+  (reset!)
+  (check-true (group-in-deck! deck 1 "Box" "Bare" #:name "Pair") "two shapes were grouped")
+  (define r (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(grouped)
+                "one edit, not an addition and two deletions")
+  (check-equal? (length (sync-report-applied r)) 1 "and it was written")
+  (define src (file->string program))
+  (check-regexp-match #rx"~tag: \"Pair\",\n *group_pict[(]~width: 270[.]0" src
+                      "a group where the first of them was")
+  (check-regexp-match #rx"at[(]0[.]0, 0[.]0, ~tag: \"Box\"" src
+                      "its children positioned inside it")
+  (check-regexp-match #rx"at[(]180[.]0, 0[.]0, ~tag: \"Bare\"" src)
+  (check-regexp-match #rx"~fill: brand" src "the shared colour is still shared")
+  (check-regexp-match #rx"// the orange one" src "and the comment came with its shape")
+  (check-equal? (length (regexp-match* #rx"~tag: \"Box\"" src)) 1 "written once")
+  (settle!)
+
+  ;; And ungrouped again: the forms come back out rather than being written
+  ;; afresh from the deck, which would turn `brand` into a literal colour.
+  (check-true (ungroup-in-deck! deck 1 "Pair") "the group was dissolved")
+  (define r2 (sync!))
+  (check-true (positive? (length (sync-report-applied r2))) "which was written")
+  (check-equal? (sync-report-skipped r2) '() "and nothing was refused")
+  (define src2 (file->string program))
+  (check-false (regexp-match? #rx"group_pict" src2) "the group is gone")
+  (check-regexp-match #rx"at[(]60[.]0, 60[.]0, ~tag: \"Box\"" src2
+                      "and its children are back where they were")
+  (check-regexp-match #rx"at[(]240[.]0, 60[.]0, ~tag: \"Bare\"" src2)
+  (check-regexp-match #rx"~fill: brand" src2 "with the shared colour intact")
+  (check-regexp-match #rx"// the orange one" src2 "and the comment too")
+  (void (settle!)))
+
 ;; ------------------------------------------------------------------ pictures
 
 ;; A picture has arguments of its own: how much of it is cropped away and how
