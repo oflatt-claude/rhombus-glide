@@ -346,7 +346,12 @@
   (define tb (filter values (map el-state-tag (slide-state-elements b))))
   (cond
     [(and (null? ta) (null? tb)) 1.0]
-    [(or (null? ta) (null? tb)) 0.0]
+    ;; Everything on a slide can be deleted, or a slide can be filled from
+    ;; empty. There are no tags to go on then, and the one thing left is where
+    ;; the slide sits -- which is enough, since the alternative reads as a
+    ;; slide deleted and another one added.
+    [(or (null? ta) (null? tb))
+     (if (= (slide-state-index a) (slide-state-index b)) 0.75 0.0)]
     [else
      (define-values (shared _left)
        (for/fold ([n 0] [h (for/fold ([h (hash)]) ([t (in-list tb)])
@@ -401,8 +406,24 @@
 
 (define (merge-states base prog deck [program-path "the program"])
   (define-values (pairs added removed) (match-slides base deck))
+  ;; A slide the base has that the deck does not, *and* a slide the deck has
+  ;; that the base does not, in the same merge: that is a slide the matching
+  ;; could not follow, not a deletion and a new slide. Telling those apart is a
+  ;; guess, and guessing wrong deletes a definition the program still wants --
+  ;; grouping two shapes of three is enough to make a slide stop matching.
+  (define muddled? (and (pair? added) (pair? removed)))
   (append
-   (slides-removed removed)
+   (if muddled?
+       (for/list ([b (in-list removed)])
+         (sync-action 'ambiguous (format "slide ~a" (slide-state-index b))
+                      (slide-state-index b)
+                      (format (string-append "this slide and ~a in the deck no longer look like"
+                                             " each other, so which is which is a guess;"
+                                             " nothing here is rewritten")
+                              (if (= 1 (length added)) "one" "some"))
+                      #f))
+       '())
+   (if muddled? '() (slides-removed removed))
    (append*
     (for/list ([pair (in-list pairs)])
       (define ds (car pair))
@@ -450,6 +471,7 @@
    ;; A slide the base does not have was added in the editor. Where it goes in
    ;; the program's order is where it sits in the deck: after whichever program
    ;; slide the nearest earlier deck slide belongs to.
+   (if muddled? '()
    (let loop ([ds (in-deck-order deck)] [after 0] [seq 0] [acc '()])
      (cond
        [(null? ds) (reverse acc)]
@@ -464,7 +486,7 @@
                                      (slide-state-index d)
                                      (list after seq)
                                      #f)
-                        acc)))]))))
+                        acc)))])))))
 
 (define (in-deck-order deck)
   (sort deck < #:key slide-state-index))
@@ -1180,11 +1202,15 @@
       (if (and nm (memq (syntax-e* nm) '(textbox text_box)))
           child
           (kw-value-stx child '#:body))))
-  ;; One run and one paragraph stand for the body, the same way the state
-  ;; reports them: an edit to one run of many is refused anyway.
-  (define run (let ([rs (rhombus-run-calls child)]) (and (= 1 (length rs)) (first rs))))
+  ;; The first run and the first paragraph stand for the body, because that is
+  ;; where the state reads its typeface, its size and its alignment from. A
+  ;; change lands where it was read: writing the size into the first run of
+  ;; three is what makes the two sides agree again, and refusing it -- which is
+  ;; what used to happen to any body of more than one run -- left them
+  ;; disagreeing with nothing to do about it.
+  (define run (let ([rs (rhombus-run-calls child)]) (and (pair? rs) (first rs))))
   (define one-para
-    (let ([ps (rhombus-para-calls child)]) (and (= 1 (length ps)) (first ps))))
+    (let ([ps (rhombus-para-calls child)]) (and (pair? ps) (first ps))))
   ;; A run's colour is a call too.
   (define text-colour
     (and run
@@ -2130,18 +2156,23 @@
 (define (reorder-pieces sites want text)
   (define by-tag (for/hash ([st (in-list sites)]) (values (at-site-tag st) st)))
   (define ordered (for/list ([t (in-list want)]) (hash-ref by-tag t #f)))
+  ;; A comment sitting above an `at` describes that `at`, so it is part of the
+  ;; piece that moves. The emitter writes one over every element it adds.
+  (define (extent st)
+    (rng (comment-block-start text (rng-start (at-site-whole st)))
+         (rng-end (at-site-whole st))))
   (define gaps
     (for/list ([a (in-list sites)] [b (in-list (cdr (append sites (list #f))))]
                #:when b)
-      (substring text (rng-end (at-site-whole a)) (rng-start (at-site-whole b)))))
+      (substring text (rng-end (extent a)) (rng-start (extent b)))))
   (and (= (length sites) (length want))
        (andmap values ordered)
+       ;; A comment left in a gap belongs to neither side of it.
        (not (for/or ([g (in-list gaps)]) (regexp-match? #rx"//" g)))
-       (let* ([span (rng (rng-start (at-site-whole (first sites)))
-                         (rng-end (at-site-whole (last sites))))]
+       (let* ([span (rng (rng-start (extent (first sites)))
+                         (rng-end (extent (last sites))))]
               [texts (for/list ([st (in-list ordered)])
-                       (substring text (rng-start (at-site-whole st))
-                                  (rng-end (at-site-whole st))))])
+                       (let ([r (extent st)]) (substring text (rng-start r) (rng-end r))))])
          (cons span
                (apply string-append
                       (for/list ([t (in-list texts)] [i (in-naturals)])

@@ -7,4 +7,4 @@
 ;; through the IR, the sync, the fuzzer, the parser's own units -- so a
 ;; regression in any of that shows up here rather than in the long sweep.
 (require "unit.rkt" "fuzz.rkt" "structural.rkt" "flatten.rkt"
-         "sync.rkt" "watch.rkt")
+         "sync.rkt" "scenarios.rkt" "watch.rkt")
