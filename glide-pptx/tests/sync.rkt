@@ -846,8 +846,8 @@
             "             para(run(\"hello\", ~font: \"Arial\", ~size: 24.0,"
             "                      ~color: hex(\"101010\"))))),"
             "  at(60.0, 300.0, ~tag: \"Plain\","
-            "     textbox(~width: 300.0, ~height: 60.0,"
-            "             para(run(\"plain\", ~size: 18.0))))"
+            "     textbox(~width: 300.0, ~height: 60.0, ~anchor: #'top,"
+            "             para(~align: #'left, run(\"plain\", ~size: 18.0))))"
             ")"
             "def all_slides = [slide_1]"
             "")
@@ -945,6 +945,93 @@
   (check-true (recolour-run! "Plain" "CC0000") "the text was recoloured")
   (applied! (sync!) "and the colour was written")
   (check-regexp-match #rx"~color: hex[(]\"CC0000\"[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Centring text is the first thing anyone does in an editor. The paragraph
+  ;; does not state an alignment, so one is added.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Words" #px"<a:pPr algn=\"l\"" "<a:pPr algn=\"ctr\"")
+              "the text was centred")
+  (applied! (sync!) "and the alignment was written")
+  (check-regexp-match #rx"~align: #'center" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; And where it does state one, that one changes -- rather than a second
+  ;; `~align:` appearing beside it, which would not compile.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Plain" #px"<a:pPr algn=\"l\"" "<a:pPr algn=\"r\"")
+              "the text was right-aligned")
+  (applied! (sync!) "and the alignment was written")
+  (define srca (file->string program))
+  (check-regexp-match #rx"~align: #'right" srca)
+  (check-equal? (length (regexp-match* #rx"~align:" srca)) 1
+                "the one the paragraph already had, and no second one beside it")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Line spacing is a pair, so the whole value is written.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Words" #px"<a:spcPct val=\"100000\"/>"
+                               "<a:spcPct val=\"150000\"/>")
+              "the lines were spaced out")
+  (applied! (sync!) "and the spacing was written")
+  (check-regexp-match #rx"~line_spacing: pair[(]#'percent, 1[.]5[)]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Space before and after a paragraph, in points.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Words" #px"</a:lnSpc>"
+                               (string-append "</a:lnSpc><a:spcBef><a:spcPts val=\"1200\"/></a:spcBef>"
+                                              "<a:spcAft><a:spcPts val=\"600\"/></a:spcAft>"))
+              "the paragraph was given room")
+  (applied! (sync!) "and both were written")
+  (define srcs (file->string program))
+  (check-regexp-match #rx"~space_before: 12[.]0" srcs)
+  (check-regexp-match #rx"~space_after: 6[.]0" srcs)
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A dash the source already states: `#'dash` is a quote and a name, and the
+  ;; two of them together are what gets rewritten.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Box" #px"</a:ln>"
+                               "<a:prstDash val=\"dash\"/></a:ln>"))
+  (applied! (sync!) "the dash was added")
+  (check-true (edit-after-tag! deck 1 "Box" #px"<a:prstDash val=\"dash\"/>"
+                               "<a:prstDash val=\"sysDot\"/>")
+              "and then changed")
+  (applied! (sync!) "and the change was written")
+  (define srcd (file->string program))
+  (check-equal? (length (regexp-match* #rx"~dash:" srcd)) 1 "in place, not beside")
+  (check-false (regexp-match? #rx"~dash: #'dash" srcd) "and it is not the old one")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Where the text sits in its box, which the editor's inspector changes
+  ;; without touching a word of the text. None of it is stated, so all of it is
+  ;; added.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Words" #px"anchor=\"t\"" "anchor=\"ctr\"")
+              "the text was anchored to the middle")
+  (check-true (edit-after-tag! deck 1 "Words" #px"wrap=\"square\"" "wrap=\"none\"")
+              "and wrapping turned off")
+  (check-true (edit-after-tag! deck 1 "Words" #px"<a:noAutofit/>" "<a:normAutofit/>")
+              "and set to shrink on overflow")
+  (check-true (edit-after-tag! deck 1 "Words" #px"lIns=\"91440\"" "lIns=\"228600\"")
+              "and given a wider inset")
+  (applied! (sync!) "all four in one action")
+  (define srcb (file->string program))
+  (check-regexp-match #rx"~anchor: #'center" srcb)
+  (check-regexp-match #rx"~wrap: #false" srcb)
+  (check-regexp-match #rx"~autofit: #'shrink" srcb)
+  (check-regexp-match #rx"~insets: insets[(]18[.]0, 3[.]6, 7[.]2, 3[.]6[)]" srcb)
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; The box that states its anchor has that one changed.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Plain" #px"anchor=\"t\"" "anchor=\"b\"")
+              "the text was anchored to the bottom")
+  (applied! (sync!) "and written")
+  (define srcp (file->string program))
+  (check-regexp-match #rx"~anchor: #'bottom" srcp)
+  (check-equal? (length (regexp-match* #rx"~anchor:" srcp)) 1 "in place")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
   ;; A gradient is not a colour the source can be told to be, and saying so is

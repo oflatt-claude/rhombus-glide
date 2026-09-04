@@ -180,16 +180,44 @@
 ;; The first run's typeface and size stand for the body: an edit to one run of
 ;; many is refused anyway, and this is what a report needs to name.
 (define (body-style body)
-  (define r (and body
-                 (for/or ([p (in-list (text-body-paras body))])
+  (define paras (and body (text-body-paras body)))
+  (define p (and (pair? paras) (first paras)))
+  (define r (and paras
+                 (for/or ([p (in-list paras)])
                    (and (pair? (para-runs p)) (first (para-runs p))))))
-  (if (not r)
-      '()
-      (list (cons 'font (trun-family r))
-            (cons 'size (/ (round (* 10.0 (trun-size r))) 10.0))
-            (cons 'bold (and (trun-bold? r) #t))
-            (cons 'italic (and (trun-italic? r) #t))
-            (cons 'text-color (or (hex-of (trun-color r)) "")))))
+  (append
+   ;; How the text sits in its box, which the editor's inspector can change
+   ;; without touching a word of it.
+   (if body
+       (list (cons 'anchor (text-body-anchor body))
+             (cons 'wrap (and (text-body-wrap? body) #t))
+             (cons 'autofit (text-body-autofit body))
+             (cons 'insets (let ([i (text-body-insets body)])
+                             (map (lambda (x) (round-to x 100.0))
+                                  (list (insets-l i) (insets-t i)
+                                        (insets-r i) (insets-b i))))))
+       '())
+   ;; The first paragraph stands for the body in the same way. Centring text is
+   ;; one of the first things anyone does in an editor, and it used to be
+   ;; dropped without a word.
+   (if p
+       (list (cons 'align (para-align p))
+             (cons 'line-spacing (let ([ls (para-line-spacing p)])
+                                   (cons (car ls) (round-to (cdr ls) 1000.0))))
+             (cons 'space-before (round-to (para-space-before p) 10.0))
+             (cons 'space-after (round-to (para-space-after p) 10.0)))
+       '())
+   (if r
+       (list (cons 'font (trun-family r))
+             (cons 'size (round-to (trun-size r) 10.0))
+             (cons 'bold (and (trun-bold? r) #t))
+             (cons 'italic (and (trun-italic? r) #t))
+             (cons 'text-color (or (hex-of (trun-color r)) "")))
+       '())))
+
+;; Rounded, so that a value that differs in the last decimal place is not read
+;; as an edit.
+(define (round-to v scale) (/ (round (* scale (exact->inexact v))) scale))
 
 ;; ------------------------------------------------------------ from a deck IR
 
