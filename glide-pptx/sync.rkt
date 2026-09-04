@@ -79,7 +79,9 @@
 (define (program-slide-states program-path)
   (for/list ([p (in-list (load-program-picts program-path))] [i (in-naturals 1)])
     (define w (pict-width p)) (define h (pict-height p))
-    (items->slide-state i w h (display-page-items (pict->page p w h)))))
+    (define pg (pict->page p w h))
+    (items->slide-state i w h (display-page-items pg)
+                        #:background (display-page-background pg))))
 
 (define (deck-slide-states pptx-path #:workdir [workdir #f])
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
@@ -184,6 +186,31 @@
 
 ;; Three-way merge for one slide. `base` is the agreed state, `prog` the program
 ;; as it is now, `deck` the .pptx as it is now.
+;; The order the deck draws a slide's shapes in, when that is not the order the
+;; program does. One action for the slide, listing the tags in the new order.
+(define (restacking index pairs added removed prog-by-tag)
+  ;; The tags the program knows them by, which is the base side of each pair:
+  ;; a copy made in the editor carries the tag it was copied from, and the
+  ;; program has already given it one of its own.
+  (define tags (map (lambda (p) (el-state-tag (cdr p))) pairs))
+  ;; Read in the order the deck draws them, the places the program draws them.
+  (define in-deck-order
+    (sort pairs < #:key (lambda (p) (el-state-z (car p)))))
+  (define places (map (lambda (p) (el-state-z (cdr p))) in-deck-order))
+  (cond
+    ;; A shape that came or went is a different slide to reason about, and a tag
+    ;; naming several elements has no order of its own to give.
+    [(or (pair? added) (pair? removed)) '()]
+    [(not (andmap values tags)) '()]
+    [(check-duplicates tags) '()]
+    [(for/or ([t (in-list tags)]) (> (length (hash-ref prog-by-tag t '())) 1)) '()]
+    ;; Already in that order, so nothing was restacked.
+    [(equal? places (sort places <)) '()]
+    [else
+     (list (sync-action 'restacked (format "slide ~a" index) index
+                        (map (lambda (p) (el-state-tag (cdr p))) in-deck-order)
+                        #f))]))
+
 (define (merge-slide index base prog deck size)
   (define-values (deck-pairs deck-added deck-removed)
     (match-elements deck base #:slide-size size))
@@ -221,6 +248,11 @@
           (single-actions tag index (first pairs)
                           (let ([ps (hash-ref prog-by-tag tag '())])
                             (and (pair? ps) (first ps)))))))
+   ;; Bringing a shape to the front changes the order everything is drawn in
+   ;; and nothing else. That is the order of the `at` forms, so it is one edit
+   ;; on the slide rather than one per shape -- and it only makes sense when
+   ;; every shape on the slide is accounted for and answers to its own tag.
+   (restacking index deck-pairs deck-added deck-removed prog-by-tag)
    (for/list ([d (in-list deck-added)])
      (sync-action 'added (or (el-state-tag d) "(unnamed)") index (el-geometry d) #f))
    (for/list ([b (in-list deck-removed)])
@@ -282,15 +314,6 @@
                     tag index (el-geometry d)
                     (and p (el-geometry p)))]
       [else #f])
-    ;; Bringing a shape to the front changes the order it is drawn in and
-    ;; nothing else. Rewriting that means moving the `at` form itself, which is
-    ;; a restructuring rather than a literal edit -- so it is reported and left,
-    ;; which is better than the silence it used to get.
-    (and (not (= (el-state-z b) (el-state-z d)))
-         (sync-action 'restacked tag index
-                      (format "it is drawn ~a now, not ~a; move its `at` form to change that"
-                              (add1 (el-state-z d)) (add1 (el-state-z b)))
-                      #f))
     ;; What the editor changed about the look of it. Appearance is the code's, so
     ;; this is reported and written only where the source holds a literal -- but
     ;; reported it must be: recolouring a shape in the editor used to disappear
@@ -367,22 +390,19 @@
 
 ;; A slide deleted in the editor is not merged back yet, and taking the
 ;; difference for edits would delete the program's real elements.
-(define (check-slides-removed removed program-path)
-  (unless (null? removed)
-    (error 'glide
-           (string-append
-            "~a slide~a in ~a ~a not in the deck any more.\n"
-            "  Deleting a slide in the editor is not merged back yet: the program\n"
-            "  says which slides exist. Remove its `def slide_N` and its entry in\n"
-            "  `all_slides`, and export again.")
-           (length removed) (if (= 1 (length removed)) "" "s")
-           (if (path? program-path) (file-name-from-path program-path) program-path)
-           (if (= 1 (length removed)) "is" "are"))))
+;; Deleting a slide in the editor means deleting its definition and its entry in
+;; `all_slides`. The definition can be anything, so it is only removed when the
+;; program does not otherwise mention its name: anything else is a program the
+;; merge would be rewriting rather than following.
+(define (slides-removed removed)
+  (for/list ([s (in-list removed)])
+    (sync-action 'removed-slide (format "slide ~a" (slide-state-index s))
+                 (slide-state-index s) (list (slide-state-index s)) #f)))
 
 (define (merge-states base prog deck [program-path "the program"])
   (define-values (pairs added removed) (match-slides base deck))
-  (check-slides-removed removed program-path)
   (append
+   (slides-removed removed)
    (append*
     (for/list ([pair (in-list pairs)])
       (define ds (car pair))
@@ -395,6 +415,17 @@
          (define as (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
                                  (slide-state-elements ds)
                                  (max 1.0 (slide-state-width bs))))
+         (define bg
+           (let ([was (slide-state-background bs)] [now (slide-state-background ds)])
+             (if (equal? was now)
+                 '()
+                 ;; The program's own paint decides a conflict the same way an
+                 ;; element's does: if the code changed it too, the code wins
+                 ;; and the editor's is reported.
+                 (list (sync-action
+                        (if (equal? was (slide-state-background ps)) 'repainted 'conflict)
+                        (format "slide ~a" index) index
+                        (list (list 'background (or was ABSENT) (or now ABSENT))) #f)))))
          (if (wholesale-change? (slide-state-elements bs) as)
              (list (sync-action
                     'ambiguous (format "slide ~a" index) index
@@ -403,7 +434,7 @@
                              " so it is a different slide rather than an edited one")
                             (length (slide-state-elements bs)))
                     #f))
-             as)]
+             (append as bg))]
         [else (list (sync-action 'conflict (format "slide ~a" index) index
                                  '(slide-missing) #f))])))
    ;; Dragging slides about in the navigator changes their order and nothing
@@ -457,7 +488,7 @@
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
 ;; shape in the editor puts it on top, which is where the last argument draws.
-(struct slide-site (scope insert-at indent def-end) #:transparent)
+(struct slide-site (scope insert-at indent def-start def-end background) #:transparent)
 (struct rng (start end) #:transparent)
 
 ;; Shifts every recovered range, for a reader that was handed only part of the
@@ -761,7 +792,23 @@
                         [open (and r (next-open text (rng-end r)))]
                         [shut (and open (rhombus-close text open))]
                         [ins (and r (canvas-insertion text (rng-end r) rhombus-close))])
-                   (and ins shut (slide-site scope (first ins) 2 (add1 shut))))))))
+                   (and ins shut
+                        (slide-site scope (first ins) 2
+                                    (let ([d (range-of (second l))]) (and d (rng-start d)))
+                                    (add1 shut)
+                                    (canvas-paint-site (sixth l)))))))))
+
+;; Where the canvas states its background, which is always somewhere: the
+;; emitter writes one whether the slide had a background of its own or not.
+(define (canvas-paint-site parens)
+  (define stx (parens-kw-group parens '#:background))
+  (define hit (and stx (not (compound-fill? stx)) (hex-site stx)))
+  (and stx
+       (style-site 'background
+                   (and hit (eq? 'literal (car hit)) (cdr hit))
+                   (and hit (eq? 'shared (car hit)) (cdr hit))
+                   #f '#:background
+                   (value-extent-of stx))))
 
 ;; `(group def slide_1 (op =) ...)` -> slide_1, and the same for `fun`.
 (define (rhombus-def-name g)
@@ -1036,6 +1083,17 @@
   (and (= 2 (length terms))
        (let ([a (range-of (first terms))] [b (range-of (second terms))])
          (and a b (rng (rng-start a) (rng-end b))))))
+
+;; A keyword's value inside an argument list already in hand.
+(define (parens-kw-group parens kw)
+  (and parens
+       (for/or ([g (in-list (cdr (syntax-e parens)))])
+         (and (eq? kw (rhombus-kw-name g)) (rhombus-kw-group g)))))
+
+;; The extent of a whole value, when it is a call.
+(define (value-extent-of stx)
+  (define n (call-name stx))
+  (and n (rhombus-call-extent (current-source-text) n)))
 
 (define (kw-single-stx child kw)
   (define l (and (syntax? child) (syntax-e child)))
@@ -1787,7 +1845,80 @@
           (edit! (rng (add1 (name-list-open nl)) (name-list-close nl))
                  (string-join names ", "))
           (set! applied (cons a applied))])]
-      [(ambiguous restacked)
+      ;; A slide deleted in the editor: its definition goes, and its entry in
+      ;; `all_slides` with it. Anything else in the program that names it is a
+      ;; reason to stop -- the merge follows the program, it does not rewrite it.
+      [(removed-slide)
+       (define i (sync-action-slide a))
+       (define scope (and scopes (<= 1 i (length scopes)) (list-ref scopes (sub1 i))))
+       (define ss (slide-site-for a))
+       (define nl (program-layout-slide-list layout))
+       (define items (and nl (name-list-items nl)))
+       (define entry (and items scope
+                          (findf (lambda (e) (eq? scope (name-entry-name e))) items)))
+       (define def-r (and ss (definition-extent ss source-text)))
+       (define entry-r (and entry (entry-extent entry items)))
+       (define export-r (and scope (export-entry-extent source-text (symbol->string scope))))
+       (define elsewhere
+         (and scope (mentions-outside source-text (symbol->string scope)
+                                      (list def-r entry-r export-r))))
+       (cond
+         [(or (not ss) (not entry) (not def-r))
+          (set! skipped (cons (cons a "the merge cannot see its definition and its entry in `all_slides`")
+                              skipped))]
+         [(positive? elsewhere)
+          (set! skipped
+                (cons (cons a (format (string-append "`~a` is named ~a more time~a in the program,"
+                                                     " so deleting the slide is left to you")
+                                      scope elsewhere (if (= 1 elsewhere) "" "s")))
+                      skipped))]
+         [(and (edit! def-r "") (edit! entry-r "")
+               (or (not export-r) (edit! export-r "")))
+          (set! applied (cons a applied))]
+         [else
+          (set! skipped (cons (cons a "its definition is not one the merge can remove") skipped))])]
+      ;; The slide's own paint, which the canvas states.
+      [(repainted)
+       (define ss (slide-site-for a))
+       (define hit (and ss (slide-site-background ss)))
+       (define want (third (first (sync-action-detail a))))
+       (cond
+         [(not hit)
+          (set! skipped (cons (cons a "the canvas does not state a background") skipped))]
+         [(not (statable? 'background want))
+          (set! skipped (cons (cons a (string-append "the background was made a gradient,"
+                                                     " which the merge does not write back"))
+                              skipped))]
+         [(and (style-site-range hit) (string? want)
+               (edit! (style-site-range hit) (format "~s" want)))
+          (set! applied (cons a applied))]
+         [(and (style-site-whole hit) (background->source want)
+               (edit! (style-site-whole hit) (background->source want)))
+          (set! applied (cons a applied))]
+         [else
+          (set! skipped (cons (cons a "its background is not a literal here") skipped))])]
+      ;; The drawing order, which is the order of the `at` forms.
+      [(restacked)
+       (define scope (let ([i (sync-action-slide a)])
+                       (and scopes (<= 1 i (length scopes)) (list-ref scopes (sub1 i)))))
+       (define here (sort (for/list ([st (in-list all-sites)]
+                                     #:when (and (equal? scope (at-site-scope st))
+                                                 (at-site-whole st)))
+                            st)
+                          < #:key (lambda (st) (rng-start (at-site-whole st)))))
+       (define want (sync-action-detail a))
+       (define pieces (reorder-pieces here want source-text))
+       (cond
+         [(not scope)
+          (set! skipped (cons (cons a "the slide it is on is not one the program names") skipped))]
+         [(not pieces)
+          (set! skipped
+                (cons (cons a (string-append "the `at` forms are not all here to reorder"
+                                             " -- move them yourself to change the drawing order"))
+                      skipped))]
+         [(edit! (car pieces) (cdr pieces)) (set! applied (cons a applied))]
+         [else (set! skipped (cons (cons a "its `at` forms cannot be moved") skipped))])]
+      [(ambiguous)
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
       [else (set! skipped (cons (cons a "reported only") skipped))])
     (unless (memq a applied) (set! edits before-edits)))
@@ -1895,8 +2026,118 @@
 ;; the comparison can say.
 (define (statable? property value)
   (case property
-    [(fill line text-color) (not (equal? "gradient" value))]
+    [(fill line text-color background) (not (equal? "gradient" value))]
     [else #t]))
+
+;; A background as one argument: a colour, a colour and its opacity, or none.
+;; A definition, the comment heading it, and the newline it ends on. The heading
+;; is taken with it because a comment left behind would name the definition
+;; after it instead.
+(define (definition-extent ss text)
+  (define start (slide-site-def-start ss))
+  (define end (slide-site-def-end ss))
+  (and start end
+       (rng (comment-block-start text start)
+            (let loop ([j end])
+              (cond
+                [(>= j (string-length text)) j]
+                [(char=? #\newline (string-ref text j)) (add1 j)]
+                [(char-whitespace? (string-ref text j)) (loop (add1 j))]
+                [else end])))))
+
+;; Back over the comment lines immediately above a position, to the start of the
+;; first of them.
+(define (comment-block-start text at)
+  (let loop ([start (line-start text at)])
+    (define prev (and (> start 0) (line-start text (sub1 start))))
+    (cond
+      [(not prev) start]
+      [(regexp-match? #px"^[ \t]*//" (substring text prev start)) (loop prev)]
+      [else start])))
+
+(define (line-start text at)
+  (let loop ([j (min at (string-length text))])
+    (cond [(<= j 0) 0]
+          [(char=? #\newline (string-ref text (sub1 j))) j]
+          [else (loop (sub1 j))])))
+
+(define (line-end-after text at)
+  (let loop ([j (min at (string-length text))])
+    (cond [(>= j (string-length text)) j]
+          [(char=? #\newline (string-ref text j)) (add1 j)]
+          [else (loop (add1 j))])))
+
+;; The line naming a slide in the program's `export:` block, which a generated
+;; program has one of per slide. Only inside that block: a bare name on a line
+;; of its own means something else anywhere but there.
+(define (export-entry-extent text name)
+  (define m (regexp-match-positions #px"(?m:^export:[ \t]*$)" text))
+  (and m
+       (let* ([from (cdar m)]
+              [block-end (let loop ([j (line-end-after text (add1 from))])
+                           (cond
+                             [(>= j (string-length text)) j]
+                             [(regexp-match? #px"^[ \t]" (substring text j (min (string-length text) (add1 j))))
+                              (loop (line-end-after text j))]
+                             [(char=? #\newline (string-ref text j)) (loop (add1 j))]
+                             [else j]))]
+              [hit (regexp-match-positions (pregexp (format "(?m:^[ \t]+~a[ \t]*\r?\n)"
+                                                            (regexp-quote name)))
+                                           text from block-end)])
+         (and hit (rng (caar hit) (cdar hit))))))
+
+;; How many times a name is written outside the places being removed. A program
+;; that names a slide anywhere else is one the merge would be rewriting.
+(define (mentions-outside text name ranges)
+  (for/sum ([m (in-list (regexp-match-positions*
+                         (pregexp (format "(?<![A-Za-z0-9_])~a(?![A-Za-z0-9_])"
+                                          (regexp-quote name)))
+                         text))]
+            #:unless (for/or ([r (in-list ranges)])
+                       (and r (<= (rng-start r) (car m)) (< (car m) (rng-end r)))))
+    1))
+
+;; One name out of `[a, b, c]`, with the comma that separated it.
+(define (entry-extent entry items)
+  (define r (name-entry-range entry))
+  (define i (index-of items entry))
+  (define n (length items))
+  (cond
+    [(and i (< (add1 i) n)) (rng (rng-start r) (rng-start (name-entry-range (list-ref items (add1 i)))))]
+    [(and i (> i 0)) (rng (rng-end (name-entry-range (list-ref items (sub1 i)))) (rng-end r))]
+    [else r]))
+
+;; The `at` forms of one slide, written out in a new order. What separates them
+;; stays where it is, so the file keeps its indentation and its commas; only the
+;; forms themselves move. A comment between two of them is a reason not to: it
+;; would end up describing something else.
+(define (reorder-pieces sites want text)
+  (define by-tag (for/hash ([st (in-list sites)]) (values (at-site-tag st) st)))
+  (define ordered (for/list ([t (in-list want)]) (hash-ref by-tag t #f)))
+  (define gaps
+    (for/list ([a (in-list sites)] [b (in-list (cdr (append sites (list #f))))]
+               #:when b)
+      (substring text (rng-end (at-site-whole a)) (rng-start (at-site-whole b)))))
+  (and (= (length sites) (length want))
+       (andmap values ordered)
+       (not (for/or ([g (in-list gaps)]) (regexp-match? #rx"//" g)))
+       (let* ([span (rng (rng-start (at-site-whole (first sites)))
+                         (rng-end (at-site-whole (last sites))))]
+              [texts (for/list ([st (in-list ordered)])
+                       (substring text (rng-start (at-site-whole st))
+                                  (rng-end (at-site-whole st))))])
+         (cons span
+               (apply string-append
+                      (for/list ([t (in-list texts)] [i (in-naturals)])
+                        (string-append t (if (< i (length gaps)) (list-ref gaps i) ""))))))))
+
+(define (background->source want)
+  (cond
+    [(eq? ABSENT want) "#false"]
+    [(string? want) (format "hex(~s)" want)]
+    [(and (list? want) (= 2 (length want)))
+     (format "hex(~s, ~~alpha: ~a)" (first want) (num->source (second want)))]
+    [else #f]))
 
 (define (style->source property value)
   (case property

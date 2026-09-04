@@ -18,7 +18,10 @@
 ;; other end mirrors the shape rather than moving it: without them that edit was
 ;; invisible to a merge.
 (struct el-state (tag kind x y w h rot flip-h? flip-v? text paint style z) #:prefab)
-(struct slide-state (index width height elements) #:prefab)
+;; `background` is the slide's own paint, as a colour, "gradient", or #f for
+;; none: the canvas states it, and an editor can change it without touching a
+;; single element.
+(struct slide-state (index width height elements background) #:prefab)
 
 (define GEOM-EPSILON 0.05)
 
@@ -49,11 +52,19 @@
 
 ;; ------------------------------------------------------- from a display list
 
-(define (items->slide-state index width height items)
+(define (items->slide-state index width height items #:background [bg #f])
   (slide-state index width height
                (for/list ([i (in-list items)] [z (in-naturals)]
                           #:when (semantic-item? i))
-                 (item->el-state i z))))
+                 (item->el-state i z))
+               (paint-name (fill-style bg))))
+
+;; A paint as one value: the colour it is, "gradient" for one, or #f for none.
+;; Opacity rides along, since a background is written as one argument.
+(define (paint-name style)
+  (define c (assq 'fill style))
+  (define o (assq 'fill-opacity style))
+  (and c (if (and o (< (cdr o) 0.999)) (list (cdr c) (cdr o)) (cdr c))))
 
 (define (item->el-state i z)
   (cond
@@ -271,7 +282,18 @@
                                  z)
                        acc))
            (set! z (add1 z))])))
-    (slide-state (slide-index s) (slide-width s) (slide-height s) (reverse acc))))
+    (slide-state (slide-index s) (slide-width s) (slide-height s) (reverse acc)
+                 (paint-name (ir-fill-style (slide-background s))))))
+
+;; The same as `fill-style`, for a deck's own fills.
+(define (ir-fill-style f)
+  (cond
+    [(solid-fill? f) (let ([h (hex-of (solid-fill-color f))])
+                       (if h (list (cons 'fill h)
+                                   (cons 'fill-opacity (alpha-of (solid-fill-color f))))
+                           '()))]
+    [(gradient-fill? f) (list (cons 'fill "gradient"))]
+    [else '()]))
 
 ;; The same properties as `fill-style`/`pen-style`/`body-style`, from a deck's
 ;; IR rather than from a display list, so the two sides compare.
@@ -340,6 +362,11 @@
 ;; The base is what both sides agreed on at the last successful sync. It is
 ;; readable and belongs in version control next to the program, so a conflict is
 ;; a diff a person can read.
+;; Bumped whenever a state carries something it did not before. A base written
+;; by an older version is not read: resyncing from scratch is what it says to do
+;; when the base is unusable, and it is cheap.
+(define BASE-VERSION 2)
+
 (define (write-sync-base path states #:program program #:deck deck)
   ;; The base sits in a scratch directory, which need not exist yet.
   (let ([dir (path-only (path->complete-path path))])
@@ -349,7 +376,7 @@
       (fprintf o ";; glide-pptx sync base -- what the program and the deck agreed\n")
       (fprintf o ";; on at the last sync. Edit at your own risk; delete to resync\n")
       (fprintf o ";; from scratch.\n")
-      (writeln* o `(sync-base (version 1)
+      (writeln* o `(sync-base (version ,BASE-VERSION)
                               (program ,program)
                               (deck ,deck)
                               (slides ,@states))))))
@@ -368,7 +395,10 @@
         (define (field name)
           (define hit (assq name (cdr v)))
           (and hit (cdr hit)))
+        (cond
+          [(not (equal? (field 'version) (list BASE-VERSION))) (values #f #f #f)]
+          [else
         (values (field 'slides)
                 (let ([p (field 'program)]) (and (pair? p) (car p)))
-                (let ([p (field 'deck)]) (and (pair? p) (car p))))]
+                (let ([p (field 'deck)]) (and (pair? p) (car p))))])]
        [else (values #f #f #f)])]))

@@ -17,7 +17,11 @@
 (delete-directory/files work #:must-exist? #f)
 (make-directory* work)
 
-(define racket-exe (find-system-path 'exec-file))
+;; `exec-file` is however racket was invoked, which is a bare name when it came
+;; off the PATH -- and `system*` cannot exec one of those.
+(define racket-exe
+  (let ([e (find-system-path 'exec-file)])
+    (if (absolute-path? e) e (or (find-executable-path e) e))))
 
 ;; Running the program itself opens a slideshow, which is what running a talk
 ;; should do -- so the PDF comes from its `pdf` submodule.
