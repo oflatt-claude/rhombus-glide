@@ -9,6 +9,7 @@
 (provide (struct-out el-state) (struct-out slide-state)
          items->slide-state deck->slide-states
          el-geometry el-geometry-same? el-signature signature-distance
+         nth-property
          write-sync-base read-sync-base)
 
 ;; `kind` is 'shape, 'text, 'picture or 'other. `text` is the element's visible
@@ -200,6 +201,26 @@
 
 ;; The first run's typeface and size stand for the body: an edit to one run of
 ;; many is refused anyway, and this is what a report needs to name.
+;; A property of one run or paragraph beyond the first is named by its number:
+;; `(font 2)` is the second run's typeface. The first of each keeps its plain
+;; name, so a report about a body of one run reads the way it always did.
+(define (nth-property name i) (if (= i 1) name (list name i)))
+
+(define (run-style r i)
+  (list (cons (nth-property 'font i) (trun-family r))
+        (cons (nth-property 'size i) (round-to (trun-size r) 10.0))
+        (cons (nth-property 'bold i) (and (trun-bold? r) #t))
+        (cons (nth-property 'italic i) (and (trun-italic? r) #t))
+        (cons (nth-property 'text-color i) (or (hex-of (trun-color r)) ""))))
+
+(define (para-style p i)
+  (list (cons (nth-property 'align i) (para-align p))
+        (cons (nth-property 'line-spacing i)
+              (let ([ls (para-line-spacing p)])
+                (cons (car ls) (round-to (cdr ls) 1000.0))))
+        (cons (nth-property 'space-before i) (round-to (para-space-before p) 10.0))
+        (cons (nth-property 'space-after i) (round-to (para-space-after p) 10.0))))
+
 (define (body-style body)
   (define paras (and body (text-body-paras body)))
   (define p (and (pair? paras) (first paras)))
@@ -218,23 +239,24 @@
                                   (list (insets-l i) (insets-t i)
                                         (insets-r i) (insets-b i))))))
        '())
-   ;; The first paragraph stands for the body in the same way. Centring text is
-   ;; one of the first things anyone does in an editor, and it used to be
-   ;; dropped without a word.
-   (if p
-       (list (cons 'align (para-align p))
-             (cons 'line-spacing (let ([ls (para-line-spacing p)])
-                                   (cons (car ls) (round-to (cdr ls) 1000.0))))
-             (cons 'space-before (round-to (para-space-before p) 10.0))
-             (cons 'space-after (round-to (para-space-after p) 10.0)))
-       '())
-   (if r
-       (list (cons 'font (trun-family r))
-             (cons 'size (round-to (trun-size r) 10.0))
-             (cons 'bold (and (trun-bold? r) #t))
-             (cons 'italic (and (trun-italic? r) #t))
-             (cons 'text-color (or (hex-of (trun-color r)) "")))
-       '())))
+   ;; Every paragraph, and every run in them. Centring text is one of the first
+   ;; things anyone does in an editor, and bolding one word of a line is
+   ;; another -- and each was dropped without a word, the first because
+   ;; paragraphs were not compared at all and the second because only the first
+   ;; run was.
+   (append* (for/list ([p (in-list (or paras '()))] [i (in-naturals 1)])
+              (para-style p i)))
+   (append* (for/list ([r (in-list (all-runs paras))] [i (in-naturals 1)])
+              (run-style r i)))
+   ;; The first run's own properties stand for the body when it has none of its
+   ;; own to report -- an empty paragraph carries a typeface too.
+   (if (and r (null? (all-runs paras))) (run-style r 1) '())
+   (if p '() '())))
+
+;; Every run of a body, paragraph by paragraph, which is the order the source
+;; writes them in.
+(define (all-runs paras)
+  (append* (for/list ([p (in-list (or paras '()))]) (para-runs p))))
 
 ;; Rounded, so that a value that differs in the last decimal place is not read
 ;; as an edit.

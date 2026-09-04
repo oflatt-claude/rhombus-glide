@@ -1025,11 +1025,11 @@
             "  at(60.0, 60.0, ~tag: \"Mixed\","
             "     textbox(~width: 400.0, ~height: 60.0,"
             "             para(run(\"hello \", ~size: 24.0),"
-            "                  run(\"world\", ~size: 24.0, ~bold: #true)))),"
+            "                  run(\"world\", ~size: 18.0, ~bold: #true)))),"
             "  at(60.0, 200.0, ~tag: \"Bullets\","
             "     textbox(~width: 400.0, ~height: 120.0,"
-            "             para(run(\"first line\", ~size: 18.0)),"
-            "             para(run(\"second line\", ~size: 18.0))))"
+            "             para(~align: #'left, run(\"first line\", ~size: 18.0)),"
+            "             para(~align: #'right, run(\"second line\", ~size: 30.0))))"
             ")"
             "def all_slides = [slide_1]"
             "")
@@ -1052,7 +1052,7 @@
   (check-equal? (map sync-action-kind (sync-report-actions r)) '(retext))
   (one! r "and it was written")
   (define src (file->string program))
-  (check-regexp-match #rx"run[(]\"planet\", ~size: 24[.]0, ~bold: #true[)]" src
+  (check-regexp-match #rx"run[(]\"planet\", ~size: 18[.]0, ~bold: #true[)]" src
                       "into the run it belongs to")
   (check-regexp-match #rx"run[(]\"hello \"" src "the other run is untouched")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
@@ -1072,6 +1072,59 @@
   (check-regexp-match #rx"run[(]\"second thoughts\"" srcb)
   (check-regexp-match #rx"run[(]\"first line\"" srcb "the first is untouched")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Styling one run of several. Bolding a word is as ordinary as retyping it,
+  ;; and it used to be dropped without a word: the state read a body's weight
+  ;; and size off the first run, so a change to any other was invisible.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Mixed" #px"sz=\"1800\"" "sz=\"1800\" i=\"1\"")
+              "the second run was italicised")
+  (define ri (sync!))
+  (check-equal? (map sync-action-kind (sync-report-actions ri)) '(restyle))
+  (one! ri "and it was written")
+  (define srci (file->string program))
+  (check-regexp-match #rx"run[(]\"world\", ~size: 18[.]0, ~bold: #true, ~italic: #true[)]" srci
+                      "into the run it belongs to")
+  (check-regexp-match #rx"run[(]\"hello \", ~size: 24[.]0[)]" srci "the first is untouched")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; And the report names which run it was.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Mixed" #px"sz=\"1800\"" "sz=\"3600\""))
+  (one! (sync!) "the size of the second run was written")
+  (check-regexp-match #rx"run[(]\"world\", ~size: 36[.]0" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; One paragraph of several, the same way.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Bullets" #px"algn=\"r\"" "algn=\"ctr\"")
+              "the second paragraph was centred")
+  (one! (sync!) "and it was written")
+  (define srcp2 (file->string program))
+  (check-regexp-match #rx"para[(]~align: #'center, run[(]\"second line\"" srcp2)
+  (check-regexp-match #rx"para[(]~align: #'left, run[(]\"first line\"" srcp2
+                      "the first is untouched")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; What cannot be written names the run in the report, so "font" and "font of
+  ;; run 2" are told apart.
+  (reset!)
+  (display-to-file
+   (regexp-replace
+    #rx"~size: 18[.]0, ~bold: #true"
+    (regexp-replace #rx"def slide_1 = " (file->string program)
+                    "def heading_font = \"Georgia\"\ndef slide_1 = ")
+    "~size: 18.0, ~bold: #true, ~font: heading_font")
+   program #:exists 'replace)
+  (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+  (void (sync!))
+  (check-true (edit-after-tag! deck 1 "Mixed" #px"typeface=\"Georgia\""
+                               "typeface=\"Courier New\"")
+              "the second run's typeface was changed")
+  (define rn (sync!))
+  (check-equal? (sync-report-applied rn) '() "which is not a literal to write")
+  (check-regexp-match #rx"font of run 2" (format "~a" (map cdr (sync-report-skipped rn)))
+                      "and the report says which run")
 
   ;; A retyping that swallows the whole line: it spans both runs, and which of
   ;; them it belongs to is not something to guess at.

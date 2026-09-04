@@ -71,12 +71,14 @@
 ;; pass rather than forgotten. What this adds is *which* property differs, and
 ;; a view the merge does not have: an element the program carries under a tag
 ;; the deck does not know is a disagreement here and no action there.
+;; A property is named either by a symbol or, for a run or paragraph after the
+;; first, by a list of the two -- so these are looked up with `assoc`.
 (define (style-disagreements tag a b)
   (for/list ([kv (in-list (el-state-style a))]
-             #:unless (let ([h (assq (car kv) (el-state-style b))])
+             #:unless (let ([h (assoc (car kv) (el-state-style b))])
                         (equal? (cdr kv) (and h (cdr h)))))
     (format "~s ~a: ~s vs ~s" tag (car kv) (cdr kv)
-            (let ([h (assq (car kv) (el-state-style b))]) (and h (cdr h))))))
+            (let ([h (assoc (car kv) (el-state-style b))]) (and h (cdr h))))))
 
 (define (element-disagreements a b)
   (define tag (el-state-tag a))
