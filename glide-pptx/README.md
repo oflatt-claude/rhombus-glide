@@ -103,8 +103,12 @@ with the reason, because no single correction produces it.
 | paste a slide in | a `def slide_N` and an entry in `all_slides` |
 | move a group | the group, as one element |
 | move all of a repeated tag together | one correction on the one `at` |
-| recolour a shape | the `hex("...")` where it stands |
+| recolour a shape, its outline, or its text | the `hex("...")` where it stands |
+| change an outline's width | the stroke's `~width:` |
+| reorder the slides | `all_slides`, rewritten in the new order |
+| duplicate a shape | a new `at(...)`, under a name of its own |
 | recolour one that uses a named colour | the `def`, when everything using it changed with it |
+| bring a shape to the front | *reported*: the drawing order is the order of the `at` forms |
 | change a font, a size, boldness | the `run`'s own arguments, for a body of one run |
 
 Refused, with the reason, rather than guessed at: moving or deleting *one* of

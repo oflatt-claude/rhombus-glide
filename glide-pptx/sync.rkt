@@ -31,8 +31,8 @@
 ;; Whether scratch directories are left behind for inspection.
 (define current-keep-work? (make-parameter #f))
 
-;; kind: 'moved, 'resized, 'retext, 'restyle, 'conflict, 'added, 'removed,
-;; 'added-slide, 'ambiguous
+;; kind: 'moved, 'resized, 'retext, 'restyle, 'restacked, 'reordered,
+;; 'conflict, 'added, 'removed, 'added-slide, 'ambiguous
 ;; `prior` is where the program currently draws the element, which is what a
 ;; correction for a computed position is measured against. It is #f when the
 ;; program has no element by that name.
@@ -274,6 +274,15 @@
                     tag index (el-geometry d)
                     (and p (el-geometry p)))]
       [else #f])
+    ;; Bringing a shape to the front changes the order it is drawn in and
+    ;; nothing else. Rewriting that means moving the `at` form itself, which is
+    ;; a restructuring rather than a literal edit -- so it is reported and left,
+    ;; which is better than the silence it used to get.
+    (and (not (= (el-state-z b) (el-state-z d)))
+         (sync-action 'restacked tag index
+                      (format "it is drawn ~a now, not ~a; move its `at` form to change that"
+                              (add1 (el-state-z d)) (add1 (el-state-z b)))
+                      #f))
     ;; What the editor changed about the look of it. Appearance is the code's, so
     ;; this is reported and written only where the source holds a literal -- but
     ;; reported it must be: recolouring a shape in the editor used to disappear
@@ -389,6 +398,16 @@
              as)]
         [else (list (sync-action 'conflict (format "slide ~a" index) index
                                  '(slide-missing) #f))])))
+   ;; Dragging slides about in the navigator changes their order and nothing
+   ;; else, so no element differs and the merge used to see nothing at all.
+   ;; `all_slides` is a literal list, which is exactly what says the order.
+   (let ([order (for/list ([d (in-list (in-deck-order deck))])
+                  (let ([b (for/first ([p (in-list pairs)] #:when (eq? d (car p))) (cdr p))])
+                    (and b (slide-state-index b))))])
+     (if (and (andmap values order)
+              (not (equal? order (sort order <))))
+         (list (sync-action 'reordered "the slides" 0 order #f))
+         '()))
    ;; A slide the base does not have was added in the editor. Where it goes in
    ;; the program's order is where it sits in the deck: after whichever program
    ;; slide the nearest earlier deck slide belongs to.
@@ -974,13 +993,38 @@
     (and (= 1 (length runs))
          (let ([r (rhombus-child-kw-in (first runs) kw pred)])
            (and r (style-site name r #f)))))
+  ;; The stroke is a call of its own, so its colour and width sit inside it.
+  (define stroke-stx (kw-value-stx child '#:line))
+  (define line-colour
+    (let ([hit (and stroke-stx (hex-site stroke-stx))])
+      (and hit (style-site 'line
+                           (and (eq? 'literal (car hit)) (cdr hit))
+                           (and (eq? 'shared (car hit)) (cdr hit))))))
+  (define line-width
+    (let ([r (and stroke-stx (rhombus-child-kw-in stroke-stx '#:width real?))])
+      (and r (style-site 'line-width r #f))))
+  (define line-dash
+    (let ([r (and stroke-stx (rhombus-child-kw-in stroke-stx '#:dash symbol?))])
+      (and r (style-site 'dash r #f))))
+  ;; A run's colour is a call too.
+  (define text-colour
+    (and (= 1 (length runs))
+         (let* ([v (kw-value-stx (first runs) '#:color)]
+                [hit (and v (hex-site v))])
+           (and hit (style-site 'text-color
+                                (and (eq? 'literal (car hit)) (cdr hit))
+                                (and (eq? 'shared (car hit)) (cdr hit)))))))
   (filter values
           (list (colour-of '#:fill 'fill)
+                line-colour line-width line-dash text-colour
                 (run-kw '#:size 'size real?)
                 (run-kw '#:font 'font string?)
                 (let ([v (and (= 1 (length runs))
                               (rhombus-child-flag-in (first runs) '#:bold))])
-                  (and v (style-site 'bold v #f))))))
+                  (and v (style-site 'bold v #f)))
+                (let ([v (and (= 1 (length runs))
+                              (rhombus-child-flag-in (first runs) '#:italic))])
+                  (and v (style-site 'italic v #f))))))
 
 ;; A boolean keyword on the leaf, as (range . value) -- so a flip that is
 ;; already there can be set either way. `#:width` and friends carry a number and
@@ -1389,9 +1433,22 @@
             (when (file-exists? from)
               (make-directory* (path-only to))
               (copy-file from to #t)))
+          ;; Duplicating a shape in the editor gives two of them one name, and
+          ;; two `at` forms under one tag is a program a sync cannot read -- so
+          ;; a name already spoken for in this slide gets a fresh one.
+          (define taken
+            (for/list ([st (in-list all-sites)]
+                       #:when (equal? (slide-site-scope ss) (at-site-scope st)))
+              (at-site-tag st)))
+          (define named
+            (let loop ([n 2] [name (element-name e)])
+              (cond
+                [(not (member name taken)) (element-with-name e name)]
+                [(> n 99) (element-with-name e name)]
+                [else (loop (add1 n) (format "~a (~a)" (element-name e) n))])))
           (define src-text
             (rhombus-element-source
-             e (slide-site-indent ss)
+             named (slide-site-indent ss)
              #:media-names media-names
              #:font (and d (dominant-font d))))
           (edit! (rng (slide-site-insert-at ss) (slide-site-insert-at ss))
@@ -1451,7 +1508,24 @@
                                (if (null? done) "" (format "~a written; " (reverse done)))
                                (string-join (reverse left) "; ")))
                       skipped))])]
-      [(ambiguous)
+      ;; The order the slides are in, which `all_slides` states.
+      [(reordered)
+       (define nl (program-layout-slide-list layout))
+       (define items (and nl (name-list-items nl)))
+       (define order (sync-action-detail a))
+       (cond
+         [(or (not items) (not (= (length items) (length order))))
+          (set! skipped (cons (cons a "`all_slides` is not a literal list of every slide")
+                              skipped))]
+         [else
+          ;; Rewritten whole, because the order is the list rather than any one
+          ;; entry in it.
+          (define names (for/list ([i (in-list order)])
+                          (symbol->string (name-entry-name (list-ref items (sub1 i))))))
+          (edit! (rng (add1 (name-list-open nl)) (name-list-close nl))
+                 (string-join names ", "))
+          (set! applied (cons a applied))])]
+      [(ambiguous restacked)
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
       [else (set! skipped (cons (cons a "reported only") skipped))]))
   (when (pair? edits) (splice-file! program-path edits))
@@ -1513,6 +1587,12 @@
     [(size line-width) (num->source value)]
     [(font) (format "~s" value)]
     [(bold italic) (if value "#true" "#false")]
+    ;; A hyphen is subtraction in Rhombus, so a name that is not an identifier
+    ;; there has to be written the long way.
+    [(dash) (let ([n (format "~a" value)])
+              (if (regexp-match? #px"^[A-Za-z_][A-Za-z0-9_]*$" n)
+                  (format "#'~a" n)
+                  (format "#'#{~a}" n)))]
     [else (format "~a" value)]))
 
 ;; The correction's value, as a Rhombus list.

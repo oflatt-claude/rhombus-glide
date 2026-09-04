@@ -7,7 +7,8 @@
          file/unzip file/zip)
 (provide with-unpacked-deck drag-in-deck! deck-part
          add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!
-         resize-in-deck! rotate-in-deck! edit-after-tag!)
+         resize-in-deck! rotate-in-deck! edit-after-tag! shape-rx find-tag
+         bring-to-front! duplicate-in-deck!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -353,3 +354,37 @@
                                             (substring d (cdar m)))
                              o)))
            #t])]))))
+
+;; Moves the shape tagged `tag` to the end of the tree, which is what bringing
+;; it to the front does.
+(define (bring-to-front! pptx slide tag)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     (define m (regexp-match (shape-rx tag) d))
+     (cond
+       [(not m) #f]
+       [else
+        (display-to-file
+         (string-replace (string-replace d (first m) "")
+                         "</p:spTree>" (string-append (first m) "</p:spTree>"))
+         part #:exists 'replace)
+        #t]))))
+
+;; Copies it, which is what duplicating does -- and the copy carries the same
+;; name, which is the interesting part.
+(define (duplicate-in-deck! pptx slide tag)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     (define m (regexp-match (shape-rx tag) d))
+     (cond
+       [(not m) #f]
+       [else
+        (display-to-file (string-replace d (first m) (string-append (first m) (first m)))
+                         part #:exists 'replace)
+        #t]))))

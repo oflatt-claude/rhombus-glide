@@ -75,7 +75,9 @@
                (it:picture-w i) (it:picture-h i) (it:picture-rot i)
                (it:picture-flip-h? i) (it:picture-flip-v? i)
                "" (format "~a" (it:picture-src i))
-               (pen-style (it:picture-pen i)) z)]
+               (append (pen-style (it:picture-pen i))
+                       (list (cons 'opacity (/ (round (* 100.0 (it:picture-opacity i))) 100.0))))
+               z)]
     ;; A flattened element is a picture on both sides of the sync, so it is
     ;; described as one here too and the signature matcher agrees.
     [(it:image? i)
@@ -157,12 +159,21 @@
   (if (not p)
       '()
       (append (let ([h (hex-of (pen*-color p))]) (if h (list (cons 'line h)) '()))
-              (list (cons 'line-width (/ (round (* 100.0 (pen*-width p))) 100.0))))))
+              (list (cons 'line-width (/ (round (* 100.0 (pen*-width p))) 100.0))
+                    (cons 'dash (format "~a" (pen*-dash p)))))))
+
+;; A colour's alpha is part of how it looks, so a shape made translucent in the
+;; editor is a change like any other.
+(define (alpha-of c)
+  (define a (cond [(rgba*? c) (rgba*-a c)] [(rgba? c) (rgba-a c)] [else 1.0]))
+  (/ (round (* 100.0 a)) 100.0))
 
 (define (fill-style f)
   (cond
     [(fill:solid? f) (let ([h (hex-of (fill:solid-color f))])
-                       (if h (list (cons 'fill h)) '()))]
+                       (if h (list (cons 'fill h)
+                                   (cons 'fill-opacity (alpha-of (fill:solid-color f))))
+                           '()))]
     [(or (fill:linear? f) (fill:radial? f)) (list (cons 'fill "gradient"))]
     [else '()]))
 
@@ -233,7 +244,9 @@
     (let ([f (and (shape? e) (shape-fill e))])
       (cond
         [(solid-fill? f) (let ([h (hex (solid-fill-color f))])
-                           (if h (list (cons 'fill h)) '()))]
+                           (if h (list (cons 'fill h)
+                                       (cons 'fill-opacity (alpha-of (solid-fill-color f))))
+                               '()))]
         [(gradient-fill? f) (list (cons 'fill "gradient"))]
         [else '()])))
   (define line
@@ -243,10 +256,16 @@
           (append (let ([h (hex (stroke-color l))]) (if h (list (cons 'line h)) '()))
                   (list (cons 'line-width
                               (let ([w (stroke-width l)])
-                                (if (real? w) (/ (round (* 100.0 w)) 100.0) 0.0)))))
+                                (if (real? w) (/ (round (* 100.0 w)) 100.0) 0.0)))
+                        (cons 'dash (format "~a" (let ([d (stroke-dash l)])
+                                                   (if (eq? 'inherit d) 'solid d))))))
           '())))
   (define text (if (shape? e) (body-style (shape-body e)) '()))
-  (append fill line text))
+  (define opacity
+    (if (picture? e)
+        (list (cons 'opacity (/ (round (* 100.0 (picture-opacity e))) 100.0)))
+        '()))
+  (append fill line text opacity))
 
 (define (ir-fill-digest f)
   (cond
