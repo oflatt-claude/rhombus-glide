@@ -305,9 +305,13 @@
     (define height (if (eq? 'points (car spacing))
                        (cdr spacing)
                        (* (cdr spacing) single)))
-    ;; The extra room goes above the line, as in PowerPoint, so the baseline
-    ;; sits a descent up from the bottom of the line box.
-    (line-box segs height (- height desc) (line-width segs)
+    ;; The extra room goes above the line, as in PowerPoint, so the baseline sits
+    ;; a descent up from the bottom of the line box -- and the descent that
+    ;; positions it is a fifth of the font size, not the font's own. Single
+    ;; spacing is 1.2 times the size and the baseline sits 1.0 of it down, which
+    ;; is what LibreOffice draws: measured, the two agree to a fifth of a point
+    ;; at 96pt where the font's own descent put us a point high.
+    (line-box segs height (- height (* 0.2 (line-font-size p segs))) (line-width segs)
               (zero? i))))
 
 ;; The size single spacing is reckoned from: the largest run on the line, or the
