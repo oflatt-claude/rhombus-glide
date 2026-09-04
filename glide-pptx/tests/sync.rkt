@@ -1034,6 +1034,24 @@
   (check-equal? (length (regexp-match* #rx"~anchor:" srcp)) 1 "in place")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
+  ;; A gradient the source does stand behind: it cannot be told which stops the
+  ;; editor picked, but a plain colour replaces the whole of it.
+  (reset!)
+  (display-to-file
+   (regexp-replace #rx"~fill: hex[(]\"ED7D31\"[)]" (file->string program)
+                   "~fill: gradient_fill([pair(0.0, hex(\"FF0000\")), pair(1.0, hex(\"0000FF\"))], 0.0)")
+   program #:exists 'replace)
+  (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+  (void (sync!))
+  (check-true (edit-after-tag! deck 1 "Box" #px"<a:gradFill.*?</a:gradFill>"
+                               "<a:solidFill><a:srgbClr val=\"00B050\"/></a:solidFill>")
+              "the gradient was made a plain colour")
+  (applied! (sync!) "and the whole fill was written")
+  (define srcg (file->string program))
+  (check-regexp-match #rx"~fill: hex[(]\"00B050\"[)]" srcg)
+  (check-false (regexp-match? #rx"gradient_fill" srcg) "the gradient call is gone")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
   ;; A gradient is not a colour the source can be told to be, and saying so is
   ;; the point: the alternative is writing one stop of it and calling it done.
   (reset!)
@@ -1046,8 +1064,10 @@
               "the fill was made a gradient")
   (define rg (sync!))
   (check-equal? (sync-report-applied rg) '() "which is not written")
-  (check-regexp-match #rx"fill" (cdr (first (sync-report-skipped rg)))
-                      "and the report says so"))
+  (check-regexp-match #rx"~fill: hex[(]\"ED7D31\"[)]" (file->string program)
+                      "and the fill it could not write is left as it was")
+  (check-regexp-match #rx"gradient" (cdr (first (sync-report-skipped rg)))
+                      "and the report says it was made a gradient"))
 
 ;; --------------------------------- the rest of what an editor can do to a deck
 
