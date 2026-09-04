@@ -28,7 +28,15 @@
                                       (cond [(< d 0) (loop (+ d 360.0))]
                                             [(>= d 360.0) (loop (- d 360.0))]
                                             [else d]))))))
+;; A percentage, in DrawingML's thousandths of a percent. `pct` is for the ones
+;; that are a fraction of one -- an alpha, a gradient stop, a crop -- and holds
+;; them there. `pct*` is for the ones that are not: a line spacing of 1.5, a
+;; bullet drawn at 120% of the text, a subscript's -25%. Clamping those to one
+;; was quietly flattening them on the way out, and since the merge compares
+;; what it wrote against what the program says, the next save would have
+;; written the flattened value back into the program.
 (define (pct v) (inexact->exact (round (* 100000.0 (max 0.0 (min 1.0 v))))))
+(define (pct* v) (inexact->exact (round (* 100000.0 v))))
 
 (define (hex-of c)
   (define (two n)
@@ -291,7 +299,7 @@
           (if (eq? 'points (car spacing))
               (format "<a:lnSpc><a:spcPts val=\"~a\"/></a:lnSpc>"
                       (inexact->exact (round (* 100 (cdr spacing)))))
-              (format "<a:lnSpc><a:spcPct val=\"~a\"/></a:lnSpc>" (pct (cdr spacing))))
+              (format "<a:lnSpc><a:spcPct val=\"~a\"/></a:lnSpc>" (pct* (cdr spacing))))
           (if (zero? (ir:para-space-before p)) ""
               (format "<a:spcBef><a:spcPts val=\"~a\"/></a:spcBef>"
                       (inexact->exact (round (* 100 (ir:para-space-before p))))))
@@ -329,7 +337,7 @@
           (if (zero? (ir:trun-spacing r)) ""
               (format " spc=\"~a\"" (inexact->exact (round (* 100 (ir:trun-spacing r))))))
           (if (zero? (ir:trun-baseline r)) ""
-              (format " baseline=\"~a\"" (pct (ir:trun-baseline r))))
+              (format " baseline=\"~a\"" (pct* (ir:trun-baseline r))))
           (clr (ir-rgba (ir:trun-color r)))
           (xml-escape (ir:trun-family r)) (xml-escape (ir:trun-family r))
           (xml-escape (ir:trun-text r))))

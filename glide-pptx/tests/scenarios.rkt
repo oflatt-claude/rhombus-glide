@@ -73,12 +73,17 @@
 ;; the deck does not know is a disagreement here and no action there.
 ;; A property is named either by a symbol or, for a run or paragraph after the
 ;; first, by a list of the two -- so these are looked up with `assoc`.
+;;
+;; A property one side does not carry at all is not a disagreement: a deck
+;; states only what the shape says for itself, and our own writer leaves out
+;; what is already the default. What matters is the two of them naming the same
+;; property and giving it different values.
 (define (style-disagreements tag a b)
   (for/list ([kv (in-list (el-state-style a))]
-             #:unless (let ([h (assoc (car kv) (el-state-style b))])
-                        (equal? (cdr kv) (and h (cdr h)))))
+             #:when (assoc (car kv) (el-state-style b))
+             #:unless (equal? (cdr kv) (cdr (assoc (car kv) (el-state-style b)))))
     (format "~s ~a: ~s vs ~s" tag (car kv) (cdr kv)
-            (let ([h (assoc (car kv) (el-state-style b))]) (and h (cdr h))))))
+            (cdr (assoc (car kv) (el-state-style b))))))
 
 (define (element-disagreements a b)
   (define tag (el-state-tag a))

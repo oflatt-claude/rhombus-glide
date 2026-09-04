@@ -137,6 +137,57 @@
   (define n (chain-child chain 'buClr))
   (and n (resolve-color-child (text-ctx-clr-ctx tctx) n)))
 
+;; Which of a run's properties the shape states itself. Everything else it
+;; inherits, and an inherited value is not something anyone said about this
+;; shape -- which is what tells an edit from an editor that writes less than we
+;; do. `pPr`'s own `defRPr` counts as the shape's own: it is inside this
+;; shape's paragraph.
+(define (stated-run rPr pPr)
+  (define chain (filter values (list rPr (and pPr (child pPr 'defRPr)))))
+  (define (says? . how)
+    (for/or ([node (in-list chain)])
+      (for/or ([h (in-list how)])
+        (if (symbol? h) (and (child node h) #t) (and (attr node (string->symbol h)) #t)))))
+  (filter values
+          (list (and (says? "sz") 'size)
+                (and (says? 'latin) 'font)
+                (and (says? "b") 'bold)
+                (and (says? "i") 'italic)
+                (and (says? "u") 'underline)
+                (and (says? "strike") 'strike)
+                (and (says? "spc") 'spacing)
+                (and (says? "cap") 'caps)
+                (and (says? "baseline") 'baseline)
+                (and (says? 'solidFill 'gradFill) 'text-color))))
+
+;; The same for a paragraph's own properties.
+(define (stated-para pPr)
+  (define (says? . how)
+    (and pPr
+         (for/or ([h (in-list how)])
+           (if (symbol? h) (and (child pPr h) #t) (and (attr pPr (string->symbol h)) #t)))))
+  (filter values
+          (list (and (says? "algn") 'align)
+                (and (says? 'lnSpc) 'line-spacing)
+                (and (says? 'spcBef) 'space-before)
+                (and (says? 'spcAft) 'space-after)
+                (and (says? "lvl") 'level)
+                (and (says? "marL") 'margin-left)
+                (and (says? "indent") 'indent)
+                (and (says? 'buNone 'buChar 'buAutoNum) 'bullet))))
+
+;; And a body's own.
+(define (stated-body bodyPr)
+  (define (says? . how)
+    (and bodyPr
+         (for/or ([h (in-list how)])
+           (if (symbol? h) (and (child bodyPr h) #t) (and (attr bodyPr (string->symbol h)) #t)))))
+  (filter values
+          (list (and (says? "anchor") 'anchor)
+                (and (says? "wrap") 'wrap)
+                (and (says? 'normAutofit 'spAutoFit 'noAutofit) 'autofit)
+                (and (says? "lIns" "tIns" "rIns" "bIns") 'insets))))
+
 (define (parse-paragraph tctx p)
   (define pPr (child p 'pPr))
   (define lvl (or (and pPr (attr-num pPr 'lvl)) 0))
@@ -153,14 +204,16 @@
                      [else (all-text (or (child c 't) c))]))
       (define-values (size family bold? italic? underline? strike? color spc caps base)
         (resolve-run-props tctx rPr pPr lvl))
-      (trun text family size bold? italic? underline? strike? color spc caps base)))
+      (trun text family size bold? italic? underline? strike? color spc caps base
+            (stated-run rPr pPr))))
   ;; An empty paragraph still occupies a line, whose height comes from
   ;; endParaRPr; keep a zero-width run so the layout reserves it.
   (define runs*
     (if (null? runs)
         (let-values ([(size family bold? italic? underline? strike? color spc caps base)
                       (resolve-run-props tctx (child p 'endParaRPr) pPr lvl)])
-          (list (trun "" family size bold? italic? underline? strike? color spc caps base)))
+          (list (trun "" family size bold? italic? underline? strike? color spc caps base
+                      (stated-run (child p 'endParaRPr) pPr))))
         runs))
   (para runs*
         (or (align-of (chain-attr chain 'algn)) 'left)
@@ -172,7 +225,8 @@
           (spacing->points s 0.0 (largest-size runs*)))
         (let ([s (parse-spacing (chain-child chain 'spcAft))])
           (spacing->points s 0.0 (largest-size runs*)))
-        (parse-bullet tctx chain lvl)))
+        (parse-bullet tctx chain lvl)
+        (stated-para pPr)))
 
 (define (largest-size runs)
   (if (null? runs) 18.0 (apply max (map trun-size runs))))
@@ -203,4 +257,5 @@
              (struct-copy para p
                           [runs (for/list ([r (in-list (para-runs p))])
                                   (struct-copy trun r [size (* font-scale (trun-size r))]))]))))
-     (text-body paras* anchor anchor-ctr? wrap? autofit ins rot)]))
+     (text-body paras* anchor anchor-ctr? wrap? autofit ins rot
+                (stated-body (child tx-body 'bodyPr)))]))

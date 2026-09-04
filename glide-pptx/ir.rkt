@@ -76,16 +76,22 @@
 (define no-bullet (bullet 'none #f #f #f #f))
 
 ;; size is in points; color is an rgba. `spacing` is letter spacing in points.
+;; `stated` is which of these the shape said for itself, as against inherited
+;; from its placeholder, the layout, the master or the theme. It matters to a
+;; merge and to nothing else: an editor that states nothing leaves whatever it
+;; inherits standing, and reading that as an edit rewrites the program's
+;; typography to values nobody chose. `'all` means every field is the shape's
+;; own, which is what a program's own runs are.
 (struct trun (text family size bold? italic? underline? strike? color spacing caps
-              baseline) #:prefab)
+              baseline stated) #:prefab)
 
 ;; align: 'left 'center 'right 'justify. line-spacing is either
 ;; (cons 'percent f) or (cons 'points p). space-before/after are points.
 (struct para (runs align level margin-left indent line-spacing
-              space-before space-after bullet) #:prefab)
+              space-before space-after bullet stated) #:prefab)
 
 ;; anchor: 'top 'center 'bottom. autofit: 'none, 'shrink or 'grow.
-(struct text-body (paras anchor anchor-center? wrap? autofit insets rot) #:prefab)
+(struct text-body (paras anchor anchor-center? wrap? autofit insets rot stated) #:prefab)
 
 (define (text-body-empty? tb)
   (or (not tb)

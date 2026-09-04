@@ -63,7 +63,9 @@
         (pick rng "Arial" "Liberation Sans" "PT Mono")
         (real-in rng 8.0 60.0)
         (chance rng 0.3) (chance rng 0.2) (chance rng 0.1) (chance rng 0.1)
-        (a-color rng) (real-in rng -2.0 2.0) 'none 0.0))
+        (a-color rng) (real-in rng -2.0 2.0) 'none 0.0
+        ;; A generated run states everything, the way a program's own does.
+        'all))
 
 (define (a-body rng)
   (and (chance rng 0.5)
@@ -77,13 +79,15 @@
                           (real-in rng 0.0 12.0) 0.0
                           (if (chance rng 0.3)
                               (bullet 'char "\u2022" "Arial" 1.0 #f)
-                              no-bullet)))
+                              no-bullet)
+                          'all))
                   (pick rng 'top 'center 'bottom)
                   (chance rng 0.3)
                   (chance rng 0.7)
                   (pick rng 'none 'shrink 'grow)
                   default-insets
-                  0.0)))
+                  0.0
+                  'all)))
 
 (define (a-geom rng)
   (define names (preset-names))
