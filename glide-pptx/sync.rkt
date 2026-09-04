@@ -405,7 +405,8 @@
 ;; site remembers the top-level definition it sits in, and `all-slides` says
 ;; which definition is which slide -- without that, dragging the title on slide 3
 ;; would rewrite slide 1's coordinates.
-(struct at-site (tag x y rot width height texts nudge insert-at scope whole) #:transparent)
+(struct at-site (tag x y rot width height texts nudge insert-at scope whole
+                 flip-h flip-v leaf-at) #:transparent)
 
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
@@ -795,7 +796,10 @@
                   (rhombus-child-texts child)
                   (rhombus-nudge (hash-ref kws '#:nudge #f))
                   (let ([r (range-of tag-stx)]) (and r (rng-end r)))
-                  #f #f))))
+                  #f #f
+                  (rhombus-child-flag child '#:flip_h)
+                  (rhombus-child-flag child '#:flip_v)
+                  (rhombus-child-insert child)))))
 
 ;; `~nudge: [12.0, -4.0]` -> (list range dx dy).
 ;; The text being read, so an extent that syntax cannot give can be found in it.
@@ -842,6 +846,27 @@
   (and parens
        (for/or ([g (in-list (cdr (syntax-e parens)))])
          (and (eq? kw (rhombus-kw-name g)) (literal-range (rhombus-kw-value g) real?)))))
+
+;; A boolean keyword on the leaf, as (range . value) -- so a flip that is
+;; already there can be set either way. `#:width` and friends carry a number and
+;; go through `rhombus-child-kw`; a flip carries `#true` or `#false`.
+(define (rhombus-child-flag child kw)
+  (define l (and (syntax? child) (syntax-e child)))
+  (define parens (and (list? l) (findf (lambda (x) (rhombus-head? x 'parens)) l)))
+  (and parens
+       (for/or ([g (in-list (cdr (syntax-e parens)))])
+         (and (eq? kw (rhombus-kw-name g))
+              (let ([v (rhombus-kw-value g)])
+                (and v (range-of v)))))))
+
+;; Just inside the leaf call's parentheses, which is where a keyword it does not
+;; have yet can be added.
+(define (rhombus-child-insert child)
+  (define l (and (syntax? child) (syntax-e child)))
+  (define name (and (list? l) (>= (length l) 2) (second l)))
+  (define r (and name (symbol? (syntax-e* name)) (range-of name)))
+  (define open (and r (next-open (current-source-text) (rng-end r))))
+  (and open (add1 open)))
 
 (define (rhombus-child-texts child)
   (define acc '())
@@ -1060,6 +1085,9 @@
 
 (define (apply-actions! program-path actions #:deck [d #f])
   (define-values (all-sites scopes slide-sites layout) (find-program-sites program-path))
+  ;; The source text, for the sites that describe a value rather than carry it:
+  ;; whether a `~rotate:` says zero, whether a `~flip_h:` says true.
+  (define source-text (file->string program-path))
   (check-site-tags all-sites scopes program-path)
   ;; Keyed by the slide's definition, so "Title 1" on slide 3 finds slide 3's
   ;; `at`. When the slide list is computed there is no definition to key on, and
@@ -1122,10 +1150,11 @@
          (set! applied (cons a applied)))]))
   (for ([a (in-list actions)] #:unless (eq? 'added-slide (sync-action-kind a)))
     (define site (site-for a))
+    (current-source-text source-text)
     (case (sync-action-kind a)
       [(moved resized)
        (define g (sync-action-detail a))
-       (define-values (x y w h rot) (apply values g))
+       (define-values (x y w h rot fh fv) (apply values g))
        (cond
          [(not site) (set! skipped (cons (cons a "no tagged `at` form in the source") skipped))]
          ;; A computed position has no number to rewrite, so the drag is
@@ -1162,7 +1191,12 @@
          [else
           (edit! (at-site-x site) (num->source x))
           (edit! (at-site-y site) (num->source y))
-          (when (at-site-rot site) (edit! (at-site-rot site) (num->source rot)))
+          ;; A rotation and a mirror are edits like any other, and both used to
+          ;; be dropped in silence: a rotate was counted as applied while
+          ;; nothing was written, and a flip -- what dragging a line's endpoint
+          ;; past the other end does -- was not even noticed.
+          (define turned? (turn-changed? site rot))
+          (define mirrored? (mirror-changed? site fh fv))
           (cond
             [(eq? 'resized (sync-action-kind a))
              (cond
@@ -1172,6 +1206,18 @@
                 (set! applied (cons a applied))]
                [else
                 (set! skipped (cons (cons a "its size is computed, not a literal") skipped))])]
+            [(or turned? mirrored?)
+             ;; Written when there is something to write to, and said plainly
+             ;; when there is not.
+             (define wrote-turn? (or (not turned?) (write-turn! site rot edit!)))
+             (define wrote-mirror? (or (not mirrored?) (write-mirror! site fh fv edit!)))
+             (if (and wrote-turn? wrote-mirror?)
+                 (set! applied (cons a applied))
+                 (set! skipped
+                       (cons (cons a (cond
+                                       [(not wrote-turn?) "its rotation cannot be written here"]
+                                       [else "its mirroring cannot be written here"]))
+                             skipped)))]
             [else (set! applied (cons a applied))])])]
       [(retext)
        (define texts (and site (at-site-texts site)))
@@ -1230,6 +1276,46 @@
       [else (set! skipped (cons (cons a "reported only") skipped))]))
   (when (pair? edits) (splice-file! program-path edits))
   (values (reverse applied) (reverse skipped)))
+
+;; Whether the deck's rotation or mirroring differs from what the source says.
+;; The source's own value is what it was exported with, so the base is not
+;; needed: a `~rotate:` that is not there means zero, and a flip that is not
+;; there means false.
+(define (turn-changed? site rot)
+  (define r (at-site-rot site))
+  (define was (if r (string->number (substring (current-source-text)
+                                               (rng-start r) (rng-end r)))
+                  0.0))
+  (> (abs (- (or was 0.0) rot)) 0.01))
+
+(define (flag-value site get)
+  (define r (get site))
+  (and r (regexp-match? #rx"true" (substring (current-source-text)
+                                             (rng-start r) (rng-end r)))))
+
+(define (mirror-changed? site fh fv)
+  (or (not (eq? (flag-value site at-site-flip-h) (and fh #t)))
+      (not (eq? (flag-value site at-site-flip-v) (and fv #t)))))
+
+(define (write-turn! site rot edit!)
+  (cond
+    [(at-site-rot site) (edit! (at-site-rot site) (num->source rot))]
+    [(at-site-insert-at site)
+     (edit! (rng (at-site-insert-at site) (at-site-insert-at site))
+            (format ", ~~rotate: ~a" (num->source rot)))]
+    [else #f]))
+
+(define (write-mirror! site fh fv edit!)
+  (define (one range want name)
+    (cond
+      [range (edit! range (if want "#true" "#false"))]
+      [(not want) #t]                       ; nothing there and none wanted
+      [(at-site-leaf-at site)
+       (edit! (rng (at-site-leaf-at site) (at-site-leaf-at site))
+              (format "~~~a: #true, " name))]
+      [else #f]))
+  (and (one (at-site-flip-h site) (and fh #t) "flip_h")
+       (one (at-site-flip-v site) (and fv #t) "flip_v")))
 
 ;; The correction's value, as a Rhombus list.
 (define (nudge->source dx dy)

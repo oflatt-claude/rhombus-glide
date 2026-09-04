@@ -7,7 +7,7 @@
          file/unzip file/zip)
 (provide with-unpacked-deck drag-in-deck! deck-part
          add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!
-         resize-in-deck! rotate-in-deck!)
+         resize-in-deck! rotate-in-deck! edit-after-tag!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.

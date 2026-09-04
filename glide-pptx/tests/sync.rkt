@@ -558,17 +558,21 @@
 
 ;; What the program and the deck each say is on a slide, as tag -> geometry, so
 ;; the two can be compared without a renderer.
+;; The five numbers rounded, and the two flips as they are -- `el-geometry` ends
+;; in booleans, which do not round.
+(define (shape-of e)
+  (cons (el-state-tag e)
+        (append (for/list ([v (in-list (take (el-geometry e) 5))])
+                  (/ (round (* 10.0 v)) 10.0))
+                (list (and (el-state-flip-h? e) #t) (and (el-state-flip-v? e) #t)))))
+
 (define (program-shape program)
   (for/list ([s (in-list (program-slide-states program))])
-    (for/list ([e (in-list (slide-state-elements s))])
-      (cons (el-state-tag e) (map (lambda (v) (/ (round (* 10.0 v)) 10.0))
-                                  (el-geometry e))))))
+    (map shape-of (slide-state-elements s))))
 
 (define (deck-shape-of pptx dir tag)
   (for/list ([s (in-list (deck-slide-states pptx #:workdir (build-path dir tag)))])
-    (for/list ([e (in-list (slide-state-elements s))])
-      (cons (el-state-tag e) (map (lambda (v) (/ (round (* 10.0 v)) 10.0))
-                                  (el-geometry e))))))
+    (map shape-of (slide-state-elements s))))
 
 ;; One round: apply `edit!` to the deck, merge, and check that the program now
 ;; agrees with the deck and that the merge has settled.
@@ -645,3 +649,73 @@
 
   ;; The file is still a program, and still the same one.
   (check-equal? (length (load-program-picts program)) 3 "three slides throughout"))
+
+;; ------------------------------------------ rotating and mirroring an element
+
+;; Dragging a line's endpoint past the other end mirrors the shape rather than
+;; moving it, and rotating one turns it. Both were dropped: a rotation was
+;; counted as applied while nothing was written -- there was no `~rotate:` to
+;; write to and none was added -- and a mirror was not in the state a merge
+;; compares, so it was never noticed at all.
+(let ()
+  (define dir (build-path work "turned"))
+  (make-directory* dir)
+  (define program (build-path dir "t.rhm"))
+  (define deck (build-path dir "t.pptx"))
+  (define (write-program! extra-at extra-leaf)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            (format "  at(100.0, 100.0, ~a~~tag: \"Line\"," extra-at)
+            "     shape_pict(~width: 200.0, ~height: 120.0,"
+            (format "                ~a~~shape: \"straightConnector1\"," extra-leaf)
+            "                ~line: make_stroke(hex(\"000000\"), ~width: 3.0)))"
+            ")"
+            "def all_slides = [slide_1]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+
+  ;; Neither stated: both have to be added to the source.
+  (write-program! "" "")
+  (check-true (rotate-in-deck! deck 1 "Line" 30.0) "the line was rotated")
+  (define r (sync-once program deck #:workdir (build-path dir "w")))
+  (check-equal? (length (sync-report-applied r)) 1 "the rotation was applied")
+  (check-regexp-match #rx"~rotate: 30[.]0" (file->string program)
+                      "and written into the source, which had none")
+  (check-equal? (sync-report-actions
+                 (sync-once program deck #:workdir (build-path dir "w")))
+                '() "and it settled")
+
+  (write-program! "" "")
+  (check-true (edit-after-tag! deck 1 "Line" #px"<a:xfrm" "<a:xfrm flipH=\"1\"")
+              "the line was mirrored")
+  (define r2 (sync-once program deck #:workdir (build-path dir "w")))
+  (check-equal? (length (sync-report-applied r2)) 1 "the mirror was applied")
+  (check-regexp-match #rx"~flip_h: #true" (file->string program)
+                      "and written into the leaf, which had none")
+  (check-equal? (sync-report-actions
+                 (sync-once program deck #:workdir (build-path dir "w")))
+                '() "and it settled")
+
+  ;; Both stated: the values have to change, not be added again.
+  (write-program! "~rotate: 20.0, " "~flip_h: #true, ")
+  (check-true (rotate-in-deck! deck 1 "Line" 50.0))
+  (check-true (edit-after-tag! deck 1 "Line" #px" flipH=\"1\"" "") "and un-mirrored")
+  (define r3 (sync-once program deck #:workdir (build-path dir "w")))
+  (check-equal? (length (sync-report-applied r3)) 1 "one action for both")
+  (define src (file->string program))
+  (check-regexp-match #rx"~rotate: 50[.]0" src "the rotation was changed in place")
+  (check-regexp-match #rx"~flip_h: #false" src "and so was the mirror")
+  (check-equal? (length (regexp-match* #rx"~rotate:" src)) 1 "no second rotation")
+  (check-equal? (length (regexp-match* #rx"~flip_h:" src)) 1 "no second mirror"))

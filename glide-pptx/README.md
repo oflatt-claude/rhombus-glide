@@ -89,6 +89,31 @@ several elements under one tag. Dragging all of them the same way is one
 correction on the one `at`; dragging or deleting only some of them is refused,
 with the reason, because no single correction produces it.
 
+### What an edit in the editor does
+
+| in PowerPoint or Keynote | comes back as |
+|---|---|
+| move a shape | the `at` position, or a `~nudge:` when that position is computed |
+| resize it, or drag a line's endpoint | the leaf's `~width:`/`~height:` |
+| rotate it | `~rotate:`, added if it was not there |
+| drag an endpoint past the other end | `~flip_h:`/`~flip_v:`, added if not there |
+| retype text | the string literal, when the text is one run |
+| draw a new shape | a new `at(...)` in that slide |
+| delete a shape | its `at` form removed |
+| paste a slide in | a `def slide_N` and an entry in `all_slides` |
+| move a group | the group, as one element |
+| move all of a repeated tag together | one correction on the one `at` |
+
+Refused, with the reason, rather than guessed at: moving or deleting *one* of
+several elements that share a tag, deleting a slide, retyping text that spans
+several runs, and moving something whose position is computed and whose tag is
+not a literal.
+
+Not carried back at all, by design: **appearance**. A colour, a font, a size, a
+bullet, a z-order -- PowerPoint owns geometry and the code owns everything else,
+which is what makes the ordinary cycle conflict-free. Change a colour in the
+editor and the next export will paint it back the way the program says.
+
 Slides are matched on their contents, not by index, so pasting one in from
 another deck does not shift the ones after it. A pasted slide becomes a
 `def slide_N = slide_canvas(...)` and an entry in `all_slides` at the position it
