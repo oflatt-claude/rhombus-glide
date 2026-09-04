@@ -1079,6 +1079,16 @@
                              [else (literal-range (kw-single-stx call kw) how)])
                            #f #f kw #f)
                (style-site property #f #f (call-append-at call) kw #f)))))
+  ;; An arrowhead is a `line_end(...)` call when there is one and `#false` when
+  ;; there is not, so both the value and its absence are written in place.
+  (define (end-site property call kw)
+    (and call
+         (let* ([g (kw-value-stx call kw)]
+                [r (and g (or (value-extent g) (literal-range (kw-single-stx call kw) boolean?)))])
+           (cond
+             [(and g r) (style-site property r #f #f kw r)]
+             [g #f]
+             [else (style-site property #f #f (call-append-at call) kw #f)]))))
   ;; The colour argument, however the source states it: a `hex(...)` to rewrite,
   ;; a shared name, `#false` for a shape that has none, or nothing at all -- in
   ;; which case the whole argument is added.
@@ -1138,6 +1148,8 @@
                 text-colour
                 (kw-site 'line-width stroke '#:width real?)
                 (kw-site 'dash stroke '#:dash 'quoted)
+                (end-site 'head stroke '#:head)
+                (end-site 'tail stroke '#:tail)
                 (kw-site 'size run '#:size real?)
                 (kw-site 'font run '#:font string?)
                 (kw-site 'bold run '#:bold 'flag)
@@ -1838,7 +1850,7 @@
 ;; there at all.
 (define STYLE-GROUPS
   (hash 'fill '(fill fill-opacity)
-        'line '(line line-width dash)))
+        'line '(line line-width dash head tail)))
 
 ;; A whole argument, for a group the source does not state at all: an outline a
 ;; shape was given in the editor is a stroke call, and a fill is a colour.
@@ -1857,13 +1869,19 @@
        [(and o (< o 0.999)) (format "hex(~s, ~~alpha: ~a)" c (num->source o))]
        [else (format "hex(~s)" c)])]
     [else
-     (format "make_stroke(hex(~s)~a~a)"
+     (format "make_stroke(hex(~s)~a~a~a~a)"
              (or (val 'line) "000000")
              (let ([w (val 'line-width)]) (if w (format ", ~~width: ~a" (num->source w)) ""))
              (let ([d (val 'dash)])
                (if (and d (not (equal? "solid" (format "~a" d))))
                    (format ", ~~dash: ~a" (style->source 'dash d))
-                   "")))]))
+                   ""))
+             (end-argument "head" (val 'head))
+             (end-argument "tail" (val 'tail)))]))
+
+;; An arrowhead, where there is one to write.
+(define (end-argument name e)
+  (if (list? e) (format ", ~~~a: ~a" name (style->source 'head e)) ""))
 
 ;; An argument being added rather than rewritten: a colour is a call of its own,
 ;; where the literal inside an existing one is just the string.
@@ -1887,6 +1905,12 @@
     [(font) (format "~s" value)]
     [(bold italic) (if value "#true" "#false")]
     [(space-before space-after) (num->source value)]
+    ;; `line_end(#'triangle, "med", "med")`, or nothing on that end at all.
+    [(head tail)
+     (if (list? value)
+         (format "line_end(~a, ~s, ~s)"
+                 (style->source 'dash (first value)) (second value) (third value))
+         "#false")]
     [(wrap) (if value "#true" "#false")]
     [(insets) (format "insets(~a)" (string-join (map num->source value) ", "))]
     ;; `(percent . 1.5)` and `(points . 18.0)` -- the runtime takes either.

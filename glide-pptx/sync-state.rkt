@@ -160,7 +160,16 @@
       '()
       (append (let ([h (hex-of (pen*-color p))]) (if h (list (cons 'line h)) '()))
               (list (cons 'line-width (/ (round (* 100.0 (pen*-width p))) 100.0))
-                    (cons 'dash (format "~a" (pen*-dash p)))))))
+                    (cons 'dash (format "~a" (pen*-dash p)))
+                    (cons 'head (end-style (pen*-head p)))
+                    (cons 'tail (end-style (pen*-tail p)))))))
+
+;; What is on the end of a line: an arrowhead the editor put there is an edit
+;; like any other. `#f` is one of the values, so it is reported as such rather
+;; than left out -- both sides of the comparison read it the same way.
+(define (end-style e)
+  (and (line-end? e)
+       (list (line-end-kind e) (line-end-width e) (line-end-length e))))
 
 ;; A colour's alpha is part of how it looks, so a shape made translucent in the
 ;; editor is a change like any other.
@@ -286,7 +295,9 @@
                               (let ([w (stroke-width l)])
                                 (if (real? w) (/ (round (* 100.0 w)) 100.0) 0.0)))
                         (cons 'dash (format "~a" (let ([d (stroke-dash l)])
-                                                   (if (eq? 'inherit d) 'solid d))))))
+                                                   (if (eq? 'inherit d) 'solid d))))
+                        (cons 'head (end-style (stroke-head l)))
+                        (cons 'tail (end-style (stroke-tail l)))))
           '())))
   (define text (if (shape? e) (body-style (shape-body e)) '()))
   (define opacity
