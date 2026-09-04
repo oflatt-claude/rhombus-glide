@@ -203,13 +203,23 @@ is enough to make a slide stop looking like itself. Both are reported and
 nothing is rewritten, because guessing wrong there deletes a definition the
 program still wants.
 
-The scratch beside the program is picked up, not cleared, when a session
-starts: edits made while nothing was watching are merged before anything is
-written, since regenerating first would throw them away. It is cleared when the
-editor closes and on Ctrl-C -- unless that last merge was refused, when it is
-kept deliberately, because the deck then holds something the program does not.
-A scratch written for another program is refused rather than merged, and says
-which program it came from.
+The program is the truth, so a session starts from it: the scratch beside it is
+cleared, the deck is written again, and the two agree before the editor opens.
+Anything left over is from a session that ended without merging -- a crash, or
+a deck opened behind glide's back -- and merging that would be merging edits
+against a program that has moved on. The scratch is cleared again when the
+editor closes and on Ctrl-C, unless the last merge was refused, when it is kept
+deliberately because the deck then holds something the program does not.
+
+Which means: **edit through `raco glide`, and do not open the deck by hand.**
+The deck in the scratch is derived, and anything done to it outside a session
+is lost when the next one starts.
+
+PowerPoint is the editor by default on macOS. Both are driven the same way, but
+PowerPoint reads and writes its own format, while Keynote's export states less
+than it shows -- a shape's typeface, its anchor, its spacing can all come back
+missing, and a merge can only go on what the deck says. `--app keynote` still
+works, and what Keynote leaves out is ignored rather than taken for an edit.
 
 A `.key` is accepted anywhere a deck is: Keynote is asked to export a `.pptx`
 first, which needs macOS.
@@ -224,6 +234,17 @@ submodule:
 racket talk.rhm                                              # show the slides
 racket -l racket/base -e '(require (submod (file "talk.rhm") pdf))'   # write the PDF
 ```
+
+## Starting one
+
+```shell
+raco glide --new talk.rhm     # a slideshow to start from
+raco glide talk.rhm           # open it, keep both in step
+```
+
+A new program is written by the same emitter that writes an imported deck, so
+it is in the dialect glide reads back: tagged `at` forms, an `all_slides` list,
+a slideshow module and a PDF submodule.
 
 ## The workflow
 
@@ -648,6 +669,14 @@ through LibreOffice to compare against, or sweeps the corpus.
 `tools/fetch-corpus.sh` downloads the decks; without them those modules say so
 and pass.
 
+`tests/actions.rkt` walks the editors' own surfaces -- PowerPoint's ribbon and
+Format pane, Keynote's inspector -- one action at a time: bold, a bulleted
+list, a dashed outline, a crop, a group, a deleted slide, a resized deck.
+Fifty-odd of them, each asserted to land in one of four places: written,
+refused with a reason, noted, or deliberately invisible. The fourth column is
+why the file exists -- what must never happen is *silence*, the deck and the
+program disagreeing with nobody told.
+
 `tests/scenarios.rkt` is a session in the editor rather than one action: a
 handful of edits at once, across several slides, then one merge. Where
 `sync.rkt` says each edit *can* be written, a scenario says a run of them lands
@@ -673,6 +702,17 @@ $ tools/fetch-corpus.sh
 and the test says so and passes when they are absent. It found two real bugs on
 its first run: a custom path that opens with a line rather than a move, and a
 picture whose relationship resolves to nothing.
+
+The fuzzer and the structural test compare through one function,
+`tests/ir-diff.rkt`, and what it compares is the point. It used to be an
+element's box and its flips, which is how a line spacing of 1.5 was written out
+as 1.0 for as long as the writer had been clamping percentages: the generator
+was producing those spacings and nothing was looking at them. It now compares
+every property a merge can see, and then the element itself field by field --
+the geometry and its adjustments, a gradient's stops and angle, a pattern's
+colours, the pattern a dash spells out, what a group holds, a table's shape.
+Two bugs fell out within minutes: the clamp, and `sysDash` read back as a plain
+dash so that every short dash came home long.
 
 ## Where this is going
 

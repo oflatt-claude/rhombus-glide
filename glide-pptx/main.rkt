@@ -285,8 +285,12 @@
                              ".pptx"))))
 
 ;; Keynote on a Mac, since that is what there is to drive there.
+;; PowerPoint by default. Both are driven the same way, but PowerPoint reads
+;; and writes its own format, and Keynote's export states less than it shows --
+;; a shape's typeface and anchor and spacing can come back missing, and a merge
+;; can only go on what the deck says. `--app keynote` still works.
 (define (default-app)
-  (if (eq? 'macosx (system-type 'os)) 'keynote 'none))
+  (if (eq? 'macosx (system-type 'os)) 'powerpoint 'none))
 
 (define (cmd-edit args)
   (define out (box #f))
@@ -320,13 +324,60 @@
        (watch-loop program pptx #:adapter adapter
                    #:width (unbox width) #:height (unbox height)))))
 
+;; A slideshow to start from. It is built as a deck and written by the same
+;; emitter that writes an imported one, so a new program is in the dialect
+;; glide reads back -- the tags, the `all_slides` list, the slideshow and PDF
+;; submodules -- rather than a second idiom that has to be kept in step.
+(define (starter-deck)
+  (define (box x y w h) (bbox x y w h 0.0 #f #f))
+  (define (words text size bold?)
+    (text-body (list (para (list (trun text "Calibri" size bold? #f #f #f
+                                       (rgba 32 32 32 1.0) 0.0 'none 0.0 'all))
+                           'left 0 0.0 0.0 '(percent . 1.0) 0.0 0.0 no-bullet 'all))
+               'top #f #t 'none default-insets 0.0 'all))
+  (define (rect id name x y w h fill)
+    (shape id name (box x y w h) (preset-geom "rect" '()) (solid-fill fill) #f #f))
+  (define (label id name x y w h text size bold?)
+    (shape id name (box x y w h) (preset-geom "rect" '()) #f #f (words text size bold?)))
+  (deck
+   960.0 540.0
+   (list (slide 1 "" 960.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
+                (list (label 2 "Title" 80.0 180.0 800.0 90.0 "A new slideshow" 54.0 #t)
+                      (label 3 "Subtitle" 80.0 290.0 800.0 50.0
+                             "Drag things about in the editor; the code follows" 24.0 #f)))
+         (slide 2 "" 960.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
+                (list (label 4 "Heading" 80.0 80.0 800.0 60.0 "A slide" 40.0 #t)
+                      (rect 5 "Box" 80.0 200.0 240.0 160.0 (rgba 68 114 196 1.0))
+                      (label 6 "Note" 360.0 200.0 520.0 160.0
+                             "Every shape here has a tag, and a tag is what an edit is written back to."
+                             24.0 #f))))
+   #f 'new))
+
+(define (cmd-new args)
+  (define files
+    (parse-command-line
+     "glide new" args '() (lambda (_ . fs) fs) '("program.rhm")))
+  (when (null? files) (error 'glide "give the program a name: raco glide --new talk.rhm"))
+  (for ([f (in-list files)])
+    (define path (path->complete-path (if (regexp-match? #rx"[.]rhm$" f)
+                                          f
+                                          (string-append f ".rhm"))))
+    (when (file-exists? path)
+      (error 'glide "~a is already there; delete it or pick another name"
+             (file-name-from-path path)))
+    (write-rhombus-deck (starter-deck) path #:source-name #f)
+    (printf "~a  (2 slides)\n" (path->string path))
+    (printf "  raco glide ~a   opens it in an editor and keeps both in step\n"
+            (path->string (file-name-from-path path)))))
+
 (define (cmd-presets args)
   (printf "~a preset geometries drawn exactly:\n" (length (preset-names)))
   (for ([g (in-list (preset-names))]) (printf "  ~a\n" g))
   (printf "Anything else is drawn as a rectangle and reported as a note.\n"))
 
 (define subcommands
-  (list (list "translate" "emit a Pict program from a deck" cmd-translate)
+  (list (list "new" "write a slideshow to start from" cmd-new)
+        (list "translate" "emit a Pict program from a deck" cmd-translate)
         (list "export" "write a .pptx from a program's slide picts" cmd-export)
         (list "render" "render a deck straight to PDF" cmd-render)
         (list "sync" "merge a deck's edits back into a program, once" cmd-sync)
@@ -368,6 +419,8 @@
     ;; program named where a command would go means "edit this". The name moves
     ;; to the end, since flag parsing stops at the first argument that is not a
     ;; flag and `talk.rhm --once` is the natural way to write it.
+    ;; `--new talk.rhm`, since that is the shape it is reached for in.
+    [(member (car args) '("--new" "-n")) (run! cmd-new (cdr args))]
     [(regexp-match? #rx"[.]rhm$" (car args))
      (run! cmd-edit (append (cdr args) (list (car args))))]
     [else

@@ -236,7 +236,10 @@
 (define (run-style r i)
   (only-stated
    (list (cons (nth-property 'font i) (trun-family r))
-         (cons (nth-property 'size i) (round-to (trun-size r) 10.0))
+         ;; Hundredths, which is what `sz` keeps: rounding to tenths made a
+         ;; value land on either side of a boundary depending on which way it
+         ;; had been through the writer.
+         (cons (nth-property 'size i) (round-to (trun-size r) 100.0))
          (cons (nth-property 'bold i) (and (trun-bold? r) #t))
          (cons (nth-property 'italic i) (and (trun-italic? r) #t))
          (cons (nth-property 'underline i) (and (trun-underline? r) #t))
@@ -255,9 +258,9 @@
          (cons (nth-property 'line-spacing i)
                (let ([ls (para-line-spacing p)])
                  (cons (car ls) (round-to (cdr ls) 1000.0))))
-         (cons (nth-property 'space-before i) (round-to (para-space-before p) 10.0))
-         (cons (nth-property 'space-after i) (round-to (para-space-after p) 10.0))
-         (cons (nth-property 'level i) (para-level p))
+         (cons (nth-property 'space-before i) (round-to (para-space-before p) 100.0))
+         (cons (nth-property 'space-after i) (round-to (para-space-after p) 100.0))
+         (cons (nth-property 'level i) (inexact->exact (round (para-level p))))
          (cons (nth-property 'margin-left i) (round-to (para-margin-left p) 10.0))
          (cons (nth-property 'indent i) (round-to (para-indent p) 10.0))
          (cons (nth-property 'bullet i) (bullet-style (para-bullet p))))

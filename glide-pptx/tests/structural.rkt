@@ -10,7 +10,8 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/export glide-pptx/sync-state glide-pptx/sync)
+         glide-pptx/export glide-pptx/sync-state glide-pptx/sync
+         "ir-diff.rkt")
 
 (define-runtime-path decks-dir "decks")
 
@@ -26,22 +27,6 @@
                    #:when (regexp-match? #rx"[.]pptx$" (path->string f)))
           (path->string (path-replace-extension f "")))
         string<?))
-
-;; Every way one element can differ from another, named.
-(define (element-diffs a b)
-  (filter
-   values
-   (list
-    (and (not (eq? (el-state-kind a) (el-state-kind b)))
-         (format "kind ~a -> ~a" (el-state-kind a) (el-state-kind b)))
-    (and (not (el-geometry-same? a b))
-         (format "geometry ~a -> ~a"
-                 (map (lambda (v) (~r v #:precision 2)) (el-geometry a))
-                 (map (lambda (v) (~r v #:precision 2)) (el-geometry b))))
-    (and (not (string=? (el-state-text a) (el-state-text b)))
-         (format "text ~s -> ~s" (el-state-text a) (el-state-text b)))
-    (and (not (string=? (el-state-paint a) (el-state-paint b)))
-         (format "paint ~s -> ~s" (el-state-paint a) (el-state-paint b))))))
 
 (define total-diffs 0)
 

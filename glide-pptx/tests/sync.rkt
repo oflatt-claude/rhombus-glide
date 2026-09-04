@@ -852,6 +852,60 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; --------------------------------------------------------- the size of the deck
+
+;; Changing the slide size is one edit for the whole deck, and a generated
+;; program states it once: `def slide_width = 959.976`, which every canvas
+;; names. So the edit lands on the definition rather than on each slide.
+(let ()
+  (define dir (build-path work "slide-size"))
+  (make-directory* dir)
+  (define program (build-path dir "s.rhm"))
+  (define deck (build-path dir "s.pptx"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export:"
+          "  all_slides"
+          "def slide_width = 720.0"
+          "def slide_height = 540.0"
+          "def slide_1 = slide_canvas("
+          "  ~width: slide_width, ~height: slide_height, ~background: hex(\"FFFFFF\"),"
+          "  at(60.0, 60.0, ~tag: \"Box\","
+          "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: hex(\"ED7D31\")))"
+          ")"
+          "def slide_2 = slide_canvas("
+          "  ~width: slide_width, ~height: slide_height, ~background: hex(\"FFFFFF\"),"
+          "  at(60.0, 60.0, ~tag: \"Other\","
+          "     shape_pict(~width: 100.0, ~height: 60.0, ~fill: hex(\"70AD47\")))"
+          ")"
+          "def all_slides = [slide_1, slide_2]"
+          "")
+    "\n")
+   program #:exists 'replace)
+  (define base (base-path-for program))
+  (when (file-exists? base) (delete-file base))
+  (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+  (void (sync-once program deck #:workdir (build-path dir "w")))
+  ;; 12192000 EMU is 960pt, which is the 16:9 the editors offer.
+  (check-true (edit-part! deck "ppt/presentation.xml"
+                          #px"<p:sldSz cx=\"[0-9]+\" cy=\"[0-9]+\""
+                          "<p:sldSz cx=\"12192000\" cy=\"6858000\"")
+              "the deck was made 16:9")
+  (define r (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-actions r)) '(resized-deck)
+                "one edit for the deck, not one per slide")
+  (check-equal? (length (sync-report-applied r)) 1 "and it was written")
+  (define src (file->string program))
+  (check-regexp-match #rx"def slide_width = 960[.]0" src "into the definition")
+  (check-regexp-match #rx"def slide_height = 540[.]0" src)
+  (check-equal? (length (regexp-match* #rx"960[.]0" src)) 1 "which is written once")
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir (build-path dir "w")
+                                                #:atomic? #t))
+                '() "and it settled"))
+
 ;; ------------------------------------------------- a scratch from another program
 
 ;; The scratch is picked up rather than cleared when a session starts, so edits

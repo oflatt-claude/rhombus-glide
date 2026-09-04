@@ -281,22 +281,18 @@
   (define document ((app-adapter-document adapter) pptx))
   (log! "watching\n  program ~a\n  deck    ~a\n  app     ~a\n"
         program document (app-adapter-name adapter))
-  ;; The deck can have moved while the watcher was not running -- stopped it,
-  ;; edited a slide, started it again -- so those edits are merged before
-  ;; anything is written. Regenerating first would have thrown them away.
-  ;; Say when there is something to pick up, since the alternative reading of a
-  ;; quiet start is that nothing was there.
-  (define leftovers?
-    (and (file-exists? (base-path-for program)) (file-exists? document)))
-  (when leftovers?
-    (log! "  ~a already holds a deck; merging what is in it before anything is written\n"
-          (file-name-from-path (scratch-dir-of program))))
-  (define start-stuck?
-    (and leftovers? (not (merge-back! program pptx document adapter workdir))))
-  ;; Then start from the program, so the deck exists and both sides agree.
-  (unless start-stuck?
-    (regenerate! program pptx adapter #:width w #:height h)
-    (sync-once program pptx #:workdir workdir))
+  ;; The program is the truth, so a session starts from it. Anything left in
+  ;; the scratch is from a session that ended without merging -- a crash, or a
+  ;; deck opened behind glide's back -- and merging it would be merging edits
+  ;; against a program that has moved on since. It goes, and the deck is
+  ;; written again from the program.
+  (define scratch (scratch-dir-of program))
+  (when (and (directory-exists? scratch) (file-exists? (base-path-for program)))
+    (log! "  clearing ~a, left from a session that did not finish\n"
+          (file-name-from-path scratch))
+    (delete-directory/files scratch #:must-exist? #f))
+  (regenerate! program pptx adapter #:width w #:height h)
+  (sync-once program pptx #:workdir workdir)
   ;; `stuck?` means the editor holds edits that were refused. Until they are
   ;; resolved the deck is not regenerated -- otherwise the obvious next move,
   ;; fixing the program as the message asks, would overwrite the very slides the
@@ -311,7 +307,7 @@
                                          "interrupted"))])
    (let loop ([prog-hash (content-hash program)]
              [doc-hash (content-hash document)]
-             [stuck? start-stuck?]
+             [stuck? #f]
              [n 0])
     (cond
       [(and ticks (>= n ticks)) (log! "done\n")]

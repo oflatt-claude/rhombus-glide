@@ -10,6 +10,9 @@
 (provide parse-fill parse-fill-element parse-line parse-line-element blip-opacity
          fill-from-style line-from-style
          effective-fill effective-line
+         ;; The fuzzer names a dash the way the reader does, so that it
+         ;; generates strokes a file could hold.
+         dash-like
          parse-xfrm)
 
 ;; ------------------------------------------------------------------- fills
@@ -61,9 +64,16 @@
 
 ;; ------------------------------------------------------------------- lines
 
+;; The four we draw, and which of DrawingML's presets each stands for. It has
+;; to agree with what the writer puts back: `sysDash` was read as a plain dash
+;; while the writer used it for a short one, so a short dash came back a long
+;; one every time a deck went out and in again.
 (define dash-map
-  (hash "solid" 'solid "dot" 'dot "sysDot" 'dot "dash" 'dash "sysDash" 'dash
-        "lgDash" 'dash "dashDot" 'dash-dot "sysDashDot" 'dash-dot
+  (hash "solid" 'solid
+        "dot" 'dot "sysDot" 'dot
+        "sysDash" 'short-dash
+        "dash" 'dash "lgDash" 'dash
+        "dashDot" 'dash-dot "sysDashDot" 'dash-dot
         "lgDashDot" 'dash-dot "lgDashDotDot" 'dash-dot))
 
 ;; Returns a stroke, #f for an explicit no-line, or 'inherit. A stroke's
