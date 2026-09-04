@@ -1034,6 +1034,46 @@
   (check-equal? (length (regexp-match* #rx"~anchor:" srcp)) 1 "in place")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
+  ;; An arrowhead on a line that has none. `line_end(...)` is a call, so the
+  ;; whole of it is what is written -- and `#false` is what says there is none.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Box" #px"</a:ln>"
+                               "<a:tailEnd type=\"triangle\" w=\"med\" len=\"med\"/></a:ln>")
+              "the line was given an arrowhead")
+  (applied! (sync!) "and it was written")
+  (check-regexp-match #rx"~tail: line_end[(]#'triangle, \"med\", \"med\"[)]"
+                      (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Changed to another kind, in place.
+  (check-true (edit-after-tag! deck 1 "Box" #px"type=\"triangle\"" "type=\"oval\"")
+              "the arrowhead was changed")
+  (applied! (sync!) "and the change was written")
+  (define srce (file->string program))
+  (check-regexp-match #rx"~tail: line_end[(]#'oval" srce)
+  (check-equal? (length (regexp-match* #rx"~tail:" srce)) 1 "in place, not beside")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; And taken off again.
+  (check-true (edit-after-tag! deck 1 "Box" #px"<a:tailEnd[^>]*/>" "")
+              "the arrowhead was removed")
+  (applied! (sync!) "and the removal was written")
+  (check-regexp-match #rx"~tail: #false" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A shape given an outline that has an arrowhead on it gets both at once,
+  ;; since the stroke it belongs to is what is being written.
+  (reset!)
+  (check-true (edit-after-tag!
+               deck 1 "Bare" #px"<a:ln><a:noFill/></a:ln>"
+               (string-append "<a:ln w=\"19050\"><a:solidFill><a:srgbClr val=\"FF0000\"/></a:solidFill>"
+                              "<a:headEnd type=\"stealth\" w=\"med\" len=\"med\"/></a:ln>"))
+              "the shape was given an arrow")
+  (applied! (sync!) "and the stroke was written")
+  (check-regexp-match #rx"~line: make_stroke[(]hex[(]\"FF0000\"[)], ~width: 1[.]5, ~head: line_end[(]#'stealth"
+                      (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
   ;; A gradient the source does stand behind: it cannot be told which stops the
   ;; editor picked, but a plain colour replaces the whole of it.
   (reset!)
