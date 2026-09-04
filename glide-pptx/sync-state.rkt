@@ -14,13 +14,17 @@
 ;; `kind` is 'shape, 'text, 'picture or 'other. `text` is the element's visible
 ;; text, flattened, which is the strongest signal for recognizing it again.
 ;; `paint` is a short digest of its fill, and `z` its position in paint order.
-(struct el-state (tag kind x y w h rot text paint z) #:prefab)
+;; `flip-h?`/`flip-v?` are here because dragging a line's endpoint past the
+;; other end mirrors the shape rather than moving it: without them that edit was
+;; invisible to a merge.
+(struct el-state (tag kind x y w h rot flip-h? flip-v? text paint z) #:prefab)
 (struct slide-state (index width height elements) #:prefab)
 
 (define GEOM-EPSILON 0.05)
 
 (define (el-geometry e)
-  (list (el-state-x e) (el-state-y e) (el-state-w e) (el-state-h e) (el-state-rot e)))
+  (list (el-state-x e) (el-state-y e) (el-state-w e) (el-state-h e) (el-state-rot e)
+        (el-state-flip-h? e) (el-state-flip-v? e)))
 
 ;; PowerPoint rounds to EMU, so a sync must not treat that as an edit.
 ;; A rotation is an angle, so 360 and 0 are the same rotation and so are -45 and
@@ -34,11 +38,14 @@
   (if (< r 0) (+ r m) r))
 
 (define (el-geometry-same? a b)
-  (define ga (el-geometry a))
-  (define gb (el-geometry b))
-  (and (for/and ([p (in-list (take ga 4))] [q (in-list (take gb 4))])
+  (and (for/and ([p (in-list (list (el-state-x a) (el-state-y a)
+                                   (el-state-w a) (el-state-h a)))]
+                 [q (in-list (list (el-state-x b) (el-state-y b)
+                                   (el-state-w b) (el-state-h b)))])
          (< (abs (- p q)) GEOM-EPSILON))
-       (turn-same? (last ga) (last gb))))
+       (turn-same? (el-state-rot a) (el-state-rot b))
+       (eq? (and (el-state-flip-h? a) #t) (and (el-state-flip-h? b) #t))
+       (eq? (and (el-state-flip-v? a) #t) (and (el-state-flip-v? b) #t))))
 
 ;; ------------------------------------------------------- from a display list
 
@@ -53,27 +60,32 @@
     [(it:preset? i)
      (el-state (it:preset-tag i) 'shape (it:preset-x i) (it:preset-y i)
                (it:preset-w i) (it:preset-h i) (it:preset-rot i)
+               (it:preset-flip-h? i) (it:preset-flip-v? i)
                (body-text (it:preset-body i)) (fill-digest (it:preset-fill i)) z)]
     [(it:textbox? i)
      (el-state (it:textbox-tag i) 'text (it:textbox-x i) (it:textbox-y i)
-               (it:textbox-w i) (it:textbox-h i) (it:textbox-rot i)
+               (it:textbox-w i) (it:textbox-h i) (it:textbox-rot i) #f #f
                (body-text (it:textbox-body i)) "" z)]
     [(it:picture? i)
      (el-state (it:picture-tag i) 'picture (it:picture-x i) (it:picture-y i)
                (it:picture-w i) (it:picture-h i) (it:picture-rot i)
+               (it:picture-flip-h? i) (it:picture-flip-v? i)
                "" (format "~a" (it:picture-src i)) z)]
     ;; A flattened element is a picture on both sides of the sync, so it is
     ;; described as one here too and the signature matcher agrees.
     [(it:image? i)
      (el-state (it:image-tag i) 'picture (it:image-x i) (it:image-y i)
-               (it:image-w i) (it:image-h i) (it:image-rot i) "" "flattened" z)]
+               (it:image-w i) (it:image-h i) (it:image-rot i) #f #f
+               "" "flattened" z)]
     ;; A group is one element to drag, whatever it holds.
     [(it:group? i)
      (el-state (it:group-tag i) 'group (it:group-x i) (it:group-y i)
-               (it:group-w i) (it:group-h i) (it:group-rot i) "" "group" z)]
+               (it:group-w i) (it:group-h i) (it:group-rot i)
+               (it:group-flip-h? i) (it:group-flip-v? i) "" "group" z)]
     [(it:shape-path? i)
      (define-values (x y w h) (apply values (it:shape-path-box i)))
      (el-state (it:shape-path-tag i) 'shape x y w h (it:shape-path-rot i)
+               (it:shape-path-flip-h? i) (it:shape-path-flip-v? i)
                (body-text (it:shape-path-body i))
                (fill-digest (it:shape-path-fill i)) z)]
     ;; Not a fall-through: a new kind of semantic item should say so here rather
@@ -144,6 +156,7 @@
                                                        'text 'shape)]
                                        [else 'other])
                                  (bbox-x b) (bbox-y b) (bbox-w b) (bbox-h b) (bbox-rot b)
+                                 (bbox-flip-h? b) (bbox-flip-v? b)
                                  (if (shape? e) (body-text (shape-body e)) "")
                                  (if (shape? e) (ir-fill-digest (shape-fill e)) "")
                                  z)
