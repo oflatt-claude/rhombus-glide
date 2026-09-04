@@ -1319,12 +1319,14 @@
                 "every `at` in the file is still there")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
-  ;; A comment between two `at` forms is a reason not to move them: it would
-  ;; end up describing the wrong one.
+  ;; A comment above an `at` describes that `at`, so it moves with it. One
+  ;; standing on its own between two of them describes neither, and moving the
+  ;; forms around it would leave it describing whatever ended up beneath it --
+  ;; so that is a reason not to.
   (reset!)
   (display-to-file
    (regexp-replace #rx"  at[(]240[.]0" (file->string program)
-                   "  // the blue one\n  at(240.0")
+                   "  // the ones below are the blue ones\n\n  at(240.0")
    program #:exists 'replace)
   (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
   (void (sync!))

@@ -108,30 +108,57 @@ with the reason, because no single correction produces it.
 | reorder the slides | `all_slides`, rewritten in the new order |
 | duplicate a shape | a new `at(...)`, under a name of its own |
 | recolour one that uses a named colour | the `def`, when everything using it changed with it |
-| bring a shape to the front | *reported*: the drawing order is the order of the `at` forms |
-| change a font, a size, boldness | the `run`'s own arguments, for a body of one run |
+| bring a shape to the front | the `at` forms, moved into the new order |
+| delete a slide | its `def`, its comment, its `export:` entry and its `all_slides` entry |
+| repaint a slide's background | the canvas's `~background:` |
+| change a font, a size, boldness, italics | the `run`'s own arguments |
+| make a line dashed, or put an arrowhead on it | `~dash:`/`~head:`/`~tail:`, added to the stroke |
+| give a shape a fill or an outline it had none of | a whole `~fill:`/`~line:` argument, added |
+| take a fill or an outline away | `~fill: #false`/`~line: #false` |
+| make a fill translucent | `~alpha:` inside its colour |
+| centre text, space its lines, space its paragraphs | the `para`'s own arguments |
+| anchor text, unwrap it, autofit it, inset it | the `textbox`'s own arguments |
+| retype a word of a styled line | the run the change fell inside |
+
+An argument the source does not state is **added** rather than reported: a
+solid line has no `~dash:` to rewrite, and adding one is the answer. An
+argument it does state is rewritten in place -- never both, since a second
+`~width:` in one call would not compile.
 
 Refused, with the reason, rather than guessed at: moving or deleting *one* of
-several elements that share a tag, deleting a slide, retyping text that spans
-several runs, and moving something whose position is computed and whose tag is
-not a literal.
+several elements that share a tag, retyping that spans two runs or a paragraph
+break, moving something whose position is computed and whose tag is not a
+literal, a fill the editor made a gradient, grouping shapes, and reordering
+`at` forms with a comment standing between them.
 
 Appearance follows the same rule as geometry: written where the source states
-it as a literal, and **reported by name where it does not**. A colour with a
-name of its own belongs to everything that uses it, so `def brand = hex(...)` is
-rewritten only when every shape using it changed the same way -- and when they
-did not, the report says which name and how many did not change with it. What
-is still not carried back is anything with no literal to write to: a bullet, a
-z-order, a gradient's stops, a font on a body of several runs. Those are
-reported and left, never passed over in silence.
+it, added where it does not, and **reported by name where neither is possible**.
+A colour with a name of its own belongs to everything that uses it, so
+`def brand = hex(...)` is rewritten only when every shape using it changed the
+same way -- and when they did not, the report says which name and how many did
+not change with it. What is still not carried back is what neither side can
+say: which stops a gradient the editor made has, a bullet, a picture used as a
+fill, and the styling of any run but the first. Those are reported and left,
+never passed over in silence.
+
+An action either lands whole or not at all. One that writes part of itself and
+then finds it cannot write the rest is reported as refused and what it had
+written is dropped -- a half-applied edit is how a program stops compiling.
 
 Slides are matched on their contents, not by index, so pasting one in from
 another deck does not shift the ones after it. A pasted slide becomes a
 `def slide_N = slide_canvas(...)` and an entry in `all_slides` at the position it
 sits in the deck -- the definition goes after the last existing one, since
 `all_slides` is what carries the order and nothing else has to be renumbered.
-Deleting a slide in the editor is not merged back yet: it says so, and the deck
-is left alone until it is resolved.
+A slide deleted in the editor takes its definition with it, and only that: a
+program that names the slide anywhere else is one the merge would be rewriting
+rather than following, and it says so and stops.
+
+A merge that both loses a slide and gains one is a matching that could not
+follow the deck, not a deletion and a new slide -- grouping two shapes of three
+is enough to make a slide stop looking like itself. Both are reported and
+nothing is rewritten, because guessing wrong there deletes a definition the
+program still wants.
 
 A `.key` is accepted anywhere a deck is: Keynote is asked to export a `.pptx`
 first, which needs macOS.
@@ -462,6 +489,15 @@ and every number above will be noise.
 
 ## What is not handled yet
 
+- Grouping shapes in the editor is reported, not merged: two of a slide's
+  shapes disappearing into a group makes the slide stop looking like the one
+  the base recorded, and rewriting the slide on that guess is worse than
+  saying so.
+- The styling of any run but the first is invisible to a merge: the state reads
+  a body's typeface, size and weight from its first run, so a change to the
+  second one is neither written nor reported.
+- A shape added in the editor is written last in its slide rather than where
+  the editor put it in the drawing order; the next merge moves it.
 - Charts and SmartArt (`graphicFrame` content other than tables) draw as an
   empty box and are reported.
 - Effects: shadows, glow, reflection, 3-D, soft edges.
@@ -563,10 +599,20 @@ raco test tests/all.rkt      # both
 ```
 
 The split is what a test needs, not how long it takes: `fast.rkt` is everything
-with an exact answer -- the round trip through the IR, the sync, the fuzzer, the
-parser's units -- and `slow.rkt` is everything that renders through LibreOffice
-to compare against, or sweeps the corpus. `tools/fetch-corpus.sh` downloads the
-decks; without them those modules say so and pass.
+with an exact answer -- the round trip through the IR, the sync, the scenarios,
+the fuzzer, the parser's units -- and `slow.rkt` is everything that renders
+through LibreOffice to compare against, or sweeps the corpus.
+`tools/fetch-corpus.sh` downloads the decks; without them those modules say so
+and pass.
+
+`tests/scenarios.rkt` is a session in the editor rather than one action: a
+handful of edits at once, across several slides, then one merge. Where
+`sync.rkt` says each edit *can* be written, a scenario says a run of them lands
+together -- and it ends by comparing what the program renders to against what
+the deck holds, element by element and property by property. Syncing again and
+hearing nothing is not enough on its own: the base is written by the merge
+itself, so a change it recorded but never wrote looks settled and is not. That
+distinction is what the scenarios caught first.
 
 `tests/corpus.rkt` runs the whole pipeline -- import, render, draw, export,
 re-import -- over LibreOffice's own pptx regression suite, several hundred decks

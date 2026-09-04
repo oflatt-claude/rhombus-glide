@@ -8,7 +8,8 @@
 (provide with-unpacked-deck drag-in-deck! deck-part
          add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!
          resize-in-deck! rotate-in-deck! edit-after-tag! shape-rx find-tag
-         bring-to-front! duplicate-in-deck!)
+         bring-to-front! duplicate-in-deck!
+         group-in-deck! move-element-to-slide! edit-slide-part!)
 
 ;; Unpacks `pptx`, calls `proc` with the directory, and repacks whatever is
 ;; there back over the original.
@@ -86,6 +87,75 @@
                     "(?:descr=\"glide-pptx:~a\"|name=\"~a\")"
                     "(?:(?!</p:(?:sp|pic|grpSp)>).)*?</p:(?:sp|pic|grpSp)>)")
                    (regexp-quote tag) (regexp-quote tag))))
+
+;; A raw edit to one slide part, for what no element carries.
+(define (edit-slide-part! pptx slide rx to)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define t (file->string part))
+     (and (regexp-match? rx t)
+          (begin (display-to-file (regexp-replace rx t to) part #:exists 'replace) #t)))))
+
+;; Groups two shapes, which is what the editor's Group command does: the two
+;; forms move inside a `<p:grpSp>` whose box covers them both, and whose child
+;; offsets are the same as its own, so nothing is scaled.
+(define (group-in-deck! pptx slide tag-a tag-b #:name [name "Group 1"])
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     (define ma (regexp-match (shape-rx tag-a) d))
+     (define mb (regexp-match (shape-rx tag-b) d))
+     (define (box sp)
+       (define m (regexp-match #px"<a:off x=\"(-?[0-9]+)\" y=\"(-?[0-9]+)\"/><a:ext cx=\"(-?[0-9]+)\" cy=\"(-?[0-9]+)\"/>" sp))
+       (and m (map string->number (cdr m))))
+     (define ba (and ma (box (first ma))))
+     (define bb (and mb (box (first mb))))
+     (cond
+       [(not (and ba bb)) #f]
+       [else
+        (define x (min (first ba) (first bb)))
+        (define y (min (second ba) (second bb)))
+        (define cx (- (max (+ (first ba) (third ba)) (+ (first bb) (third bb))) x))
+        (define cy (- (max (+ (second ba) (fourth ba)) (+ (second bb) (fourth bb))) y))
+        (define grp
+          (format (string-append
+                   "<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"900\" name=\"~a\" descr=\"glide-pptx:~a\"/>"
+                   "<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm>"
+                   "<a:off x=\"~a\" y=\"~a\"/><a:ext cx=\"~a\" cy=\"~a\"/>"
+                   "<a:chOff x=\"~a\" y=\"~a\"/><a:chExt cx=\"~a\" cy=\"~a\"/>"
+                   "</a:xfrm></p:grpSpPr>~a~a</p:grpSp>")
+                  name name x y cx cy x y cx cy (first ma) (first mb)))
+        (define stripped (string-replace (string-replace d (first ma) "") (first mb) ""))
+        (call-with-output-file part #:exists 'replace
+          (lambda (o) (write-string (string-replace stripped "</p:spTree>"
+                                                    (string-append grp "</p:spTree>"))
+                                    o)))
+        #t]))))
+
+;; Cuts a shape from one slide and pastes it on another, last in the tree.
+(define (move-element-to-slide! pptx tag from to)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define src (build-path dir "ppt" "slides" (format "slide~a.xml" from)))
+     (define dst (build-path dir "ppt" "slides" (format "slide~a.xml" to)))
+     (define d (file->string src))
+     (define m (regexp-match (shape-rx tag) d))
+     (cond
+       [(not m) #f]
+       [else
+        (call-with-output-file src #:exists 'replace
+          (lambda (o) (write-string (string-replace d (first m) "") o)))
+        (define t (file->string dst))
+        (call-with-output-file dst #:exists 'replace
+          (lambda (o) (write-string (string-replace t "</p:spTree>"
+                                                    (string-append (first m) "</p:spTree>"))
+                                    o)))
+        #t]))))
 
 ;; Adds a rectangle to slide `slide`, last in the tree, which is what drawing
 ;; one in PowerPoint or Keynote amounts to. Returns the name it was given.
