@@ -55,6 +55,28 @@
    'ext            "vendor extensions are not read"
    'timing         "animations are not imported yet"
    'transition     "slide transitions are not imported"
+   'zoom                   "a slide transition's effect, and transitions are not imported"
+   'wipe                   "a slide transition's effect, and transitions are not imported"
+   'wheel                  "a slide transition's effect, and transitions are not imported"
+   'strips                 "a slide transition's effect, and transitions are not imported"
+   'randomBar              "a slide transition's effect, and transitions are not imported"
+   'blinds                 "a slide transition's effect, and transitions are not imported"
+   'push                   "a slide transition's effect, and transitions are not imported"
+   'plus                   "a slide transition's effect, and transitions are not imported"
+   'dissolve               "a slide transition's effect, and transitions are not imported"
+   'diamond                "a slide transition's effect, and transitions are not imported"
+   'newsflash              "a slide transition's effect, and transitions are not imported"
+   'comb                   "a slide transition's effect, and transitions are not imported"
+   'cover                  "a slide transition's effect, and transitions are not imported"
+   'cut                    "a slide transition's effect, and transitions are not imported"
+   'fade                   "a slide transition's effect, and transitions are not imported"
+   'pull                   "a slide transition's effect, and transitions are not imported"
+   'split                  "a slide transition's effect, and transitions are not imported"
+   'circle                 "a slide transition's effect, and transitions are not imported"
+   'checker                "a slide transition's effect, and transitions are not imported"
+   'barn                   "a slide transition's effect, and transitions are not imported"
+   'zoomIn                 "a slide transition's effect, and transitions are not imported"
+   'hlinkMouseOver         "a hyperlink, which is not followed"
    'custDataLst    "custom data is not ours to read"
    'hlinkClick     "hyperlinks are not followed"
    'hlinkHover     "hyperlinks are not followed"
@@ -206,7 +228,14 @@
   (define acc (make-hash))
   (define files
     (if (directory-exists? dir)
-        (filter (lambda (p) (regexp-match? #rx"[.]pptx$" (path->string p)))
+        (filter (lambda (p)
+                  (define n (path->string p))
+                  (and (regexp-match? #rx"[.]pptx$" n)
+                       ;; A fuzzer's findings, kept as regression tests. Their
+                       ;; tag names are corrupted by construction -- `eSld` for
+                       ;; `cSld`, one flipped byte -- and inventing an entry for
+                       ;; each would make this list nonsense.
+                       (not (regexp-match? #rx"clusterfuzz" n))))
                 (directory-list dir #:build? #t))
         '()))
   (for ([f (in-list files)])

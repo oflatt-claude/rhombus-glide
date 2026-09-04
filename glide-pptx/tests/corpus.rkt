@@ -58,15 +58,34 @@
    (for ([d (in-list decks)] [i (in-naturals 1)])
      (define name (path->string d))
      (define warns (box '()))
+     ;; A file this refuses on purpose is not a failure. Some of these decks are
+     ;; deliberately corrupt -- POI keeps its fuzzer's findings here -- and the
+     ;; right behaviour is to say so in our own words. What is a failure is an
+     ;; internal error: a contract violation or a parse error from underneath,
+     ;; which means the malformed input reached code that assumed good input.
+     (define (refusal? e)
+       (and (exn? e) (regexp-match? #rx"^glide[-a-z]*:" (exn-message e))))
      (define (phase label thunk)
        (with-handlers ([(lambda (_e) #t)
                         (lambda (e)
-                          (set! failures
-                                (cons (list name label
-                                            (if (exn? e)
-                                                (first (string-split (exn-message e) "\n"))
-                                                (format "~a" e)))
-                                      failures))
+                          (cond
+                            [(refusal? e)
+                             (hash-update! notes
+                                           ;; The path differs per deck; the
+                                           ;; reason does not.
+                                           (format "refused: ~a"
+                                                   (regexp-replace
+                                                    #px"^glide[-a-z]*: [^ ]+ "
+                                                    (first (string-split (exn-message e) "\n"))
+                                                    ""))
+                                           add1 0)]
+                            [else
+                             (set! failures
+                                   (cons (list name label
+                                               (if (exn? e)
+                                                   (first (string-split (exn-message e) "\n"))
+                                                   (format "~a" e)))
+                                         failures))])
                           #f)])
          (thunk)))
      (define deck
@@ -129,9 +148,15 @@
                         ;; That is the one difference this sweep still finds, on
                         ;; 33 of these decks, and it is a gap rather than a
                         ;; mistake: `<a:tbl>` is not written yet.
+                        ;; A slide holding a table is not comparable: the table
+                        ;; exports as the shapes and text it is made of, so the
+                        ;; slide gains elements with no counterpart and matching
+                        ;; the rest by name pairs the wrong two. The gap itself
+                        ;; is recorded below.
                         (for/list ([e (in-list (slide-state-elements b))]
+                                   #:unless (for/or ([x (in-list (slide-state-elements b))])
+                                              (eq? 'table (el-state-kind x)))
                                    #:when (and (el-state-tag e)
-                                               (not (eq? 'table (el-state-kind e)))
                                                (= 1 (hash-ref counts (el-state-tag e) 0))))
                           (define hit (hash-ref by-tag (el-state-tag e) #f))
                           (cond
