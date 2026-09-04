@@ -119,6 +119,7 @@ with the reason, because no single correction produces it.
 | centre text, space its lines, space its paragraphs | the `para`'s own arguments |
 | anchor text, unwrap it, autofit it, inset it | the `textbox`'s own arguments |
 | retype a word of a styled line | the run the change fell inside |
+| crop a picture, or fade it | the picture's `~crop:`/`~opacity:` |
 
 An argument the source does not state is **added** rather than reported: a
 solid line has no `~dash:` to rewrite, and adding one is the answer. An
@@ -493,6 +494,9 @@ and every number above will be noise.
   shapes disappearing into a group makes the slide stop looking like the one
   the base recorded, and rewriting the slide on that guess is worse than
   saying so.
+- Swapping a picture's image is invisible to a merge: the program names the
+  file and an exported deck names the same bytes differently, so there is no
+  identity to compare yet. A picture's crop and opacity do merge.
 - The styling of any run but the first is invisible to a merge: the state reads
   a body's typeface, size and weight from its first run, so a change to the
   second one is neither written nor reported.

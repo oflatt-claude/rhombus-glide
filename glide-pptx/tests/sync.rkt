@@ -17,6 +17,7 @@
 (define (program-picts-fresh path) (program-picts path))
 
 (define-runtime-path decks-dir "decks")
+(define-runtime-path media-dir "media")
 
 (define work (build-path (find-system-path 'temp-dir) "glide-pptx-sync"))
 (delete-directory/files work #:must-exist? #f)
@@ -830,6 +831,70 @@
   (define src4 (file->string program))
   (check-regexp-match #rx"~font: \"Courier New\"" src4)
   (check-regexp-match #rx"~size: 40[.]0" src4)
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
+
+;; ------------------------------------------------------------------ pictures
+
+;; A picture has arguments of its own: how much of it is cropped away and how
+;; see-through it is. Both are things the editor's inspector changes, and
+;; neither had anywhere to land -- the crop was not even compared.
+(let ()
+  (define dir (build-path work "pictures"))
+  (make-directory* (build-path dir "media"))
+  (copy-file (build-path media-dir "checker.png")
+             (build-path dir "media" "checker.png") #t)
+  (define program (build-path dir "p.rhm"))
+  (define deck (build-path dir "p.pptx"))
+  (define (reset!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export:"
+            "  all_slides"
+            "def media = media_lookup(\"media\")"
+            "def slide_1 = slide_canvas("
+            "  ~width: 720.0, ~height: 540.0, ~background: hex(\"FFFFFF\"),"
+            "  at(60.0, 60.0, ~tag: \"Photo\","
+            "     image_pict(media(\"checker.png\"), 200.0, 150.0))"
+            ")"
+            "def all_slides = [slide_1]"
+            "")
+      "\n")
+     program #:exists 'replace)
+    (define b (base-path-for program))
+    (when (file-exists? b) (delete-file b))
+    (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
+    (void (sync-once program deck #:workdir (build-path dir "w"))))
+  (define (sync!) (sync-once program deck #:workdir (build-path dir "w")))
+  (define (one! r why) (check-equal? (length (sync-report-applied r)) 1 why))
+
+  ;; Cropped with the crop tool.
+  (reset!)
+  ;; The replacement is written as it stands -- no backreferences -- so the
+  ;; edits here keep what they match out of it.
+  (check-true (edit-after-tag! deck 1 "Photo" #px"</a:blip><a:stretch>"
+                               "</a:blip><a:srcRect l=\"10000\" t=\"5000\"/><a:stretch>")
+              "the picture was cropped")
+  (one! (sync!) "and the crop was written")
+  (check-regexp-match #rx"~crop: [[]0[.]1, 0[.]05, 0[.]0, 0[.]0[]]" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; And uncropped again: the argument says there is none rather than going.
+  (check-true (edit-after-tag! deck 1 "Photo" #px"<a:srcRect[^>]*/>" "")
+              "the crop was taken off")
+  (one! (sync!) "and that was written")
+  (check-regexp-match #rx"~crop: #false" (file->string program))
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Faded with the opacity slider.
+  (reset!)
+  (check-true (edit-after-tag! deck 1 "Photo" #px"></a:blip>"
+                               "><a:alphaModFix amt=\"40000\"/></a:blip>")
+              "the picture was faded")
+  (one! (sync!) "and the opacity was written")
+  (check-regexp-match #rx"~opacity: 0[.]4" (file->string program))
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
 ;; ------------------------------------------------------ retyping styled text

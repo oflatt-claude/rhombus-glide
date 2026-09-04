@@ -1099,6 +1099,13 @@
 ;; A quoted name, `#'center`, which is two terms: the quote and the name. The
 ;; group around them carries no position of its own, so the extent comes from
 ;; the two ends.
+;; A `[...]` value's extent. The bracket wrapper carries no position, but its
+;; head term spans the brackets and everything between them.
+(define (bracket-extent g)
+  (define l (and (syntax? g) (let ([e (syntax-e g)]) (and (list? e) e))))
+  (define br (and l (findf (lambda (x) (rhombus-head? x 'brackets)) l)))
+  (and br (range-of (first (syntax-e br)))))
+
 (define (quoted-range g)
   (define l (and (syntax? g) (let ([e (syntax-e g)]) (and (list? e) e))))
   (define terms (if (and (pair? l) (eq? 'group (syntax-e* (first l)))) (cdr l) (or l '())))
@@ -1155,10 +1162,22 @@
                            (case how
                              [(call) (value-extent g)]
                              [(quoted) (quoted-range g)]
+                             [(list) (bracket-extent g)]
                              [(flag) (literal-range (kw-single-stx call kw) boolean?)]
                              [else (literal-range (kw-single-stx call kw) how)])
                            #f #f kw #f)
                (style-site property #f #f (call-append-at call) kw #f)))))
+  ;; How much of a picture is cropped away: a list when there is a crop and
+  ;; nothing at all when there is not, so it is added and removed like a fill.
+  (define (crop-site call)
+    (define g (and call (kw-value-stx call '#:crop)))
+    (define r (and g (or (bracket-extent g)
+                         (literal-range (kw-single-stx call '#:crop) boolean?))))
+    (cond
+      [(and g r) (style-site 'crop r #f #f '#:crop r)]
+      [g #f]
+      [call (style-site 'crop #f #f (call-append-at call) '#:crop #f)]
+      [else #f]))
   ;; An arrowhead is a `line_end(...)` call when there is one and `#false` when
   ;; there is not, so both the value and its absence are written in place.
   (define (end-site property call kw)
@@ -1169,10 +1188,16 @@
              [(and g r) (style-site property r #f #f kw r)]
              [g #f]
              [else (style-site property #f #f (call-append-at call) kw #f)]))))
+  ;; A leaf can be any call at all -- a program refactored into `vstack` and
+  ;; `beside` still draws the shape the editor is dragging. So an argument is
+  ;; only ever added to a call known to take it: adding `~crop:` to a `vstack`
+  ;; is a program that no longer runs.
+  (define leaf-name (let ([n (call-name child)]) (and n (syntax-e* n))))
+  (define (leaf-taking . names) (and leaf-name (memq leaf-name names) child))
   ;; The colour argument, however the source states it: a `hex(...)` to rewrite,
   ;; a shared name, `#false` for a shape that has none, or nothing at all -- in
-  ;; which case the whole argument is added.
-  (define (paint-site property kw stx)
+  ;; which case the whole argument is added, where there is a call to add it to.
+  (define (paint-site property kw stx [addable #f])
     (define hit (and stx (not (compound-fill? stx)) (hex-site stx)))
     (cond
       [(and stx (gradient-fill-source? stx))
@@ -1184,7 +1209,8 @@
                        #f #f (value-extent stx))]
       [(and stx (literal-range stx boolean?))
        => (lambda (r) (style-site property #f #f #f kw r))]
-      [(not stx) (style-site property #f #f (call-append-at child) kw #f)]
+      [(not stx) (and addable
+                      (style-site property #f #f (call-append-at addable) kw #f))]
       [else #f]))
   ;; A colour's alpha lives inside its own `hex(...)`, so a shape made
   ;; translucent in the editor is an `~alpha:` written or added there.
@@ -1226,9 +1252,10 @@
              [(not v) (style-site 'text-color #f #f (call-append-at run) '#:color #f)]
              [else #f]))))
   (filter values
-          (list (paint-site 'fill '#:fill fill-stx)
+          (list (paint-site 'fill '#:fill fill-stx (leaf-taking 'shape_pict))
                 opacity
-                (paint-site 'line '#:line stroke-stx)
+                (paint-site 'line '#:line stroke-stx
+                            (leaf-taking 'shape_pict 'image_pict))
                 text-colour
                 (kw-site 'line-width stroke '#:width real?)
                 (kw-site 'dash stroke '#:dash 'quoted)
@@ -1242,6 +1269,9 @@
                 (kw-site 'line-spacing one-para '#:line_spacing 'call)
                 (kw-site 'space-before one-para '#:space_before real?)
                 (kw-site 'space-after one-para '#:space_after real?)
+                ;; A picture's own arguments.
+                (kw-site 'opacity (leaf-taking 'image_pict) '#:opacity real?)
+                (crop-site (leaf-taking 'image_pict))
                 (kw-site 'anchor body-call '#:anchor 'quoted)
                 (kw-site 'wrap body-call '#:wrap 'flag)
                 (kw-site 'autofit body-call '#:autofit 'quoted)
@@ -2262,6 +2292,10 @@
          "#false")]
     [(wrap) (if value "#true" "#false")]
     [(insets) (format "insets(~a)" (string-join (map num->source value) ", "))]
+    [(opacity) (num->source value)]
+    [(crop) (if (list? value)
+                (format "[~a]" (string-join (map num->source value) ", "))
+                "#false")]
     ;; `(percent . 1.5)` and `(points . 18.0)` -- the runtime takes either.
     [(line-spacing) (format "pair(#'~a, ~a)" (car value) (num->source (cdr value)))]
     ;; A hyphen is subtraction in Rhombus, so a name that is not an identifier
