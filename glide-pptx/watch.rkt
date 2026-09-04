@@ -203,9 +203,14 @@
 (define (program-picts program) (load-program-picts program))
 
 ;; deck -> program.
-;; Returns #t when the merge went through. On a refusal the whole message is
-;; logged, not its first line: what to do about it is usually on the lines after
-;; the first, and the editor is still open on the slide that caused it.
+;; Returns #t when the merge went through, which means *all* of it did. A save
+;; is one thing: if any edit in it cannot be written, none of them is, and this
+;; says so and fails. Writing some and reporting the rest would leave the
+;; program and the deck each holding part of what was done.
+;;
+;; On a refusal the whole message is logged, not its first line: what to do
+;; about it is usually on the lines after the first, and the editor is still
+;; open on the slide that caused it.
 (define (merge-back! program pptx document adapter workdir)
   (log! "deck changed -> merging into ~a\n" (file-name-from-path program))
   (with-handlers ([exn:fail? (lambda (e)
@@ -216,10 +221,15 @@
     ;; For an app that does not save .pptx, get one out of it first.
     (unless (equal? (path->string document) (path->string pptx))
       ((app-adapter-harvest! adapter) document pptx))
-    (define r (sync-once program pptx #:workdir workdir))
+    (define r (sync-once program pptx #:workdir workdir #:atomic? #t))
     (define text (format-sync-report r))
     (for ([l (in-list (string-split text "\n"))]) (log! "~a\n" l))
-    #t))
+    (define left (sync-report-skipped r))
+    (cond
+      [(null? left) #t]
+      [else
+       (log! "  ! nothing was merged: ~a of these could not be written\n" (length left))
+       #f])))
 
 ;; Closing the editor ends the session, and so does Ctrl-C. Either way the last
 ;; edits are merged first and the scratch is cleared -- but only if that merge
@@ -236,8 +246,10 @@
   (define scratch (scratch-dir-of program))
   (cond
     [(not merged?)
-     (log! "  keeping ~a: the deck has edits this could not merge\n"
-           (file-name-from-path scratch))]
+     (log! "  keeping ~a: the deck has edits this could not merge, and the
+"
+           (file-name-from-path scratch))
+     (log! "  program was left as it was rather than take some of them\n")]
     [(not (directory-exists? scratch)) (void)]
     [else
      (delete-directory/files scratch #:must-exist? #f)
@@ -315,12 +327,12 @@
           (settle document)
           (define ok? (merge-back! program pptx document adapter workdir))
           (unless ok?
-            (log! "    the deck is not being rewritten while this stands, so nothing
+            (log! "    the program is untouched and the deck is not being rewritten,
 ")
-            (log! "    you have done in ~a is lost. To drop those edits and take the
+            (log! "    so nothing you have done in ~a is lost. To drop those edits
 "
                   (app-adapter-name adapter))
-            (log! "    program as it is, delete ~a and save the program.
+            (log! "    and take the program as it is, delete ~a and save the program.
 "
                   (file-name-from-path (base-path-for program))))
           (loop (content-hash program) (content-hash document) (not ok?) (add1 n))]
@@ -334,12 +346,12 @@
           (settle document)
           (define ok? (merge-back! program pptx document adapter workdir))
           (unless ok?
-            (log! "    the deck will not be rewritten while this stands, so nothing
+            (log! "    the program is untouched and the deck will not be rewritten,
 ")
-            (log! "    you have done in ~a is lost -- fix it there or in the program
+            (log! "    so nothing you have done in ~a is lost -- fix what it names,
 "
                   (app-adapter-name adapter))
-            (log! "    and save, and this will try again.
+            (log! "    there or in the program, and save again.
 "))
           (loop (content-hash program) (content-hash document) (not ok?) (add1 n))]
          [else (loop prog-hash doc-hash #f (add1 n))])]))))

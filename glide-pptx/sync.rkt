@@ -1571,7 +1571,7 @@
     (make-directory* (path-only to))
     (copy-file from to #t)))
 
-(define (apply-actions! program-path actions #:deck [d #f])
+(define (apply-actions! program-path actions #:deck [d #f] #:atomic? [atomic? #f])
   (define-values (all-sites scopes slide-sites layout) (find-program-sites program-path))
   ;; The source text, for the sites that describe a value rather than carry it:
   ;; whether a `~rotate:` says zero, whether a `~flip_h:` says true.
@@ -1994,8 +1994,12 @@
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
       [else (set! skipped (cons (cons a "reported only") skipped))])
     (unless (memq a applied) (set! edits before-edits)))
-  (when (pair? edits) (splice-file! program-path edits))
-  (values (reverse applied) (reverse skipped)))
+  (cond
+    ;; All of it, or none of it.
+    [(and atomic? (pair? skipped)) (values '() (reverse skipped))]
+    [else
+     (when (pair? edits) (splice-file! program-path edits))
+     (values (reverse applied) (reverse skipped))]))
 
 ;; Whether the deck's rotation or mirroring differs from what the source says.
 ;; The source's own value is what it was exported with, so the base is not
@@ -2352,9 +2356,16 @@
 
 ;; One merge pass: read both sides, merge against the base, patch the source,
 ;; and record the new agreed state.
+;; `atomic?` is what a save means: either every edit the editor made is written
+;; or none of them is. A merge that writes four of five edits and reports the
+;; fifth leaves the program and the deck each holding part of the truth, and
+;; nobody can say which part -- so the fifth failing takes the other four with
+;; it, the program is left exactly as it was, and the deck keeps everything
+;; until whatever caused it is resolved.
 (define (sync-once program-path pptx-path
                    #:workdir [workdir #f]
-                   #:dry-run? [dry-run? #f])
+                   #:dry-run? [dry-run? #f]
+                   #:atomic? [atomic? #f])
   (define base-file (base-path-for program-path))
   (define-values (base _p _d) (read-sync-base base-file))
   (define prog (program-slide-states program-path))
@@ -2383,14 +2394,19 @@
        [dry-run? (done! (sync-report actions '() '() #f))]
        [else
         (define-values (applied skipped)
-          (apply-actions! program-path actions #:deck deck-ir))
-        ;; The new base is the program as it now reads, so the next pass
-        ;; compares against something both sides agree on.
-        (define after (program-slide-states program-path))
-        (write-sync-base base-file after
-                         #:program (path->string (path->complete-path program-path))
-                         #:deck (path->string (path->complete-path pptx-path)))
-        (done! (sync-report actions applied skipped #t))])]))
+          (apply-actions! program-path actions #:deck deck-ir #:atomic? atomic?))
+        (cond
+          ;; Nothing was written, so there is nothing new for the base to
+          ;; record: leaving it alone is what makes the next save try again.
+          [(and atomic? (pair? skipped)) (done! (sync-report actions '() skipped #f))]
+          [else
+           ;; The new base is the program as it now reads, so the next pass
+           ;; compares against something both sides agree on.
+           (define after (program-slide-states program-path))
+           (write-sync-base base-file after
+                            #:program (path->string (path->complete-path program-path))
+                            #:deck (path->string (path->complete-path pptx-path)))
+           (done! (sync-report actions applied skipped #t))])])]))
 
 (define (format-sync-report r)
   (define o (open-output-string))
