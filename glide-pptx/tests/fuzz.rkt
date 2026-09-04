@@ -15,7 +15,9 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/math
          racket/format
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/export glide-pptx/geometry glide-pptx/sync-state)
+         glide-pptx/export glide-pptx/geometry glide-pptx/sync-state
+         (only-in glide-pptx/drawing dash-like)
+         "ir-diff.rkt")
 
 (define work (build-path (find-system-path 'temp-dir) "glide-pptx-fuzz"))
 (delete-directory/files work #:must-exist? #f)
@@ -47,16 +49,25 @@
        (line-end (pick rng 'arrow 'triangle 'stealth 'diamond 'oval)
                  (pick rng "sm" "med" "lg") (pick rng "sm" "med" "lg"))))
 
+;; A line whose dash and spelled-out pattern agree, which is the only kind a
+;; file produces: `custDash` and `prstDash` are alternatives in the schema, so
+;; a deck states one of them and the reader names the other from it. Generating
+;; the two independently made a stroke no file could hold, and the round trip
+;; normalized it -- which is a difference in the generator, not in the code.
 (define (a-line rng)
   (cond
     [(chance rng 0.25) #f]
     [else
+     (define pattern
+       (and (chance rng 0.2)
+            (list (cons (real-in rng 50.0 600.0) (real-in rng 50.0 600.0)))))
      (stroke (a-color rng) (real-in rng 0.25 8.0)
-             (pick rng 'solid 'dash 'dot 'dash-dot 'short-dash)
+             (if pattern
+                 (dash-like pattern)
+                 (pick rng 'solid 'dash 'dot 'dash-dot 'short-dash))
              (pick rng 'flat 'round 'projecting)
              (an-end rng) (an-end rng)
-             (and (chance rng 0.2)
-                  (list (cons (real-in rng 50.0 600.0) (real-in rng 50.0 600.0)))))]))
+             pattern)]))
 
 (define (a-run rng)
   (trun (pick rng "Ag" "hello world" "x" "a longer piece of text to lay out" "σʹ")
@@ -152,15 +163,27 @@
                  (for/list ([j (in-range k)]) (an-element rng (+ 100 (* 10 i) j) w h))))
         #f "fuzz"))
 
-;; What a round trip may not change.
-(define (element-facts d)
-  (for/list ([s (in-list (deck-slides d))])
-    (for/list ([e (in-list (slide-elements s))])
-      (define b (element-bbox e))
-      (list (element-name e)
-            (map (lambda (v) (/ (round (* 100.0 v)) 100.0))
-                 (list (bbox-x b) (bbox-y b) (bbox-w b) (bbox-h b)))
-            (bbox-flip-h? b) (bbox-flip-v? b)))))
+;; What a round trip may not change: everything the merge can see, compared the
+;; way the round-trip tests compare it. It used to be the box and the flips
+;; alone, which is how a line spacing of 1.5 came back as 1.0 for a year -- the
+;; generator was producing them, and nothing was looking.
+(define (elements-by-tag d)
+  (append*
+   ;; A group is one element, as it is to a merge. Its children are compared
+   ;; through the group's own box: a group scales what it holds, so a child's
+   ;; width coming back different is the group doing its job.
+   (for/list ([s (in-list (deck->slide-states d))])
+     (for/list ([e (in-list (slide-state-elements s))] #:when (el-state-tag e))
+       (cons (list (slide-state-index s) (el-state-tag e)) e)))))
+
+;; And the elements themselves, which is where the geometry, the gradient
+;; stops, the dash patterns and what a group holds actually live.
+(define (ir-by-name d)
+  (append*
+   (for/list ([s (in-list (deck-slides d))])
+     (for/list ([e (in-list (slide-elements s))]
+                #:unless (string=? "" (element-name e)))
+       (cons (list (slide-index s) (element-name e)) e)))))
 
 (define failures 0)
 
@@ -189,15 +212,31 @@
       (when back
         ;; Only what differs, so a failure names the field rather than printing
         ;; two decks to compare by eye.
-        (define was (append* (element-facts d)))
-        (define now (append* (element-facts back)))
+        (define was (elements-by-tag d))
+        (define now (for/hash ([p (in-list (elements-by-tag back))]) (values (car p) (cdr p))))
         (define diffs
           (append
-           (if (= (length was) (length now))
+           (if (= (length was) (hash-count now))
                '()
-               (list (format "~a elements became ~a" (length was) (length now))))
-           (for/list ([a (in-list was)] [b (in-list now)] #:unless (equal? a b))
-             (format "~a: ~a -> ~a" (first a) (rest a) (rest b)))))
-        (check-equal? diffs '() (format "seed ~a" seed))))))
+               (list (format "~a elements became ~a" (length was) (hash-count now))))
+           (append*
+            (for/list ([p (in-list was)])
+              (define other (hash-ref now (car p) #f))
+              (cond
+                [(not other) (list (format "~s vanished" (car p)))]
+                [else (for/list ([d (in-list (element-diffs (cdr p) other))])
+                        (format "~s: ~a" (car p) d))])))))
+        ;; The same again, field for field on the elements themselves.
+        (define was-ir (ir-by-name d))
+        (define now-ir (for/hash ([p (in-list (ir-by-name back))]) (values (car p) (cdr p))))
+        (define ir-differences
+          (append*
+           (for/list ([p (in-list was-ir)])
+             (define other (hash-ref now-ir (car p) #f))
+             (cond
+               [(not other) (list (format "~s vanished" (car p)))]
+               [else (for/list ([d (in-list (ir-diffs (cdr p) other))])
+                       (format "~s: ~a" (car p) d))]))))
+        (check-equal? (append diffs ir-differences) '() (format "seed ~a" seed))))))
 
 (printf "fuzz done; ~a rounds from seed ~a\n" ROUNDS BASE-SEED)

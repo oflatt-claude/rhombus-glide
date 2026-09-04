@@ -563,7 +563,19 @@
   ;; guess, and guessing wrong deletes a definition the program still wants --
   ;; grouping two shapes of three is enough to make a slide stop matching.
   (define muddled? (and (pair? added) (pair? removed)))
+  ;; A deck has one size, so resizing it in the editor is one edit however many
+  ;; slides there are -- and the program usually says it once, as a name every
+  ;; canvas shares.
+  (define resized
+    (let* ([p (and (pair? pairs) (first pairs))]
+           [d (and p (car p))] [b (and p (cdr p))])
+      (if (and p (or (> (abs (- (slide-state-width d) (slide-state-width b))) 0.05)
+                     (> (abs (- (slide-state-height d) (slide-state-height b))) 0.05)))
+          (list (sync-action 'resized-deck "the deck" (slide-state-index b)
+                             (list (slide-state-width d) (slide-state-height d)) #f))
+          '())))
   (append
+   resized
    (if muddled?
        (for/list ([b (in-list removed)])
          (sync-action 'ambiguous (format "slide ~a" (slide-state-index b))
@@ -663,7 +675,8 @@
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
 ;; shape in the editor puts it on top, which is where the last argument draws.
-(struct slide-site (scope insert-at indent def-start def-end background) #:transparent)
+(struct slide-site (scope insert-at indent def-start def-end background width height)
+  #:transparent)
 (struct rng (start end) #:transparent)
 
 ;; Shifts every recovered range, for a reader that was handed only part of the
@@ -971,10 +984,30 @@
                         (slide-site scope (first ins) 2
                                     (let ([d (range-of (second l))]) (and d (rng-start d)))
                                     (add1 shut)
-                                    (canvas-paint-site (sixth l)))))))))
+                                    (canvas-paint-site (sixth l))
+                                    (canvas-size-site (sixth l) '#:width 'slide-width)
+                                    (canvas-size-site (sixth l) '#:height 'slide-height))))))))
 
 ;; Where the canvas states its background, which is always somewhere: the
 ;; emitter writes one whether the slide had a background of its own or not.
+;; What the canvas says its size is: a number to rewrite, or a name that every
+;; slide shares -- a generated program says `~width: slide_width`, so the deck
+;; being resized is one edit on one `def`.
+(define (canvas-size-site parens kw property)
+  (define stx (parens-kw-group parens kw))
+  (define literal (and stx (literal-range (single-term stx) real?)))
+  (define name (and stx (not literal) (single-symbol stx)))
+  (and stx (style-site property literal name #f kw #f)))
+
+;; The one term a group holds, when it holds one.
+(define (single-term g)
+  (define l (and (syntax? g) (let ([e (syntax-e g)]) (and (list? e) e))))
+  (and l (= 2 (length l)) (second l)))
+
+(define (single-symbol g)
+  (define t (single-term g))
+  (and t (symbol? (syntax-e* t)) (syntax-e* t)))
+
 (define (canvas-paint-site parens)
   (define stx (parens-kw-group parens '#:background))
   (define hit (and stx (not (compound-fill? stx)) (hex-site stx)))
@@ -993,9 +1026,10 @@
        (symbol? (syntax-e* (third l)))
        (syntax-e* (third l))))
 
-;; `def brand = hex("4472C4")` -> brand -> the range of that string. A colour
-;; given a name is shared, so recolouring one shape that uses it is not the same
-;; edit as recolouring the name.
+;; `def brand = hex("4472C4")` -> brand -> the range of that string, and
+;; `def slide_width = 720.0` -> slide_width -> the range of that number. A value
+;; given a name is shared, so changing one shape that uses it is not the same
+;; edit as changing the name.
 (define (rhombus-global-colours groups)
   (for/fold ([h (hash)]) ([g (in-list groups)])
     (define l (let ([e (syntax-e g)]) (and (list? e) e)))
@@ -1003,9 +1037,11 @@
                     (symbol? (syntax-e* (third l)))
                     (syntax-e* (third l))))
     (define hit (and nm (hex-site g)))
-    (if (and hit (eq? 'literal (car hit)))
-        (hash-set h nm (cdr hit))
-        h)))
+    (define number (and nm (not hit) (= 5 (length l)) (literal-range (fifth l) real?)))
+    (cond
+      [(and hit (eq? 'literal (car hit))) (hash-set h nm (cdr hit))]
+      [number (hash-set h nm number)]
+      [else h])))
 
 ;; `def all_slides = [slide_1, slide_2]` -> '(slide_1 slide_2).
 (define (rhombus-slide-scopes groups)
@@ -2278,6 +2314,39 @@
           (for ([st (in-list sites)] #:unless (eq? st anchor))
             (edit! (deletion-range text (at-site-whole st)) ""))
           (set! applied (cons a applied))])]
+      ;; The deck's size, which every canvas states -- as a number each, or as
+      ;; one name they share.
+      [(resized-deck)
+       (define want (sync-action-detail a))
+       (define targets
+         (for*/list ([ss (in-list slide-sites)]
+                     [pair (in-list (list (cons (slide-site-width ss) (first want))
+                                          (cons (slide-site-height ss) (second want))))]
+                     #:when (car pair))
+           pair))
+       (define resolved
+         (for/list ([t (in-list targets)])
+           (define site (car t))
+           (define value (cdr t))
+           (cond
+             [(style-site-range site) (cons (style-site-range site) value)]
+             [(and (style-site-shared site)
+                   (hash-ref (program-layout-globals layout) (style-site-shared site) #f))
+              => (lambda (r) (cons r value))]
+             [else #f])))
+       (cond
+         [(null? targets)
+          (set! skipped (cons (cons a "no `slide_canvas` states its size here") skipped))]
+         [(not (andmap values resolved))
+          (set! skipped
+                (cons (cons a "a slide states its size as something other than a number or a name")
+                      skipped))]
+         [else
+          ;; One `def` serves every slide, so the same range comes up once per
+          ;; slide and is written once.
+          (for ([e (in-list (remove-duplicates resolved))])
+            (edit! (car e) (num->source (cdr e))))
+          (set! applied (cons a applied))])]
       ;; The slide's own paint, which the canvas states.
       [(repainted)
        (define ss (slide-site-for a))
@@ -2758,7 +2827,10 @@
     [(size line-width fill-opacity) (num->source value)]
     [(font) (format "~s" value)]
     [(bold italic) (if value "#true" "#false")]
-    [(space-before space-after level margin-left indent spacing baseline)
+    ;; A level is a whole number of steps, and `1.0` is not the number the
+    ;; parser reads back out of `lvl="1"`.
+    [(level) (format "~a" (inexact->exact (round value)))]
+    [(space-before space-after margin-left indent spacing baseline)
      (num->source value)]
     [(underline strike) (if value "#true" "#false")]
     ;; A bullet is a call of five things, and no bullet at all is `no_bullet`.
