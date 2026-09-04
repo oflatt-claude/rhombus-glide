@@ -168,6 +168,18 @@ An action either lands whole or not at all. One that writes part of itself and
 then finds it cannot write the rest is reported as refused and what it had
 written is dropped -- a half-applied edit is how a program stops compiling.
 
+**What the deck does not say is not an edit.** A shape states some of its
+appearance and inherits the rest -- from its placeholder, the layout, the
+master, the theme -- and editors differ in how much they bother to state.
+Keynote's pptx export leaves out a great deal that ours writes. So the parse
+records, per run and per paragraph and per body, which properties the shape
+states *itself*, and only those are compared: an editor that says less than we
+do produces no edits at all rather than hundreds of removals nobody made. Where
+a deck does state a value and it is the one the format means when it says
+nothing -- Calibri 18, left-aligned, not bold -- the difference is **noted**
+rather than written, since those two cannot be told apart. A note is neither
+applied nor refused and does not stop a save.
+
 **And a save is one thing.** If any edit in it cannot be written, none of them
 is: the program is left exactly as it was, the deck is not rewritten, and the
 report names what stopped it. Writing four edits of five and reporting the
@@ -190,6 +202,14 @@ follow the deck, not a deletion and a new slide -- grouping two shapes of three
 is enough to make a slide stop looking like itself. Both are reported and
 nothing is rewritten, because guessing wrong there deletes a definition the
 program still wants.
+
+The scratch beside the program is picked up, not cleared, when a session
+starts: edits made while nothing was watching are merged before anything is
+written, since regenerating first would throw them away. It is cleared when the
+editor closes and on Ctrl-C -- unless that last merge was refused, when it is
+kept deliberately, because the deck then holds something the program does not.
+A scratch written for another program is refused rather than merged, and says
+which program it came from.
 
 A `.key` is accepted anywhere a deck is: Keynote is asked to export a `.pptx`
 first, which needs macOS.

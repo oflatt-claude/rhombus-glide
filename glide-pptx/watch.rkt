@@ -284,10 +284,15 @@
   ;; The deck can have moved while the watcher was not running -- stopped it,
   ;; edited a slide, started it again -- so those edits are merged before
   ;; anything is written. Regenerating first would have thrown them away.
+  ;; Say when there is something to pick up, since the alternative reading of a
+  ;; quiet start is that nothing was there.
+  (define leftovers?
+    (and (file-exists? (base-path-for program)) (file-exists? document)))
+  (when leftovers?
+    (log! "  ~a already holds a deck; merging what is in it before anything is written\n"
+          (file-name-from-path (scratch-dir-of program))))
   (define start-stuck?
-    (and (file-exists? (base-path-for program))
-         (file-exists? document)
-         (not (merge-back! program pptx document adapter workdir))))
+    (and leftovers? (not (merge-back! program pptx document adapter workdir))))
   ;; Then start from the program, so the deck exists and both sides agree.
   (unless start-stuck?
     (regenerate! program pptx adapter #:width w #:height h)
