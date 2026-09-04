@@ -65,10 +65,12 @@
 ;; `expect` is how many actions should be applied; `refused` how many should
 ;; not be. Both are checked, because a scenario that quietly applies nothing
 ;; passes every other check.
-;; What the program renders to, against what the editor holds. This is the
-;; check that matters: syncing again and hearing nothing only says the base
-;; agrees with the deck, and the base is written by the merge itself -- a change
-;; it recorded but never wrote looks settled and is not.
+;; What the program renders to, against what the editor holds. Syncing again
+;; and hearing nothing says much the same thing -- the base a merge writes is
+;; the program as it then reads, so a refused change is reported again next
+;; pass rather than forgotten. What this adds is *which* property differs, and
+;; a view the merge does not have: an element the program carries under a tag
+;; the deck does not know is a disagreement here and no action there.
 (define (style-disagreements tag a b)
   (for/list ([kv (in-list (el-state-style a))]
              #:unless (let ([h (assq (car kv) (el-state-style b))])

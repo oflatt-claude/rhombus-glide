@@ -152,10 +152,10 @@
 ;; regenerated the deck and threw those edits away. So a refusal latches: while
 ;; it stands the deck is not rewritten, and a change on either side retries.
 ;;
-;; A tag on two `at` forms is the refusal used here, since it is one that
-;; stands: an edit under that tag could land on either, and only the program can
-;; say which. Deleting a slide is merged back now, and a slide added in the
-;; editor always was.
+;; A save is one thing: if any edit in it cannot be written, none of them is.
+;; So the refusals used here are ones that stand -- a tag on two `at` forms,
+;; which an edit could land on either of, and a colour two shapes share
+;; recoloured on one of them.
 (let ()
   (define dir (build-path work "stuck"))
   (make-directory* dir)
@@ -172,11 +172,14 @@
                  "  lib(\"glide-pptx/runtime.rhm\") open"
                  "export:"
                  "  all_slides"
+                 (format "def brand = hex(~s)" color)
                  "def slide_1 = slide_canvas("
                  "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
                  "  at(40.0, 60.0, ~tag: \"Box\","
-                 (format "     shape_pict(~~width: 100.0, ~~height: 40.0, ~~fill: hex(~s)))~a"
-                         color (if duplicate-tag? "," "")))
+                 "     shape_pict(~width: 100.0, ~height: 40.0, ~fill: brand)),"
+                 "  at(200.0, 60.0, ~tag: \"Twin\","
+                 (format "     shape_pict(~~width: 100.0, ~~height: 40.0, ~~fill: brand))~a"
+                         (if duplicate-tag? "," "")))
            ;; A second `at` under the same tag: an edit under it could land on
            ;; either, so the merge refuses the program rather than guessing.
            (if duplicate-tag?
@@ -238,22 +241,24 @@
   ;; worth writing -- so wait for it to say it wrote the deck.
   (wait! "the loop to finish starting" (lambda () (said? #rx"slides written")))
   (sleep 0.3)
-  ;; Break the program's tags, then edit in the editor: the merge cannot read
-  ;; the program, so the edit stays where it is.
-  (write-program! "4472C4" #:duplicate-tag? #t)
-  (wait! "the loop to write the broken program's deck"
-         (lambda () (>= (length (regexp-match* #rx"slides written" (string-join lines "\n"))) 2)))
-  (sleep 0.3)
+  ;; Two edits in one save, one of which cannot be written: the resize can be,
+  ;; and recolouring one of the two shapes that share `brand` cannot. So the
+  ;; save fails whole -- and the resize is still in the deck, because the deck
+  ;; was never rewritten from a program that never took it.
   (check-true (resize-in-deck! pptx 1 "Box" 200.0 80.0) "a shape was resized")
-  (wait! "the merge to be refused" (lambda () (said? #rx"merge refused")))
-  ;; Then save the program, which is what the message asks for -- but not the
-  ;; part of it the refusal is about.
-  (write-program! "70AD47" #:duplicate-tag? #t)
-  (wait! "the loop to notice the program" (lambda () (said? #rx"not being rewritten")))
+  (check-true (edit-after-tag! pptx 1 "Twin" #px"<a:srgbClr val=\"[0-9A-Fa-f]+\"/>"
+                               "<a:srgbClr val=\"70AD47\"/>")
+              "and one of the two shapes sharing a colour was recoloured")
+  (wait! "the save to fail whole" (lambda () (said? #rx"nothing was merged")))
+  ;; Then save the program, which is what the message asks for.
+  (write-program! "70AD47")
+  (wait! "the loop to say the program is untouched" (lambda () (said? #rx"untouched")))
   (sleep 0.4)
   (check-regexp-match #rx"cx=\"2540000\""
                       (deck-part pptx "ppt/slides/slide1.xml")
                       "the resize survived a program save -- the deck was not regenerated")
+  (check-false (regexp-match? #rx"~width: 200[.]0" (file->string program))
+               "and the program never took it, since the save failed whole")
   (kill-thread runner))
 
 ;; ------------------------------------------- closing the editor ends the session

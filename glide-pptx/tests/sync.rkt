@@ -822,6 +822,25 @@
   (check-equal? (length (regexp-match* #rx"70AD47" src)) 1 "which is written once")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
+  ;; A save is one thing. Two edits, one of which cannot be written: neither is
+  ;; written, and the program is left exactly as it was. Writing the one that
+  ;; could would leave the program and the deck each holding part of what was
+  ;; done in the editor, with nothing to say which part.
+  (reset!)
+  (define before (file->string program))
+  (check-true (drag-in-deck! deck 1 "Plain" 300.0 300.0) "one edit that can be written")
+  (check-true (recolour! "One" "70AD47") "and one that cannot")
+  (define ra (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (length (sync-report-actions ra)) 2 "both are reported")
+  (check-equal? (sync-report-applied ra) '() "and neither is written")
+  (check-equal? (file->string program) before "the program is untouched")
+  (check-false (sync-report-base-written? ra)
+               "and the base is left alone, so the next save tries again")
+  ;; The same merge, without the rule: the one that can be written is.
+  (define rp (sync-once program deck #:workdir (build-path dir "w")))
+  (check-equal? (length (sync-report-applied rp)) 1 "the drag lands on its own")
+  (check-equal? (length (sync-report-skipped rp)) 1 "and the colour is still refused")
+
   ;; A font and a size on a single-run body.
   (reset!)
   (check-true (edit-after-tag! deck 1 "Words" #px"typeface=\"[^\"]*\"" "typeface=\"Courier New\""))

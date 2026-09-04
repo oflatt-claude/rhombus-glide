@@ -146,6 +146,14 @@ An action either lands whole or not at all. One that writes part of itself and
 then finds it cannot write the rest is reported as refused and what it had
 written is dropped -- a half-applied edit is how a program stops compiling.
 
+**And a save is one thing.** If any edit in it cannot be written, none of them
+is: the program is left exactly as it was, the deck is not rewritten, and the
+report names what stopped it. Writing four edits of five and reporting the
+fifth would leave the program and the deck each holding part of what was done,
+with nothing to say which part -- and the next regeneration would quietly
+settle it in the program's favour. So the merge fails instead, and keeps
+failing until what it names is resolved, in the editor or in the program.
+
 Slides are matched on their contents, not by index, so pasting one in from
 another deck does not shift the ones after it. A pasted slide becomes a
 `def slide_N = slide_canvas(...)` and an entry in `all_slides` at the position it
@@ -614,9 +622,10 @@ handful of edits at once, across several slides, then one merge. Where
 `sync.rkt` says each edit *can* be written, a scenario says a run of them lands
 together -- and it ends by comparing what the program renders to against what
 the deck holds, element by element and property by property. Syncing again and
-hearing nothing is not enough on its own: the base is written by the merge
-itself, so a change it recorded but never wrote looks settled and is not. That
-distinction is what the scenarios caught first.
+hearing nothing says much the same thing, since the base a merge writes is the
+program as it then reads; what the comparison adds is *which* property differs,
+and a view the merge does not have -- an element the program carries under a tag
+the deck does not know is a disagreement here and no action there.
 
 `tests/corpus.rkt` runs the whole pipeline -- import, render, draw, export,
 re-import -- over LibreOffice's own pptx regression suite, several hundred decks
