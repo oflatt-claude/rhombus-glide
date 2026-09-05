@@ -237,8 +237,13 @@
 (define (parse-custom-geometry c)
   (define paths (xpath* c 'pathLst 'path))
   (define (pt node) (cons (or (attr-num node 'x) 0) (or (attr-num node 'y) 0)))
-  (define w (for/fold ([m 1]) ([p (in-list paths)]) (max m (or (attr-num p 'w) 0))))
-  (define h (for/fold ([m 1]) ([p (in-list paths)]) (max m (or (attr-num p 'h) 0))))
+  ;; A path that declares no space, or declares 0, is written in EMU inside the
+  ;; shape rather than in a space to be stretched onto it. Flooring that to 1
+  ;; turned every such path into one scaled by the shape's own size -- a
+  ;; twelve-thousand-fold blow-up on the decks that write paths this way -- so
+  ;; the 0 is kept and everything downstream reads it as EMU.
+  (define w (for/fold ([m 0]) ([p (in-list paths)]) (max m (or (attr-num p 'w) 0))))
+  (define h (for/fold ([m 0]) ([p (in-list paths)]) (max m (or (attr-num p 'h) 0))))
   (custom-geom
    (for/list ([p (in-list paths)])
      (for/list ([cmd (in-list (elem-children p))])

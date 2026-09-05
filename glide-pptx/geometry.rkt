@@ -335,8 +335,8 @@
 ;; The same, for a custom path: its first and last points, with the ones next to
 ;; them for direction.
 (define (custom-path-ends geom w h #:flip-h? [fh #f] #:flip-v? [fv #f])
-  (define sx (if (zero? (custom-geom-w geom)) 1.0 (/ w (exact->inexact (custom-geom-w geom)))))
-  (define sy (if (zero? (custom-geom-h geom)) 1.0 (/ h (exact->inexact (custom-geom-h geom)))))
+  (define sx (path-scale (custom-geom-w geom) w))
+  (define sy (path-scale (custom-geom-h geom) h))
   (define paths (custom-geom-paths geom))
   (and (pair? paths)
        (let* ([pts (command-points (first paths) sx sy)]
@@ -362,9 +362,15 @@
                        (cons (* sx (car p)) (* sy (cdr p))))]
        [else '()]))))
 
+;; What one unit of a path's own space is worth in points. A space of 0 means
+;; the coordinates are EMU inside the shape, which is a twelve-thousandth of a
+;; point each and not a stretch onto the box.
+(define (path-scale space extent)
+  (if (zero? space) (/ 1.0 12700.0) (/ extent (exact->inexact space))))
+
 (define (custom-path geom w h #:flip-h? [fh #f] #:flip-v? [fv #f])
-  (define sx (if (zero? (custom-geom-w geom)) 1.0 (/ w (exact->inexact (custom-geom-w geom)))))
-  (define sy (if (zero? (custom-geom-h geom)) 1.0 (/ h (exact->inexact (custom-geom-h geom)))))
+  (define sx (path-scale (custom-geom-w geom) w))
+  (define sy (path-scale (custom-geom-h geom) h))
   (define p (new dc-path%))
   (for ([subpath (in-list (custom-geom-paths geom))])
     (define (X v) (* sx v)) (define (Y v) (* sy v))

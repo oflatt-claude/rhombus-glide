@@ -78,22 +78,40 @@
    'powerpoint
    (lambda (pptx) pptx)
    (lambda (doc pptx) #t)
+   ;; Reloading means closing and reopening, which puts the editor back on the
+   ;; first slide -- and a regeneration happens every time the program is
+   ;; saved, so that is once a keystroke. The slide being looked at is read
+   ;; first and set again after, so the view stays where it was. Every step of
+   ;; that is wrapped: an editor that will not answer should cost the reload,
+   ;; not the session.
    (lambda (pptx)
      (define p (path->string (path->complete-path pptx)))
      (osascript "tell application \"Microsoft PowerPoint\""
                 (format "  set target to POSIX file \"~a\"" p)
+                "  set showing to 1"
+                "  try"
+                "    repeat with w in document windows"
+                (format "      if (full name of (presentation of w)) is \"~a\" then" p)
+                "        set showing to slide index of view of w"
+                "      end if"
+                "    end repeat"
+                "  end try"
                 "  repeat with d in presentations"
                 (format "    if (full name of d) is \"~a\" then close d saving no" p)
                 "  end repeat"
                 "  open target"
                 "  activate"
+                "  try"
+                "    set slide index of view of document window 1 to showing"
+                "  end try"
                 "end tell"))
    (lambda () (process-running? "Microsoft PowerPoint"))))
 
 ;; Keynote's own format is a .key bundle and it never saves .pptx, so the deck
 ;; has to be exported out of it before a merge can read it, and a regenerated
 ;; deck has to be re-imported. Keynote has no reload, so the document is closed
-;; and reopened, which loses the current slide and selection. Untested here.
+;; and reopened: the slide being looked at is read first and set again after,
+;; and the selection is lost either way. Untested here.
 (define keynote-adapter
   (app-adapter
    'keynote
@@ -114,6 +132,14 @@
      ;; where the watcher is looking. Wrapped, because a Keynote that refuses is
      ;; not worth failing over -- the deck is still open and editable.
      (osascript "tell application \"Keynote\""
+                ;; Which slide is being looked at, so reopening puts it back
+                ;; there rather than at the beginning.
+                "  set showing to 1"
+                "  try"
+                "    if (count of documents) > 0 then"
+                "      set showing to slide number of current slide of document 1"
+                "    end if"
+                "  end try"
                 "  repeat with d in documents"
                 "    close d saving no"
                 "  end repeat"
@@ -121,6 +147,11 @@
                 "  activate"
                 "  try"
                 (format "    save d in POSIX file \"~a\"" k)
+                "  end try"
+                "  try"
+                "    if showing > 0 and showing <= (count of slides of d) then"
+                "      set current slide of d to slide showing of d"
+                "    end if"
                 "  end try"
                 "end tell"))
    (lambda () (process-running? "Keynote"))))

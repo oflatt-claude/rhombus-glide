@@ -27,7 +27,7 @@
          (cons 'box (box-facts (element-bbox e))))
    (cond
      [(shape? e)
-      (list (cons 'geom (geom-facts (shape-geom e)))
+      (list (cons 'geom (geom-facts (shape-geom e) (element-bbox e)))
             (cons 'fill (fill-facts (shape-fill e)))
             (cons 'line (line-facts (shape-line e)))
             (cons 'body (body-facts (shape-body e))))]
@@ -45,7 +45,12 @@
             (cons 'children
                   (for/list ([c (in-list (group-children e))])
                     (list (element-name c)
-                          (cond [(shape? c) (list 'shape (geom-facts (shape-geom c))
+                          ;; A child's box is scaled by the group, so where a
+                          ;; point sits across it is scaled too; the path's
+                          ;; shape is what has to survive.
+                          (cond [(shape? c) (list 'shape
+                                                  (geom-facts (shape-geom c) (element-bbox c)
+                                                              #:placed? #f)
                                                   (fill-facts (shape-fill c)))]
                                 [(picture? c) 'picture]
                                 [(group? c) (list 'group (length (group-children c)))]
@@ -81,20 +86,39 @@
                (round2 (bbox-w b)) (round2 (bbox-h b))
                (round2 (bbox-rot b)) (bbox-flip-h? b) (bbox-flip-v? b))))
 
-(define (geom-facts g)
+;; `box` is the shape the path is drawn inside, which is the space a path
+;; declaring none is written in.
+(define (geom-facts g box #:placed? [want-placed? #t])
   (cond
     [(preset-geom? g) (list 'preset (preset-geom-name g) (preset-geom-adjust g))]
-    ;; The path's shape: which commands, in which order, with how many points
-    ;; each. Not where the points sit -- a path is written in a coordinate
-    ;; space of its own and the writer picks a different one, so comparing the
-    ;; numbers means resolving both spaces first, and a declared space of zero
-    ;; means "EMU inside the shape", which several real decks write. Worth
-    ;; doing; not done here.
+    ;; Where each point sits across the shape, which is the one thing about a
+    ;; path that has to survive. The numbers themselves cannot be compared: a
+    ;; path is written in a coordinate space of its own, and the writer picks
+    ;; the shape's own box in EMU rather than whatever came in. A space
+    ;; declared as 0 or 1 means the numbers are already EMU inside the shape,
+    ;; which is what several real decks write and what the reader floors to 1.
     [(custom-geom? g)
+     ;; Zero, and only zero, means the numbers are EMU inside the shape; any
+     ;; other space is a space to stretch onto the box, even a small one.
+     (define (across declared extent)
+       (if (zero? declared) (* 12700.0 extent) (exact->inexact declared)))
+     (define w (across (custom-geom-w g) (bbox-w box)))
+     (define h (across (custom-geom-h g) (bbox-h box)))
+     ;; Whether a point's place is worth comparing depends on the shape, not on
+     ;; the space it happens to be written in -- the two sides use different
+     ;; spaces, and a rule about the space fires on one side and not the other.
+     ;; Under a point across, the space is a handful of EMU and where a point
+     ;; sits in it says nothing; the path's shape still has to survive.
+     (define placed? (and want-placed? (> (bbox-w box) 1.0) (> (bbox-h box) 1.0)))
+     (define (place pt)
+       (if (and placed? (pair? pt))
+           (cons (round3 (/ (exact->inexact (car pt)) w))
+                 (round3 (/ (exact->inexact (cdr pt)) h)))
+           (if (pair? pt) 'point pt)))
      (list 'custom
            (for/list ([path (in-list (custom-geom-paths g))])
              (for/list ([cmd (in-list path)])
-               (list (car cmd) (length (cdr cmd))))))]
+               (cons (car cmd) (map place (cdr cmd))))))]
     [else g]))
 
 (define (colour-facts c)
@@ -172,7 +196,12 @@
 ;; 1.0, a dash renamed, a stop dropped.
 (define (close-enough? x y)
   (cond
-    [(and (real? x) (real? y)) (< (abs (- x y)) 0.02)]
+    ;; A hundredth, or a thousandth of the value for the larger ones: a point
+    ;; three thousand times outside its own path space still lands within a
+    ;; tenth of a percent of where it started, and what this is watching for is
+    ;; a value that does not survive at all.
+    [(and (real? x) (real? y))
+     (< (abs (- x y)) (max 0.02 (* 0.001 (max (abs x) (abs y)))))]
     [(and (pair? x) (pair? y) (not (list? x)) (not (list? y)))
      (and (close-enough? (car x) (car y)) (close-enough? (cdr x) (cdr y)))]
     [(and (list? x) (list? y)) (and (= (length x) (length y)) (andmap close-enough? x y))]
