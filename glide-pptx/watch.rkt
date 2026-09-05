@@ -10,7 +10,7 @@
 ;; when saving; and it is the loop guard, since a file we just wrote ourselves
 ;; hashes to what we expect and so does not look like someone else's edit.
 (require racket/list racket/string racket/format racket/file racket/path
-         racket/system racket/port file/sha1
+         racket/system racket/port file/sha1 racket/runtime-path
          "export.rkt" "sync.rkt")
 (provide (struct-out app-adapter) adapters adapter-named scratch-dir-of
          watch-loop watch-once program-picts
@@ -156,19 +156,83 @@
                 "end tell"))
    (lambda () (process-running? "Keynote"))))
 
-;; Testable here: LibreOffice has no reload either, so it is opened afresh.
+;; LibreOffice edits .pptx natively, so the document is the deck, as with
+;; PowerPoint. What it does not have is a reload: opening a file it already has
+;; open raises the window it is already showing, whatever is on disk now. A
+;; deck is regenerated every time the program is saved, so left at that the
+;; editor shows a deck from several edits ago -- and a save from there writes
+;; that back over the program's work, which the merge then reads as a pile of
+;; edits undoing everything. So it is asked over UNO instead, which is the
+;; interface it does have, and the slide in view is kept across the reload.
+;;
+;; It runs on a profile of its own, under the scratch beside the program. That
+;; is what makes the socket certain -- LibreOffice is one process per profile,
+;; and a copy the user already had running would otherwise swallow the launch
+;; and have no socket -- and it is somewhere to say, once, that saving a .pptx
+;; as a .pptx needs no warning.
+(define-runtime-path libreoffice-driver "libreoffice.py")
+
+(define LIBREOFFICE-PORT 2143)
+
+(define (soffice-exe)
+  (or (find-executable-path "soffice") (find-executable-path "libreoffice")))
+
+;; The helper says what it managed: 0 did it, 3 could not connect, 4 the
+;; document is not open. Anything else, including no python-uno to run it
+;; with, is "cannot tell".
+(define (libreoffice-driver! what pptx)
+  (define py (find-executable-path "python3"))
+  (and py
+       (let ([out (open-output-string)])
+         (parameterize ([current-output-port out] [current-error-port out])
+           (system*/exit-code py (path->string libreoffice-driver) what
+                              (number->string LIBREOFFICE-PORT)
+                              (path->string (path->complete-path pptx)))))))
+
+(define (libreoffice-launch! pptx)
+  (define exe (soffice-exe))
+  ;; Started on the person's own LibreOffice, with their settings and none of
+  ;; the dialogs a fresh profile puts up -- and a fresh profile puts up a
+  ;; welcome wizard, which is modal, which means nothing can be asked of the
+  ;; document underneath it and a reload goes nowhere.
+  ;;
+  ;; The socket is what the reload is asked over. LibreOffice is one process
+  ;; per profile, so a copy already running without one swallows this launch
+  ;; and there is nothing to ask: then the deck is still written, still opens,
+  ;; and only the reload is lost -- which the loop says out loud rather than
+  ;; leaving a stale deck on screen looking current.
+  (and exe
+       (begin
+         (process/ports
+          (open-output-nowhere) #f (open-output-nowhere)
+          (format "~a --norestore --accept=~s ~a"
+                  exe
+                  (format "socket,host=localhost,port=~a;urp;" LIBREOFFICE-PORT)
+                  (path->string (path->complete-path pptx))))
+         #t)))
+
 (define libreoffice-adapter
   (app-adapter
    'libreoffice
    (lambda (pptx) pptx)
    (lambda (doc pptx) #t)
    (lambda (pptx)
-     (define exe (or (find-executable-path "soffice") (find-executable-path "libreoffice")))
-     (and exe (begin (process/ports (open-output-nowhere) #f (open-output-nowhere)
-                                    (format "~a --norestore ~a" exe
-                                            (path->string (path->complete-path pptx))))
-                     #t)))
-   always-open))
+     ;; Reload what is open; open it if it is not. A driver that cannot say
+     ;; either way falls back to the launch, which at least shows something.
+     (case (libreoffice-driver! "reload" pptx)
+       [(0) #t]
+       [else (libreoffice-launch! pptx)]))
+   ;; Only the driver can say; without it the session runs until it is
+   ;; interrupted, which is what every other adapter that cannot tell does.
+   (lambda ()
+     (define deck (current-libreoffice-deck))
+     (case (and deck (libreoffice-driver! "open" deck))
+       [(4) #f]
+       [else #t]))))
+
+;; Which deck `open?` should ask about. The adapter's own `open?` takes no
+;; argument -- it is asked about the session, and there is one deck in it.
+(define current-libreoffice-deck (make-parameter #f))
 
 (define adapters
   (hash 'none none-adapter 'powerpoint powerpoint-adapter
@@ -318,6 +382,9 @@
                     #:open-check [open-check 10.0]
                     #:ticks [ticks #f])
   (define document ((app-adapter-document adapter) pptx))
+  ;; Which deck this session is about, for an adapter that has to ask the
+  ;; editor whether it is still open.
+  (current-libreoffice-deck pptx)
   (log! "watching\n  program ~a\n  deck    ~a\n  app     ~a\n"
         program document (app-adapter-name adapter))
   ;; The program is the truth, so a session starts from it. Anything left in

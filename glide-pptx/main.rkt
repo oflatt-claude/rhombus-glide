@@ -285,12 +285,18 @@
                              ".pptx"))))
 
 ;; Keynote on a Mac, since that is what there is to drive there.
-;; PowerPoint by default. Both are driven the same way, but PowerPoint reads
-;; and writes its own format, and Keynote's export states less than it shows --
-;; a shape's typeface and anchor and spacing can come back missing, and a merge
-;; can only go on what the deck says. `--app keynote` still works.
+;; LibreOffice by default, wherever it is installed: it reads and writes .pptx
+;; itself, it is on every platform, and it costs nothing, which matters when
+;; the alternative is a subscription. PowerPoint is next where there is no
+;; LibreOffice and the machine is a Mac. Keynote is driven the same way but its
+;; export states less than it shows -- a shape's typeface and anchor and
+;; spacing can come back missing, and a merge can only go on what the deck says
+;; -- so it is asked for by name. `--app` overrides any of this.
 (define (default-app)
-  (if (eq? 'macosx (system-type 'os)) 'powerpoint 'none))
+  (cond
+    [(or (find-executable-path "soffice") (find-executable-path "libreoffice")) 'libreoffice]
+    [(eq? 'macosx (system-type 'os)) 'powerpoint]
+    [else 'none]))
 
 (define (cmd-edit args)
   (define out (box #f))
