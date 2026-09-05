@@ -1894,6 +1894,59 @@
   (check-true (pair? (program-picts program)) "and the program still reads")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
+  ;; Two new shapes in one save. They are written at the same place, and one
+  ;; insertion must not be read as sitting inside the other.
+  (reset!)
+  (check-true (and (add-shape-to-deck! deck 1 "First New") #t) "one was drawn")
+  (check-true (and (add-shape-to-deck! deck 1 "Second New") #t) "and another")
+  (define r-two (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-skipped r-two) '() "both were written")
+  (define src-two (file->string program))
+  (check-regexp-match #rx"~tag: \"First New\"" src-two "the first is there")
+  (check-regexp-match #rx"~tag: \"Second New\"" src-two "and the second")
+  (check-true (pair? (program-picts program)) "and the program still reads")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A new shape and a reordering in one save: the insertion sits inside the
+  ;; run of forms the reordering moves.
+  (reset!)
+  (check-true (and (add-shape-to-deck! deck 1 "Late") #t) "something was drawn")
+  (check-true (bring-to-front! deck 1 "Box") "and a shape brought to the front")
+  (define r-mix (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-skipped r-mix) '() "both were written")
+  (define src-mix (file->string program))
+  (check-regexp-match #rx"~tag: \"Late\"" src-mix "the new one is there")
+  (check-equal? (length (regexp-match* #rx"~tag: \"Late\"" src-mix)) 1 "once")
+  (check-true (pair? (program-picts program)) "and the program still reads")
+  ;; The drawing order is the order of the forms, and the new form has to be
+  ;; written before there is an order to put it in -- so it takes the pass
+  ;; after, which is why a save settles before the deck is written again.
+  (define r-order (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r-order)) '(restacked)
+                "the order followed on the next pass")
+  (define src-order (file->string program))
+  (define (written-at tag)
+    (caar (regexp-match-positions (regexp (format "~s" tag)) src-order)))
+  (check-true (< (written-at "Other") (written-at "Late") (written-at "Box"))
+              "written in the order they are drawn in")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; Duplicating a shape inside a group gives the group two shapes under one
+  ;; name, since the copy is given the name it was copied from. There is one
+  ;; `at` form here for the two of them, and writing it twice is a program no
+  ;; later sync can read -- so the grouping is refused and said.
+  (reset!)
+  (check-true (group-in-deck! deck 1 "Box" "Other" #:name "Pair") "two were grouped")
+  (check-true (and (duplicate-in-deck! deck 1 "Box") #t) "and one of them duplicated")
+  (define was (file->string program))
+  (define r-clash (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-applied r-clash) '() "nothing was written")
+  (check-equal? (length (sync-report-skipped r-clash)) 1 "and the grouping was refused")
+  (check-regexp-match #rx"one name" (cdr (car (sync-report-skipped r-clash)))
+                      "for the reason it was")
+  (check-equal? (file->string program) was "the program was left as it was")
+  (check-true (pair? (program-picts program)) "and it still reads")
+
   ;; A comment above an `at` describes that `at`, so it moves with it. One
   ;; standing on its own between two of them describes neither, and moving the
   ;; forms around it would leave it describing whatever ended up beneath it --
