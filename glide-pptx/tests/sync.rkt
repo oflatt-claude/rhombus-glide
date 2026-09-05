@@ -1849,6 +1849,51 @@
                 "every `at` in the file is still there")
   (check-equal? (sync-report-actions (sync!)) '() "and it settled")
 
+  ;; Two edits in one save, one of them inside the run of forms the other
+  ;; moves. Bringing a shape to the front rewrites that whole run, so a restyle
+  ;; written into one of the forms at the same time was laid over the top of it
+  ;; -- and what came out did not parse.
+  (reset!)
+  (check-true (bring-to-front! deck 1 "Box") "brought to the front")
+  ;; Something that changes the length of the form it sits in, so an edit
+  ;; written at offsets the move has already shifted lands in the wrong place.
+  (check-true (edit-after-tag! deck 1 "Other"
+                               #px"<a:solidFill><a:srgbClr val=\"4472C4\"/></a:solidFill>"
+                               "<a:noFill/>")
+              "and the other one's fill taken away, in the same save")
+  (define r-both (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-skipped r-both) '() "both were written")
+  (check-equal? (sort (map (lambda (x) (format "~a" (sync-action-kind x)))
+                           (sync-report-applied r-both))
+                      string<?)
+                '("restacked" "restyle"))
+  (define src-both (file->string program))
+  (check-false (regexp-match? #rx"4472C4" src-both) "the fill was taken away")
+  (check-true (> (caar (regexp-match-positions #rx"\"Box\"" src-both))
+                 (caar (regexp-match-positions #rx"\"Other\"" src-both)))
+              "and the form moved past it")
+  (check-equal? (length (regexp-match* #rx"  at[(]" src-both)) 3
+                "with every `at` still there, once")
+  (check-true (pair? (program-picts program)) "and the program still reads")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A slide whose last element is a group. A new one is written at the
+  ;; canvas's own indentation: the forms inside a `group_pict` sit far to the
+  ;; right, and taking the indentation from one of them wrote the new element
+  ;; into the middle of the group, where it did not belong and did not parse.
+  (reset!)
+  (check-true (group-in-deck! deck 1 "Box" "Other" #:name "Pair") "the two were grouped")
+  (void (sync!))
+  (void (sync!))
+  (check-true (and (add-shape-to-deck! deck 1 "Drawn") #t) "and something new was drawn")
+  (define r-added (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r-added)) '(added) "it was added")
+  (define src-added (file->string program))
+  (check-regexp-match #px"(?m:^  at[(][^\n]*~tag: \"Drawn\")" src-added
+                      "at the canvas's own indentation")
+  (check-true (pair? (program-picts program)) "and the program still reads")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
   ;; A comment above an `at` describes that `at`, so it moves with it. One
   ;; standing on its own between two of them describes neither, and moving the
   ;; forms around it would leave it describing whatever ended up beneath it --

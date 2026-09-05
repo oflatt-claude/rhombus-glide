@@ -252,15 +252,23 @@
     ;; For an app that does not save .pptx, get one out of it first.
     (unless (equal? (path->string document) (path->string pptx))
       ((app-adapter-harvest! adapter) document pptx))
-    (define r (sync-once program pptx #:workdir workdir #:atomic? #t))
-    (define text (format-sync-report r))
-    (for ([l (in-list (string-split text "\n"))]) (log! "~a\n" l))
-    (define left (sync-report-skipped r))
-    (cond
-      [(null? left) #t]
-      [else
-       (log! "  ! nothing was merged: ~a of these could not be written\n" (length left))
-       #f])))
+    ;; Until it settles. One pass can leave work for the next -- an edit
+    ;; inside a form another edit rewrote wholesale is left for a second look,
+    ;; and grouping changes the drawing order -- and the deck is written again
+    ;; from the program as soon as this returns, so anything still outstanding
+    ;; would be written over rather than kept.
+    (let loop ([pass 1])
+      (define r (sync-once program pptx #:workdir workdir #:atomic? #t))
+      ;; A later pass that found nothing is the usual case and says nothing.
+      (when (or (= pass 1) (pair? (sync-report-actions r)))
+        (for ([l (in-list (string-split (format-sync-report r) "\n"))]) (log! "~a\n" l)))
+      (define left (sync-report-skipped r))
+      (cond
+        [(pair? left)
+         (log! "  ! nothing was merged: ~a of these could not be written\n" (length left))
+         #f]
+        [(or (null? (sync-report-applied r)) (>= pass 3)) #t]
+        [else (loop (add1 pass))]))))
 
 ;; Closing the editor ends the session, and so does Ctrl-C. Either way the last
 ;; edits are merged first and the scratch is cleared -- but only if that merge
