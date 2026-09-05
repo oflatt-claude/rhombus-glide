@@ -8,6 +8,7 @@
 ;;
 ;; Each deck records the score it achieved, so a change that makes fidelity
 ;; *better* is visible in the diff rather than silently absorbed.
+(require rackunit/log)
 (require rackunit racket/list racket/file racket/path racket/format
          racket/runtime-path
          glide-pptx/verify)
@@ -58,3 +59,8 @@
                         (* 100 (cdr budget))))))
 
 (printf "fidelity tests done; diff images under ~a\n" work)
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

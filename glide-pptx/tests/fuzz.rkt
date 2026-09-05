@@ -12,6 +12,7 @@
 ;;
 ;; That oracle is exact and cheap, which is what makes fuzzing worth doing: a
 ;; whole-slide pixel diff has a tolerance, and this does not.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/math
          racket/format
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
@@ -249,3 +250,8 @@
                       (format "seed ~a" seed))))))
 
 (printf "fuzz done; ~a rounds from seed ~a\n" ROUNDS BASE-SEED)
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

@@ -5,6 +5,7 @@
 ;; merge must change exactly the numbers that moved and nothing else in the
 ;; file, and it must refuse rather than guess when the thing it would patch is
 ;; not a literal.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/system
          racket/port racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-rhombus
@@ -1984,3 +1985,8 @@
                       "under a name of its own")
   (check-equal? (sync-report-actions (sync!)) '()
                 "and the program is still one a sync can read"))
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

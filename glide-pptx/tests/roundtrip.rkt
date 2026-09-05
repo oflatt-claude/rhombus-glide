@@ -5,6 +5,7 @@
 ;; or garbled something -- a missing keyword, a default assumed wrongly, a
 ;; coordinate rounded away. Comparing rendered pages catches that where reading
 ;; the generated source would not.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/class racket/draw racket/file racket/path racket/system racket/port
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
@@ -197,3 +198,8 @@
        (check-true (> fill-h 0.99) (format "and its height (~a)" fill-h))
        (check-true (<= minx 1) (format "flush to the left edge (~a)" minx))
        (check-true (<= miny 1) (format "and the top (~a)" miny)))]))
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

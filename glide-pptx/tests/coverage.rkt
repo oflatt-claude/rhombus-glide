@@ -12,6 +12,7 @@
 ;; the parser asks for, or one listed below as knowingly skipped. A new one is a
 ;; failure, which is a prompt to decide -- implement it, or write down that it is
 ;; not worth implementing and why.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/set racket/file racket/path
          racket/format racket/runtime-path file/unzip)
 
@@ -279,3 +280,8 @@
                "an unread element is invisible to every other test here."))
 
 (printf "coverage census done\n")
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

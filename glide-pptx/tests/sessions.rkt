@@ -23,6 +23,7 @@
 ;; `GLIDE_SESSION_SEED=<n> GLIDE_SESSION_COUNT=1`. `GLIDE_SESSION_ROUNDS` and
 ;; `GLIDE_SESSION_EDITS` make the sessions longer and the handfuls bigger,
 ;; which is what a sweep looking for a combination wants.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          glide-pptx/sync glide-pptx/sync-state glide-pptx/export
          "editor-actions.rkt" "ir-diff.rkt")
@@ -190,3 +191,8 @@
 
 (printf "session tests done; ~a rounds over ~a sessions from seed ~a -- ~a edits written, ~a saves refused\n"
         rounds-total SESSIONS BASE-SEED applied-total refused-total)
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

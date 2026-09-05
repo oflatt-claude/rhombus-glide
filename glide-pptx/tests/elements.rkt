@@ -10,6 +10,7 @@
 ;; against the *ink* rather than the page, because a thin line on its own page
 ;; is still mostly white: the same missing arrowheads score 9.6% against 17.6%
 ;; that way, where against the page they scored 2.02% against 2.46%.
+(require rackunit/log)
 (require rackunit racket/list racket/file racket/path racket/format racket/string
          racket/class racket/draw racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
@@ -148,3 +149,8 @@
                       (first r) (~r (* 100 (second r)) #:precision 1))))
 
 (printf "element tests done; artifacts under ~a\n" work)
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))
