@@ -300,12 +300,14 @@
               (format "<a:lnSpc><a:spcPts val=\"~a\"/></a:lnSpc>"
                       (inexact->exact (round (* 100 (cdr spacing)))))
               (format "<a:lnSpc><a:spcPct val=\"~a\"/></a:lnSpc>" (pct* (cdr spacing))))
-          (if (zero? (ir:para-space-before p)) ""
-              (format "<a:spcBef><a:spcPts val=\"~a\"/></a:spcBef>"
-                      (inexact->exact (round (* 100 (ir:para-space-before p))))))
-          (if (zero? (ir:para-space-after p)) ""
-              (format "<a:spcAft><a:spcPts val=\"~a\"/></a:spcAft>"
-                      (inexact->exact (round (* 100 (ir:para-space-after p))))))
+          ;; Written even when it is nothing, like the alignment and the
+          ;; margins beside it. A paragraph that says nothing about the space
+          ;; above it is given whatever the master says, and the deck this came
+          ;; from said nothing because it had already said zero.
+          (format "<a:spcBef><a:spcPts val=\"~a\"/></a:spcBef>"
+                  (inexact->exact (round (* 100 (ir:para-space-before p)))))
+          (format "<a:spcAft><a:spcPts val=\"~a\"/></a:spcAft>"
+                  (inexact->exact (round (* 100 (ir:para-space-after p)))))
           (bullet-xml b)
           (apply string-append
                  (for/list ([r (in-list (ir:para-runs p))]) (run-xml r)))))

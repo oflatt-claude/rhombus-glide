@@ -145,6 +145,12 @@
         #:writes #rx"~bullet: bullet[(]#'char")
 (act "retype text" 'applied (after "List" #px"<a:t>first</a:t>" "<a:t>primary</a:t>")
         #:writes #rx"run[(]\"primary\"")
+;; Characters, not bytes. A program's positions are counted in characters, and
+;; a splice that counted bytes would land three places to the left of where it
+;; meant to for every edit written after this line.
+(act "retype text with more than ASCII in it" 'applied
+        (after "List" #px"<a:t>second</a:t>" "<a:t>naïve — 日本語 ✓</a:t>")
+        #:writes #rx"run[(]\"naïve")
 
 ;; ----------------------------------------------------- Format pane: the text box
 

@@ -96,6 +96,29 @@
                     "(?:(?!</p:(?:sp|pic|grpSp)>).)*?</p:(?:sp|pic|grpSp)>)")
                    (regexp-quote tag) (regexp-quote tag))))
 
+;; The element that holds a tag, counting its own openers and closers, so a
+;; group comes back whole rather than stopping at its first child's closing
+;; tag. `shape-rx` cannot do that -- a regexp cannot count -- and a group is
+;; something an editor deletes and restacks like anything else.
+;; Returns (cons start end) over `d`, or #f.
+(define (shape-span d tag)
+  (define at (find-tag d tag))
+  (and at
+       (let loop ([i 0] [open '()] [found #f])
+         (define m (regexp-match-positions
+                    #px"<p:(?:sp|pic|grpSp)(?:\\s[^>]*)?>|</p:(?:sp|pic|grpSp)>" d i))
+         (cond
+           [(or (not m) found) found]
+           [else
+            (define-values (s e) (values (caar m) (cdar m)))
+            (cond
+              [(char=? #\/ (string-ref d (add1 s))) ; a closer: the innermost open one ends
+               (define start (if (pair? open) (car open) #f))
+               (if (and start (<= start at) (<= at e))
+                   (loop e (if (pair? open) (cdr open) '()) (cons start e))
+                   (loop e (if (pair? open) (cdr open) '()) #f))]
+              [else (loop e (cons s open) #f)])]))))
+
 ;; A raw edit to any part of the package, for what no element carries.
 (define (edit-part! pptx name rx to)
   (with-unpacked-deck
@@ -271,12 +294,14 @@
    (lambda (dir)
      (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
      (define d (file->string part))
-     (define m (regexp-match (shape-rx tag) d))
+     (define sp (shape-span d tag))
      (cond
-       [(not m) #f]
+       [(not sp) #f]
        [else
         (call-with-output-file part #:exists 'replace
-          (lambda (o) (write-string (string-replace d (first m) "") o)))
+          (lambda (o) (write-string (string-append (substring d 0 (car sp))
+                                                   (substring d (cdr sp)))
+                                    o)))
         #t]))))
 
 ;; Shifts every shape tagged `tag` on slide `slide` by (dx, dy) points, which is
@@ -512,13 +537,14 @@
    (lambda (dir)
      (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
      (define d (file->string part))
-     (define m (regexp-match (shape-rx tag) d))
+     (define sp (shape-span d tag))
      (cond
-       [(not m) #f]
+       [(not sp) #f]
        [else
+        (define moved (substring d (car sp) (cdr sp)))
+        (define without (string-append (substring d 0 (car sp)) (substring d (cdr sp))))
         (display-to-file
-         (string-replace (string-replace d (first m) "")
-                         "</p:spTree>" (string-append (first m) "</p:spTree>"))
+         (string-replace without "</p:spTree>" (string-append moved "</p:spTree>"))
          part #:exists 'replace)
         #t]))))
 
@@ -530,10 +556,11 @@
    (lambda (dir)
      (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
      (define d (file->string part))
-     (define m (regexp-match (shape-rx tag) d))
+     (define sp (shape-span d tag))
      (cond
-       [(not m) #f]
+       [(not sp) #f]
        [else
-        (display-to-file (string-replace d (first m) (string-append (first m) (first m)))
+        (define one (substring d (car sp) (cdr sp)))
+        (display-to-file (string-append (substring d 0 (car sp)) one one (substring d (cdr sp)))
                          part #:exists 'replace)
         #t]))))
