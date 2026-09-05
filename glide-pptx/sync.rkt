@@ -809,14 +809,30 @@
 ;; only applies to a slide that has none yet.
 (define (with-indents slide-sites sites text)
   (for/list ([ss (in-list slide-sites)])
-    (define mine (filter (lambda (s) (and (equal? (slide-site-scope ss) (at-site-scope s))
-                                          (at-site-whole s)))
-                         sites))
+    ;; Only the forms the canvas holds itself. An `at` inside a `group_pict` is
+    ;; written for its group and sits far to the right of anything the canvas
+    ;; would write, so a slide whose last element is a group would otherwise
+    ;; indent the next new one into the middle of it.
+    (define mine (canvas-forms (slide-site-scope ss) sites))
     (cond
       [(null? mine) ss]
       [else
-       (define start (rng-start (at-site-whole (last mine))))
+       (define start (rng-start (at-site-whole (argmax (lambda (s) (rng-start (at-site-whole s)))
+                                                       mine))))
        (struct-copy slide-site ss [indent (indent-at text start)])])))
+
+;; The `at` forms one slide's canvas holds itself: those with its scope, less
+;; the ones another of them encloses, which belong to a group and are drawn by
+;; it. Drawing order, indentation and where a new element goes are all the
+;; canvas's own list, not what is nested inside it.
+(define (canvas-forms scope sites)
+  (define here (for/list ([s (in-list sites)]
+                          #:when (and (equal? scope (at-site-scope s)) (at-site-whole s)))
+                 s))
+  (for/list ([s (in-list here)]
+             #:unless (for/or ([o (in-list here)])
+                        (and (not (eq? o s)) (encloses? (at-site-whole o) (at-site-whole s)))))
+    s))
 
 (define (canvas-insertion text after-name close)
   (define open (next-open text after-name))
@@ -2074,14 +2090,17 @@
           (define under
             (let ([d (sync-action-detail a)])
               (and (list? d) (= 2 (length d)) (second d))))
-          (define after (and under (site-for-tag a under)))
+          (define canvas-here (canvas-forms (slide-site-scope ss) all-sites))
+          ;; Drawn over something the canvas does not hold itself -- a shape
+          ;; inside a group -- it goes at the end of the slide instead. The
+          ;; program cannot say "above one member of a group" without joining
+          ;; the group, which is not what the editor was asked for.
+          (define after
+            (let ([st (and under (site-for-tag a under))])
+              (and st (memq st canvas-here) st)))
           (define first-form
-            (let ([here (for/list ([st (in-list all-sites)]
-                                   #:when (and (equal? (slide-site-scope ss) (at-site-scope st))
-                                               (at-site-whole st)))
-                          st)])
-              (and (pair? here)
-                   (argmin (lambda (st) (rng-start (at-site-whole st))) here))))
+            (and (pair? canvas-here)
+                 (argmin (lambda (st) (rng-start (at-site-whole st))) canvas-here)))
           (cond
             [(and after (at-site-whole after))
              (define at (rng-end (at-site-whole after)))
@@ -2421,20 +2440,8 @@
       [(restacked)
        (define scope (let ([i (sync-action-slide a)])
                        (and scopes (<= 1 i (length scopes)) (list-ref scopes (sub1 i)))))
-       (define on-slide (sort (for/list ([st (in-list all-sites)]
-                                         #:when (and (equal? scope (at-site-scope st))
-                                                     (at-site-whole st)))
-                                st)
-                              < #:key (lambda (st) (rng-start (at-site-whole st)))))
-       ;; An `at` inside a `group_pict` is drawn by its group, not by the
-       ;; canvas: only the forms the canvas itself holds have an order of their
-       ;; own to change.
-       (define here
-         (for/list ([st (in-list on-slide)]
-                    #:unless (for/or ([o (in-list on-slide)])
-                               (and (not (eq? o st))
-                                    (encloses? (at-site-whole o) (at-site-whole st)))))
-           st))
+       (define here (sort (canvas-forms scope all-sites)
+                          < #:key (lambda (st) (rng-start (at-site-whole st)))))
        (define want (sync-action-detail a))
        (define pieces (reorder-pieces here want source-text))
        (cond
@@ -2674,14 +2681,15 @@
        (andmap values ordered)
        ;; A comment left in a gap belongs to neither side of it.
        (not (for/or ([g (in-list gaps)]) (regexp-match? #rx"//" g)))
-       (let* ([span (rng (rng-start (extent (first sites)))
-                         (rng-end (extent (last sites))))]
-              [texts (for/list ([st (in-list ordered)])
-                       (let ([r (extent st)]) (substring text (rng-start r) (rng-end r))))])
+       ;; The forms are copied rather than spelled out, so an edit to one of
+       ;; them made in the same save moves with it.
+       (let ([span (rng (rng-start (extent (first sites)))
+                        (rng-end (extent (last sites))))])
          (cons span
-               (apply string-append
-                      (for/list ([t (in-list texts)] [i (in-naturals)])
-                        (string-append t (if (< i (length gaps)) (list-ref gaps i) ""))))))))
+               (append*
+                (for/list ([st (in-list ordered)] [i (in-naturals)])
+                  (cons (extent st)
+                        (if (< i (length gaps)) (list (list-ref gaps i)) '()))))))))
 
 ;; Which run a retyping landed in, as (range . new-value). A body's text is its
 ;; runs joined, with a newline between paragraphs, so the run to rewrite is the
@@ -2937,14 +2945,83 @@
 ;; the wrong place further down the file.
 (define (splice-file! path edits)
   (define text (file->string path))
-  (define sorted (sort edits > #:key (lambda (e) (rng-start (first e)))))
-  (define out
-    (for/fold ([text text]) ([e (in-list sorted)])
-      (define r (first e))
-      (string-append (substring text 0 (rng-start r))
-                     (second e)
-                     (substring text (rng-end r)))))
+  (define out (splice-nested text edits))
   (call-with-output-file path #:exists 'replace (lambda (o) (write-string out o))))
+
+;; What an edit replaces its range with: either a string, or a plan -- strings
+;; and ranges of the file to copy, in the order they should read.
+;;
+;; A plan is how a rewrite that moves text says so. Reordering a slide's `at`
+;; forms moves the forms and leaves the commas and indentation between them, so
+;; it is a plan of eight pieces rather than one string; and because the pieces
+;; say where they came from, an edit inside a form that moves travels with it.
+;; Written flat, the two would be laid over each other and the program would
+;; stop parsing.
+(define (edit-tree-range t) (first t))
+
+;; Which edits are inside which. Sorted so a range comes before what it holds,
+;; each one then takes the edits that fall within it as its own.
+(define (nest-edits edits)
+  (define sorted
+    (sort edits (lambda (a b)
+                  (define ra (first a))
+                  (define rb (first b))
+                  (if (= (rng-start ra) (rng-start rb))
+                      (> (rng-end ra) (rng-end rb))
+                      (< (rng-start ra) (rng-start rb))))))
+  (define (gather es limit)
+    (cond
+      [(null? es) (values '() '())]
+      [(and limit (>= (rng-start (first (car es))) limit)) (values '() es)]
+      ;; Half in and half out: nothing here writes such a pair, and there is no
+      ;; order that makes both come true, so it is dropped rather than written
+      ;; over its neighbour.
+      [(and limit (> (rng-end (first (car es))) limit)) (gather (cdr es) limit)]
+      [else
+       (define e (car es))
+       (define-values (kids rest) (gather (cdr es) (rng-end (first e))))
+       (define-values (sibs left) (gather rest limit))
+       (values (cons (list (first e) (second e) kids) sibs) left)]))
+  (define-values (trees rest) (gather sorted #f))
+  trees)
+
+;; The text one edit produces, with everything inside it already applied.
+(define (render-edit text t)
+  (define body (second t))
+  (define kids (third t))
+  (cond
+    ;; A rewrite of its own: it says what its range now reads, so an edit that
+    ;; was inside it has nothing left to change. Dropping it costs a pass and
+    ;; not the edit -- the base is the program as it now reads, so the next
+    ;; look reports the difference again.
+    [(string? body) body]
+    [else
+     (apply string-append
+            (for/list ([item (in-list body)])
+              (if (string? item)
+                  item
+                  (copy-with-edits text item
+                                   (for/list ([k (in-list kids)]
+                                              #:when (encloses? item (first k)))
+                                     k)))))]))
+
+;; A copied stretch of the file, with the edits that fall inside it applied.
+(define (copy-with-edits text r kids)
+  (for/fold ([s (substring text (rng-start r) (rng-end r))])
+            ([k (in-list (sort kids > #:key (lambda (k) (rng-start (first k)))))])
+    (string-append (substring s 0 (- (rng-start (first k)) (rng-start r)))
+                   (render-edit text k)
+                   (substring s (- (rng-end (first k)) (rng-start r))))))
+
+;; Outermost edits, from the end backwards so earlier offsets stay valid.
+(define (splice-nested text edits)
+  (for/fold ([s text])
+            ([t (in-list (sort (nest-edits edits) >
+                               #:key (lambda (t) (rng-start (edit-tree-range t)))))])
+    (define r (edit-tree-range t))
+    (string-append (substring s 0 (rng-start r))
+                   (render-edit text t)
+                   (substring s (rng-end r)))))
 
 ;; ------------------------------------------------------------------- driver
 
