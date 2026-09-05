@@ -43,6 +43,7 @@ export:
   current_default_font
   pair
   deck_to_pdf
+  shown_slides
   picts_to_pptx
   pict_to_png
   media_lookup
@@ -69,8 +70,14 @@ fun to_rkt_list_of_lists(v):
 
 // ---------------------------------------------------------------- composition
 
-fun slide_canvas(~width: w, ~height: h, ~background: bg = rt.#{white}, & elems):
-  rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, & elems)
+// The slides a show actually shows: a slide the editor was told to skip stays
+// in the deck and is passed over here.
+fun shown_slides(slides):
+  rt.#{shown-picts}(to_rkt_list(slides))
+
+fun slide_canvas(~width: w, ~height: h, ~background: bg = rt.#{white},
+                 ~hidden: hidden = #false, & elems):
+  rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, ~#{hidden?}: hidden, & elems)
 
 fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
   rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~nudge: to_rkt_list(nudge))

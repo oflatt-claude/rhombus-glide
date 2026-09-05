@@ -86,7 +86,8 @@
     (define w (pict-width p)) (define h (pict-height p))
     (define pg (pict->page p w h))
     (items->slide-state i w h (display-page-items pg)
-                        #:background (display-page-background pg))))
+                        #:background (display-page-background pg)
+                        #:hidden? (display-page-hidden? pg))))
 
 (define (deck-slide-states pptx-path #:workdir [workdir #f])
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
@@ -601,6 +602,16 @@
                                  (max 1.0 (slide-state-width bs))
                                  #:group-children
                                  (deck-group-children deck-ir (slide-state-index ds))))
+         ;; Hidden in the editor, or shown again: the slide's own property, and
+         ;; the only edit that leaves everything on it untouched.
+         (define hiding
+           (let ([was (slide-state-hidden? bs)] [now (slide-state-hidden? ds)])
+             (if (eq? (and was #t) (and now #t))
+                 '()
+                 (list (sync-action
+                        (if (eq? (and was #t) (and (slide-state-hidden? ps) #t))
+                            'hidden-slide 'conflict)
+                        (format "slide ~a" index) index (list (and now #t)) #f)))))
          (define bg
            (let ([was (slide-state-background bs)] [now (slide-state-background ds)])
              (if (equal? was now)
@@ -620,7 +631,7 @@
                              " so it is a different slide rather than an edited one")
                             (length (slide-state-elements bs)))
                     #f))
-             (append as bg))]
+             (append as bg hiding))]
         [else (list (sync-action 'conflict (format "slide ~a" index) index
                                  '(slide-missing) #f))])))
    ;; Dragging slides about in the navigator changes their order and nothing
@@ -675,7 +686,7 @@
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
 ;; shape in the editor puts it on top, which is where the last argument draws.
-(struct slide-site (scope insert-at indent def-start def-end background width height)
+(struct slide-site (scope insert-at indent def-start def-end background width height hidden)
   #:transparent)
 (struct rng (start end) #:transparent)
 
@@ -986,7 +997,8 @@
                                     (add1 shut)
                                     (canvas-paint-site (sixth l))
                                     (canvas-size-site (sixth l) '#:width 'slide-width)
-                                    (canvas-size-site (sixth l) '#:height 'slide-height))))))))
+                                    (canvas-size-site (sixth l) '#:height 'slide-height)
+                                    (canvas-flag-site (sixth l) '#:hidden 'hidden))))))))
 
 ;; Where the canvas states its background, which is always somewhere: the
 ;; emitter writes one whether the slide had a background of its own or not.
@@ -1007,6 +1019,23 @@
 (define (single-symbol g)
   (define t (single-term g))
   (and t (symbol? (syntax-e* t)) (syntax-e* t)))
+
+;; Whether the canvas says the slide is skipped. Stated, it is rewritten; not
+;; stated, it is added -- the same rule as any other argument.
+(define (canvas-flag-site parens kw property)
+  (define stx (parens-kw-group parens kw))
+  (if stx
+      (style-site property (literal-range (single-term stx) boolean?) #f #f kw #f)
+      (style-site property #f #f (kw-append-at parens) kw #f)))
+
+;; Where a new argument goes in an argument list already in hand: after the
+;; last keyword argument there is.
+(define (kw-append-at parens)
+  (and parens
+       (for/fold ([best #f]) ([g (in-list (cdr (syntax-e parens)))])
+         (if (rhombus-kw-name g)
+             (let ([e (group-end g)]) (if (and e (> e (or best 0))) e best))
+             best))))
 
 (define (canvas-paint-site parens)
   (define stx (parens-kw-group parens '#:background))
@@ -2347,6 +2376,27 @@
           (for ([e (in-list (remove-duplicates resolved))])
             (edit! (car e) (num->source (cdr e))))
           (set! applied (cons a applied))])]
+      ;; Hidden, or shown again. The canvas says so where it says everything
+      ;; else about the slide.
+      [(hidden-slide)
+       (define ss (slide-site-for a))
+       (define hit (and ss (slide-site-hidden ss)))
+       (define want (first (sync-action-detail a)))
+       (cond
+         [(not hit)
+          (set! skipped (cons (cons a "no `slide_canvas` to say it on") skipped))]
+         [(and (style-site-range hit)
+               (edit! (style-site-range hit) (if want "#true" "#false")))
+          (set! applied (cons a applied))]
+         [(and (style-site-insert-at hit) want)
+          (define at (style-site-insert-at hit))
+          (edit! (rng at at)
+                 (format "~a~~hidden: #true" (argument-comma (current-source-text) at)))
+          (set! applied (cons a applied))]
+         ;; Nothing there and nothing wanted is nothing to do.
+         [(not want) (set! applied (cons a applied))]
+         [else
+          (set! skipped (cons (cons a "the canvas does not state it as a literal") skipped))])]
       ;; The slide's own paint, which the canvas states.
       [(repainted)
        (define ss (slide-site-for a))

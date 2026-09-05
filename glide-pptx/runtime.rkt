@@ -7,7 +7,8 @@
 (require racket/treelist racket/class racket/list racket/math racket/string racket/promise
          racket/draw pict
          "ir.rkt" "geometry.rkt" "tagged.rkt")
-(provide ;; composition
+(provide shown-picts
+         ;; composition
          (struct-out placed) at slide-canvas pin-placed placed-position
          ;; structure carried on the pict, for export
          (all-from-out "tagged.rkt")
@@ -733,7 +734,12 @@
      (pin-over base (- cx (/ (pict-width r) 2.0)) (- cy (/ (pict-height r) 2.0)) r)]))
 
 ;; A whole slide: a background of the given size with elements pinned on top.
+;; `hidden?` is PowerPoint's Hide Slide and Keynote's Skip Slide: the slide
+;; stays in the deck and is passed over in the show. It is written to the file
+;; and read back from it, so hiding a slide in the editor is an edit like any
+;; other rather than something the next regeneration undoes.
 (define (slide-canvas #:width w #:height h #:background [bg (solid-fill white)]
+                      #:hidden? [hidden? #f]
                       . args)
   ;; A list argument is spliced, so a slide can be built with `for List` or
   ;; `for/list` without an `apply`. Generated code never does this; hand-written
@@ -758,7 +764,7 @@
                   (send dc set-brush old) (send dc set-pen oldp))
                 w h)]))
   (with-desc (for/fold ([acc base]) ([pl (in-list placeds)]) (pin-placed acc pl))
-             (slide-desc w h bg placeds)))
+             (slide-desc w h bg placeds hidden?)))
 
 ;; ------------------------------------- text description used by emitted code
 
@@ -826,7 +832,16 @@
                            subdir))
   (lambda (name) (build-path root name)))
 
-(define (picts->pdf picts path #:width w #:height h)
+;; A slide the editor was told to skip is skipped here too: the PDF and the
+;; slideshow are the show, and `~hidden:` is what a program says to keep a
+;; slide in the deck and out of it. The deck itself keeps them, marked.
+(define (shown-picts picts)
+  (for/list ([p (in-list picts)]
+             #:unless (let ([d (pict-desc p)]) (and (slide-desc? d) (slide-desc-hidden? d))))
+    p))
+
+(define (picts->pdf picts0 path #:width w #:height h)
+  (define picts (shown-picts picts0))
   (define dc (parameterize ([current-ps-setup (make-slide-ps-setup)])
                (new pdf-dc% [interactive #f] [use-paper-bbox #f] [as-eps #f]
                     [output path] [width w] [height h])))

@@ -435,4 +435,4 @@
   (define dc (new record-dc% [width width] [height height]))
   (send dc set-smoothing 'smoothed)
   (draw-proc dc)
-  (display-page width height #f (datum->items (send dc get-recorded-datum))))
+  (display-page width height #f (datum->items (send dc get-recorded-datum)) #f))

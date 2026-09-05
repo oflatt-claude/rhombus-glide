@@ -160,7 +160,9 @@
           (define k (add1 (random 5 rng)))
           (slide (add1 i) (format "Slide ~a" (add1 i)) w h
                  (solid-fill (a-color rng)) '()
-                 (for/list ([j (in-range k)]) (an-element rng (+ 100 (* 10 i) j) w h))))
+                 (for/list ([j (in-range k)]) (an-element rng (+ 100 (* 10 i) j) w h))
+                 ;; A slide the show skips, now and then.
+                 (chance rng 0.15)))
         #f "fuzz"))
 
 ;; What a round trip may not change: everything the merge can see, compared the
@@ -237,6 +239,13 @@
                [(not other) (list (format "~s vanished" (car p)))]
                [else (for/list ([d (in-list (ir-diffs (cdr p) other))])
                        (format "~s: ~a" (car p) d))]))))
-        (check-equal? (append diffs ir-differences) '() (format "seed ~a" seed))))))
+        ;; And what a slide says about itself.
+        (define slide-differences
+          (append*
+           (for/list ([x (in-list (deck-slides d))] [y (in-list (deck-slides back))])
+             (for/list ([w (in-list (slide-diffs x y))])
+               (format "slide ~a: ~a" (slide-index x) w)))))
+        (check-equal? (append diffs ir-differences slide-differences) '()
+                      (format "seed ~a" seed))))))
 
 (printf "fuzz done; ~a rounds from seed ~a\n" ROUNDS BASE-SEED)

@@ -98,7 +98,9 @@
 ;; is a fill for the whole page, kept apart from the items because a slide
 ;; background is not a shape -- treating it as one makes it look like an extra
 ;; element to anything comparing two decks.
-(struct display-page (width height background items) #:prefab)
+;; `hidden?` is a slide the editor was told to skip. It changes nothing about
+;; what is drawn -- it is what the file says about showing it.
+(struct display-page (width height background items hidden?) #:prefab)
 
 (define (item-box i)
   (cond

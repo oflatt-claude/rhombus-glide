@@ -112,6 +112,7 @@ with the reason, because no single correction produces it.
 | bring a shape to the front | the `at` forms, moved into the new order |
 | delete a slide | its `def`, its comment, its `export:` entry and its `all_slides` entry |
 | repaint a slide's background | the canvas's `~background:` |
+| hide a slide | the canvas's `~hidden:`, and the show passes over it |
 | change a font, a size, boldness, italics | that `run`'s own arguments, whichever run it is |
 | make a line dashed, or put an arrowhead on it | `~dash:`/`~head:`/`~tail:`, added to the stroke |
 | give a shape a fill or an outline it had none of | a whole `~fill:`/`~line:` argument, added |

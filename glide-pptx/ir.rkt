@@ -121,7 +121,10 @@
 ;; `inherited` holds the shapes the slide layout and master paint behind the
 ;; slide. They are kept separate from `elements` because they are not the
 ;; slide's to edit -- and a write-back must not turn them into slide shapes.
-(struct slide (index name width height background inherited elements) #:prefab)
+;; `hidden?` is PowerPoint's Hide Slide and Keynote's Skip Slide: the slide is
+;; in the deck and not in the show. It is the slide's own property, not a
+;; property of anything on it, so nothing else can carry it.
+(struct slide (index name width height background inherited elements hidden?) #:prefab)
 (struct deck (width height slides media-dir source) #:prefab)
 
 ;; ------------------------------------------------------------------ walking

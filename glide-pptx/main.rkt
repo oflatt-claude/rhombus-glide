@@ -344,13 +344,15 @@
    (list (slide 1 "" 960.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
                 (list (label 2 "Title" 80.0 180.0 800.0 90.0 "A new slideshow" 54.0 #t)
                       (label 3 "Subtitle" 80.0 290.0 800.0 50.0
-                             "Drag things about in the editor; the code follows" 24.0 #f)))
+                             "Drag things about in the editor; the code follows" 24.0 #f))
+                #f)
          (slide 2 "" 960.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
                 (list (label 4 "Heading" 80.0 80.0 800.0 60.0 "A slide" 40.0 #t)
                       (rect 5 "Box" 80.0 200.0 240.0 160.0 (rgba 68 114 196 1.0))
                       (label 6 "Note" 360.0 200.0 520.0 160.0
                              "Every shape here has a tag, and a tag is what an edit is written back to."
-                             24.0 #f))))
+                             24.0 #f))
+                #f))
    #f 'new))
 
 (define (cmd-new args)

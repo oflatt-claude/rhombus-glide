@@ -14,6 +14,7 @@
 import:
   slideshow open
   lib("slideshow/main.rkt") as ss
+  lib("glide-pptx/runtime.rhm") as glide
 
 export:
   show_slides
@@ -27,5 +28,5 @@ fun show_slides(slides, ~width: w :: Real, ~height: h :: Real):
   // A deck's aspect ratio and slideshow's are close but not equal, so the slide
   // fits rather than being cropped.
   def zoom = math.min(page_w / w, page_h / h)
-  for (s in slides):
+  for (s in glide.shown_slides(slides)):
     slide(~layout: #'center, Pict.from_handle(s).scale(zoom).pad(-m))

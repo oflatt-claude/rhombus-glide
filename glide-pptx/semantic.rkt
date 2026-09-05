@@ -28,7 +28,8 @@
     [(slide-desc? d)
      (display-page width height
                    (ir-fill->fill (slide-desc-background d))
-                   (slide-items d p width height))]
+                   (slide-items d p width height)
+                   (slide-desc-hidden? d))]
     [else (pict->display-page (lambda (dc) (draw-pict p dc 0 0)) width height)]))
 
 ;; ------------------------------------------------------------------ colors

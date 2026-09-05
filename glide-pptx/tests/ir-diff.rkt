@@ -9,7 +9,13 @@
 ;; than turning up in someone's talk.
 (require racket/list racket/format racket/string racket/path
          glide-pptx/ir glide-pptx/sync-state)
-(provide element-diffs ir-diffs)
+(provide element-diffs ir-diffs slide-diffs)
+
+;; A slide's own properties, which belong to no element on it.
+(define (slide-diffs a b)
+  (filter values
+          (list (and (not (eq? (and (slide-hidden? a) #t) (and (slide-hidden? b) #t)))
+                     (format "hidden ~s -> ~s" (slide-hidden? a) (slide-hidden? b))))))
 
 ;; ------------------------------------------------------- field for field
 
