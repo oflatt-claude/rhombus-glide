@@ -2325,6 +2325,16 @@
          [(not (andmap values sites))
           (set! skipped (cons (cons a "not all of the shapes it holds are tagged `at` forms here")
                               skipped))]
+         ;; Two of them under one name are one `at` form here, and writing it
+         ;; twice is a program no later sync can read. Duplicating a shape
+         ;; inside a group is how an editor makes that: the copy is given the
+         ;; name it was copied from.
+         [(not (= (length (remove-duplicates sites eq?)) (length sites)))
+          (set! skipped
+                (cons (cons a (string-append "two of the shapes it holds have one name,"
+                                             " so the program cannot tell them apart"
+                                             " -- rename one of them in the editor"))
+                      skipped))]
          [(not (for/and ([st (in-list sites)])
                  (and (at-site-whole st) (at-site-x st) (at-site-y st))))
           (set! skipped (cons (cons a "one of the shapes it holds has a computed position")
