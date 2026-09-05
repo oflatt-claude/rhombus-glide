@@ -27,6 +27,7 @@
   (apply slide-canvas
          #:width (slide-width s) #:height (slide-height s)
          #:background (or (slide-background s) (solid-fill white))
+         #:hidden? (slide-hidden? s)
          (for/list ([e (in-list (slide-all-elements s))]) (element->placed e))))
 
 (define (element->placed e)

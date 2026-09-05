@@ -485,7 +485,8 @@
   (parameterize ([current-image-register register-fill!])
   (values
    (format (string-append xml-decl
-                          "<p:sld xmlns:a=\"~a\" xmlns:r=\"~a\" xmlns:p=\"~a\">"
+                          ;; `show="0"` is a slide the editor was told to skip.
+                          "<p:sld xmlns:a=\"~a\" xmlns:r=\"~a\" xmlns:p=\"~a\"~a>"
                           "<p:cSld>~a<p:spTree>"
                           "<p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/>"
                           "<p:nvPr/></p:nvGrpSpPr>"
@@ -495,6 +496,7 @@
                           "~a</p:spTree></p:cSld>"
                           "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>")
            NS-A NS-R NS-P
+           (if (display-page-hidden? page) " show=\"0\"" "")
            ;; A page-wide fill is the slide's background, which is where
            ;; PowerPoint keeps it -- not an extra shape on the slide.
            (let ([bg (display-page-background page)])

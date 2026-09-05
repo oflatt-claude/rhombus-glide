@@ -77,6 +77,34 @@
   (check-equal? reported '()
                 (format "~a: the representation survived the round trip" name)))
 
+;; --------------------------------------------------- a slide the show skips
+
+;; Hide Slide in PowerPoint, Skip Slide in Keynote: the slide stays in the deck
+;; and is passed over in the show. It is `show="0"` in the file, and a program
+;; says `~hidden: #true` -- which the PDF and the slideshow honour, since those
+;; are the show.
+(let ()
+  (define dir (build-path work "hidden-slide"))
+  (make-directory* dir)
+  (define (a-slide i hidden?)
+    (slide i "" 720.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
+           (list (shape (+ 1 i) (format "Box~a" i) (bbox 60.0 60.0 120.0 80.0 0.0 #f #f)
+                        (preset-geom "rect" '()) (solid-fill (rgba 200 100 50 1.0)) #f #f))
+           hidden?))
+  (define d (deck 720.0 540.0 (list (a-slide 1 #f) (a-slide 2 #t)) #f "test"))
+  (define out (build-path dir "d.pptx"))
+  (picts->pptx (deck->picts d) out #:width 720.0 #:height 540.0)
+  (check-regexp-match #rx"show=\"0\"" (deck-part out "ppt/slides/slide2.xml"))
+
+  (check-false (regexp-match? #rx"show=\"0\"" (deck-part out "ppt/slides/slide1.xml"))
+               "and says nothing about the one that is not")
+  (define back (pptx->deck out #:workdir (build-path dir "u")))
+  (check-equal? (map slide-hidden? (deck-slides back)) '(#f #t)
+                "and it comes back that way")
+  ;; The show skips it; the deck keeps it.
+  (check-equal? (length (shown-picts (deck->picts back))) 1 "one slide to show")
+  (check-equal? (length (deck-slides back)) 2 "two in the deck"))
+
 ;; ------------------------------------------- a path that declares no space
 
 ;; `<a:path>` may leave out `w` and `h`, and several real decks do: the
@@ -97,7 +125,8 @@
                                                  (list 'line (cons 21600 21600))
                                                  (list 'line (cons 10800 5400))))
                                      21600 21600)
-                                    (solid-fill (rgba 200 100 50 1.0)) #f #f))))
+                                    (solid-fill (rgba 200 100 50 1.0)) #f #f))
+                       #f))
           #f "test"))
   (define stated (build-path dir "stated.pptx"))
   (picts->pptx (deck->picts d) stated #:width 720.0 #:height 540.0)

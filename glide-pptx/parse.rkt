@@ -121,7 +121,10 @@
          ;; A name that came from our own alt text is exempt: several shapes
          ;; carrying one tag were drawn by one `at`, and renaming them apart
          ;; would turn one code site into three.
-         (uniquify-names elements (hash-keys tag-names))))
+         (uniquify-names elements (hash-keys tag-names))
+         ;; `show="0"` is a slide the editor was told to skip. Absent means
+         ;; shown, which is all but a handful of slides.
+         (equal? "0" (attr slide-x 'show))))
 
 (define (uniquify-names elements [exempt '()])
   (define seen (make-hash))

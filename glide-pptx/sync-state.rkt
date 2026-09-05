@@ -22,7 +22,7 @@
 ;; `background` is the slide's own paint, as a colour, "gradient", or #f for
 ;; none: the canvas states it, and an editor can change it without touching a
 ;; single element.
-(struct slide-state (index width height elements background) #:prefab)
+(struct slide-state (index width height elements background hidden?) #:prefab)
 
 (define GEOM-EPSILON 0.05)
 
@@ -53,12 +53,14 @@
 
 ;; ------------------------------------------------------- from a display list
 
-(define (items->slide-state index width height items #:background [bg #f])
+(define (items->slide-state index width height items #:background [bg #f]
+                            #:hidden? [hidden? #f])
   (slide-state index width height
                (for/list ([i (in-list items)] [z (in-naturals)]
                           #:when (semantic-item? i))
                  (item->el-state i z))
-               (paint-name (fill-style bg))))
+               (paint-name (fill-style bg))
+               (and hidden? #t)))
 
 ;; A paint as one value: the colour it is, "gradient" for one, or #f for none.
 ;; Opacity rides along, since a background is written as one argument.
@@ -376,7 +378,8 @@
                        acc))
            (set! z (add1 z))])))
     (slide-state (slide-index s) (slide-width s) (slide-height s) (reverse acc)
-                 (paint-name (ir-fill-style (slide-background s))))))
+                 (paint-name (ir-fill-style (slide-background s)))
+                 (and (slide-hidden? s) #t))))
 
 ;; The same as `fill-style`, for a deck's own fills.
 (define (ir-fill-style f)
@@ -462,7 +465,7 @@
 ;; Bumped whenever a state carries something it did not before. A base written
 ;; by an older version is not read: resyncing from scratch is what it says to do
 ;; when the base is unusable, and it is cheap.
-(define BASE-VERSION 2)
+(define BASE-VERSION 3)
 
 (define (write-sync-base path states #:program program #:deck deck)
   ;; The base sits in a scratch directory, which need not exist yet.

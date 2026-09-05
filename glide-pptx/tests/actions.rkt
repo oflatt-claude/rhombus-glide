@@ -313,6 +313,11 @@
         #:writes #rx"all_slides = [[]slide_2, slide_1[]]")
 (action "delete a slide" 'applied (lambda () (delete-slide! deck 2))
         #:writes #rx"^(?!.*slide_2).*$")
+;; Hide Slide, which PowerPoint and Keynote both offer and which used to be
+;; undone by the next regeneration.
+(action "hide a slide" 'applied
+        (lambda () (edit-part! deck "ppt/slides/slide2.xml" #px"<p:sld " "<p:sld show=\"0\" "))
+        #:writes #rx"~hidden: #true")
 ;; Design -> Slide Size. A deck has one size however many slides it has, so
 ;; this is one edit on every canvas that states it.
 (action "resize the deck" 'applied
