@@ -11,7 +11,7 @@
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
          glide-pptx/export glide-pptx/sync-state glide-pptx/sync
-         "ir-diff.rkt")
+         "ir-diff.rkt" "deck-edit.rkt")
 
 (define-runtime-path decks-dir "decks")
 
@@ -76,6 +76,59 @@
   (for ([r (in-list (reverse reported))]) (printf "    ~a\n" r))
   (check-equal? reported '()
                 (format "~a: the representation survived the round trip" name)))
+
+;; ------------------------------------------- a path that declares no space
+
+;; `<a:path>` may leave out `w` and `h`, and several real decks do: the
+;; coordinates are then EMU inside the shape rather than a space to stretch
+;; onto it. The reader used to floor that to a space of 1, which is a stretch
+;; by the shape's own size -- a twelve-thousand-fold blow-up, drawn far off the
+;; slide. Nothing caught it: our own writer always states a space, so a round
+;; trip never produced one to read.
+(let ()
+  (define dir (build-path work "pathless-space"))
+  (make-directory* dir)
+  (define d
+    (deck 720.0 540.0
+          (list (slide 1 "" 720.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
+                       (list (shape 2 "Path" (bbox 100.0 100.0 200.0 100.0 0.0 #f #f)
+                                    (custom-geom
+                                     (list (list (list 'move (cons 0 0))
+                                                 (list 'line (cons 21600 21600))
+                                                 (list 'line (cons 10800 5400))))
+                                     21600 21600)
+                                    (solid-fill (rgba 200 100 50 1.0)) #f #f))))
+          #f "test"))
+  (define stated (build-path dir "stated.pptx"))
+  (picts->pptx (deck->picts d) stated #:width 720.0 #:height 540.0)
+  ;; The same deck with the space left out, which is what those decks write.
+  (define bare (build-path dir "bare.pptx"))
+  (copy-file stated bare #t)
+  (check-true (edit-slide-part! bare 1 #px"<a:path w=\"[0-9]+\" h=\"[0-9]+\">" "<a:path>")
+              "the path space was left out")
+
+  (define (path-facts pptx into)
+    (define back (pptx->deck pptx #:workdir (build-path dir into)))
+    (define e (first (slide-elements (first (deck-slides back)))))
+    (define g (shape-geom e))
+    (define b (element-bbox e))
+    (list (custom-geom-w g) (custom-geom-h g) (bbox-w b) (bbox-h b)
+          (for/list ([cmd (in-list (first (custom-geom-paths g)))])
+            (map (lambda (pt) (if (pair? pt) (cons (car pt) (cdr pt)) pt)) (cdr cmd)))))
+
+  (define bare-facts (path-facts bare "a"))
+  (check-equal? (first bare-facts) 0 "which the reader keeps as no space")
+  ;; Written out again, the path has to land inside the shape it belongs to
+  ;; rather than thousands of times outside it.
+  (define again (build-path dir "again.pptx"))
+  (define back (pptx->deck bare #:workdir (build-path dir "b")))
+  (picts->pptx (deck->picts back) again #:width 720.0 #:height 540.0)
+  (define facts (path-facts again "c"))
+  (define space-w (first facts))
+  (define widest (for*/fold ([m 0]) ([cmd (in-list (fifth facts))] [pt (in-list cmd)])
+                   (max m (car pt))))
+  (check-true (<= widest (* 1.01 space-w))
+              (format "the path stays inside its shape: ~a of ~a" widest space-w)))
 
 ;; ------------------------------------------------- a picture used as a fill
 

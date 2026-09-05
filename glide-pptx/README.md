@@ -102,6 +102,7 @@ with the reason, because no single correction produces it.
 | delete a shape | its `at` form removed |
 | paste a slide in | a `def slide_N` and an entry in `all_slides` |
 | move a group | the group, as one element |
+| leave the editor on a slide | it is put back there when the deck is written again |
 | move all of a repeated tag together | one correction on the one `at` |
 | recolour a shape, its outline, or its text | the `hex("...")` where it stands |
 | change an outline's width | the stroke's `~width:` |
@@ -710,9 +711,17 @@ as 1.0 for as long as the writer had been clamping percentages: the generator
 was producing those spacings and nothing was looking at them. It now compares
 every property a merge can see, and then the element itself field by field --
 the geometry and its adjustments, a gradient's stops and angle, a pattern's
-colours, the pattern a dash spells out, what a group holds, a table's shape.
-Two bugs fell out within minutes: the clamp, and `sysDash` read back as a plain
-dash so that every short dash came home long.
+colours, the pattern a dash spells out, where each point of a custom path sits
+across its shape, what a group holds, a table's shape. Three bugs fell out: the
+clamp; `sysDash` read back as a plain dash, so every short dash came home long;
+and a `<a:path>` that declares no space -- which means its coordinates are EMU
+inside the shape, and which several real decks write -- floored to a space of 1
+and so stretched by the shape's own size, twelve thousand times too large.
+
+That last one a round trip cannot find on its own: our writer always states a
+space, so reading one back never exercises the case. `structural.rkt` builds
+the file that does -- a deck exported, its `w` and `h` stripped, read again --
+and checks the path lands inside the shape it belongs to.
 
 ## Where this is going
 
