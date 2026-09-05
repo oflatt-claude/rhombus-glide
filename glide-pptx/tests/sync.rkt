@@ -1948,6 +1948,37 @@
   (check-equal? (file->string program) was "the program was left as it was")
   (check-true (pair? (program-picts program)) "and it still reads")
 
+  ;; The program is the source and there is one copy of it, so a save is a
+  ;; rename rather than a write into the file it is replacing -- and the mode
+  ;; comes across with it, since a temporary file is made with whatever the
+  ;; umask says.
+  (reset!)
+  (file-or-directory-permissions program #o600)
+  (check-true (drag-in-deck! deck 1 "Box" (* 12700.0 300.0) (* 12700.0 200.0)) "dragged")
+  (define r-mode (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r-mode)) '(moved) "and written")
+  (check-equal? (file-or-directory-permissions program 'bits) #o600
+                "the program is still the user's alone")
+
+  ;; Two copies made in one save. The editor gives each the name it was copied
+  ;; from, and the program's own names are read before any of the save is
+  ;; written -- so both were told the name was free and both took it, which is
+  ;; two `at` forms under one tag and a program no later sync can read.
+  (reset!)
+  (check-true (and (duplicate-in-deck! deck 1 "Box") #t) "it was duplicated")
+  (check-true (and (duplicate-in-deck! deck 1 "Box") #t) "and duplicated again")
+  (define r-copies (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r-copies)) '(added added)
+                "both were written")
+  (define src-copies (file->string program))
+  (define tags
+    (map (lambda (m) (cadr m))
+         (regexp-match* #rx"~tag: \"([^\"]*)\"" src-copies #:match-select values)))
+  (check-equal? (length (remove-duplicates tags)) (length tags)
+                (format "every tag is its own: ~s" tags))
+  (check-true (pair? (program-picts program)) "and the program still reads")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
   ;; A comment above an `at` describes that `at`, so it moves with it. One
   ;; standing on its own between two of them describes neither, and moving the
   ;; forms around it would leave it describing whatever ended up beneath it --

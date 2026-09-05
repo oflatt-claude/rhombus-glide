@@ -1902,6 +1902,11 @@
   ;; cannot see. Every caller checks the result.
   (define (edit! r text)
     (and r (begin (set! edits (cons (list r text) edits)) #t)))
+  ;; Names this save has already given out, per slide. The sites were read
+  ;; before any of it was written, so without this two shapes copied in one
+  ;; save are both told the name is free and both take it -- and two `at` forms
+  ;; under one tag is a program no later sync can read.
+  (define claimed (make-hash))
   ;; Added slides are done together: several can land at one position, and two
   ;; insertions at one offset would fight.
   (define added-slides
@@ -2070,15 +2075,18 @@
           ;; two `at` forms under one tag is a program a sync cannot read -- so
           ;; a name already spoken for in this slide gets a fresh one.
           (define taken
-            (for/list ([st (in-list all-sites)]
-                       #:when (equal? (slide-site-scope ss) (at-site-scope st)))
-              (at-site-tag st)))
+            (append (for/list ([st (in-list all-sites)]
+                               #:when (equal? (slide-site-scope ss) (at-site-scope st)))
+                      (at-site-tag st))
+                    (hash-ref claimed (slide-site-scope ss) '())))
           (define named
             (let loop ([n 2] [name (element-name e)])
               (cond
                 [(not (member name taken)) (element-with-name e name)]
                 [(> n 99) (element-with-name e name)]
                 [else (loop (add1 n) (format "~a (~a)" (element-name e) n))])))
+          (hash-update! claimed (slide-site-scope ss)
+                        (lambda (ns) (cons (element-name named) ns)) '())
           (define src-text
             (rhombus-element-source
              named (slide-site-indent ss)
@@ -2956,7 +2964,9 @@
 (define (splice-file! path edits)
   (define text (file->string path))
   (define out (splice-nested text edits))
-  (call-with-output-file path #:exists 'replace (lambda (o) (write-string out o))))
+  ;; Renamed over the program rather than written into it: a save that stops
+  ;; halfway would leave half a program where the whole one was.
+  (write-atomically path (lambda (o) (write-string out o))))
 
 ;; What an edit replaces its range with: either a string, or a plan -- strings
 ;; and ranges of the file to copy, in the order they should read.

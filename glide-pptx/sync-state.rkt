@@ -10,7 +10,7 @@
          items->slide-state deck->slide-states
          el-geometry el-geometry-same? el-signature signature-distance
          nth-property
-         write-sync-base read-sync-base)
+         write-sync-base read-sync-base write-atomically)
 
 ;; `kind` is 'shape, 'text, 'picture or 'other. `text` is the element's visible
 ;; text, flattened, which is the strongest signal for recognizing it again.
@@ -467,11 +467,32 @@
 ;; when the base is unusable, and it is cheap.
 (define BASE-VERSION 3)
 
+;; Written beside the file and renamed over it, rather than into it. A write
+;; that stops halfway -- a Ctrl-C, a full disk, the machine going down -- leaves
+;; half a file where the whole one was, and for the program there is nothing to
+;; recover it from: it is the source, and there is one copy. A rename either
+;; happened or it did not.
+;;
+;; The mode goes across with it. The temporary file is made with whatever the
+;; umask says, so a program someone had kept to themselves would come back
+;; readable by everyone.
+(define (write-atomically path write!)
+  (define mode (and (file-exists? path)
+                    (with-handlers ([exn:fail? (lambda (_e) #f)])
+                      (file-or-directory-permissions path 'bits))))
+  (call-with-atomic-output-file path (lambda (o _tmp) (write! o)))
+  (when mode
+    (with-handlers ([exn:fail? (lambda (_e) (void))])
+      (file-or-directory-permissions path mode))))
+
 (define (write-sync-base path states #:program program #:deck deck)
   ;; The base sits in a scratch directory, which need not exist yet.
   (let ([dir (path-only (path->complete-path path))])
     (when dir (make-directory* dir)))
-  (call-with-output-file path #:exists 'replace
+  ;; Renamed over the old one rather than written into it: a base half written
+  ;; is a base that cannot be read, and reading it is what tells an edit from a
+  ;; deck that states what it always stated.
+  (write-atomically path
     (lambda (o)
       (fprintf o ";; glide-pptx sync base -- what the program and the deck agreed\n")
       (fprintf o ";; on at the last sync. Edit at your own risk; delete to resync\n")
