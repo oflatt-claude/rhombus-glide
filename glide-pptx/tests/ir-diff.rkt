@@ -8,8 +8,8 @@
 ;; value that does not survive being written out fails where it happens rather
 ;; than turning up in someone's talk.
 (require racket/list racket/format racket/string racket/path
-         glide-pptx/ir glide-pptx/sync-state)
-(provide element-diffs ir-diffs slide-diffs)
+         glide-pptx/ir glide-pptx/sync glide-pptx/sync-state)
+(provide element-diffs ir-diffs slide-diffs disagreements)
 
 ;; A slide's own properties, which belong to no element on it.
 (define (slide-diffs a b)
@@ -253,3 +253,60 @@
     [(and (list? x) (list? y) (= (length x) (length y)))
      (andmap same-value? x y)]
     [else (equal? x y)]))
+
+;; ------------------------------- a program against the deck beside it
+
+;; What the program renders to, against what the editor holds. Syncing again
+;; and hearing nothing says much the same thing -- the base a merge writes is
+;; the program as it then reads, so a refused change is reported again next
+;; pass rather than forgotten. What this adds is *which* property differs, and
+;; a view the merge does not have: an element the program carries under a tag
+;; the deck does not know is a disagreement here and no action there.
+;; A property is named either by a symbol or, for a run or paragraph after the
+;; first, by a list of the two -- so these are looked up with `assoc`.
+;;
+;; A property one side does not carry at all is not a disagreement: a deck
+;; states only what the shape says for itself, and our own writer leaves out
+;; what is already the default. What matters is the two of them naming the same
+;; property and giving it different values.
+(define (style-disagreements tag a b)
+  (for/list ([kv (in-list (el-state-style a))]
+             #:when (assoc (car kv) (el-state-style b))
+             #:unless (equal? (cdr kv) (cdr (assoc (car kv) (el-state-style b)))))
+    (format "~s ~a: ~s vs ~s" tag (car kv) (cdr kv)
+            (cdr (assoc (car kv) (el-state-style b))))))
+
+(define (element-disagreements a b)
+  (define tag (el-state-tag a))
+  (append
+   (if (el-geometry-same? a b)
+       '()
+       (list (format "~s box: ~s vs ~s" tag (el-geometry a) (el-geometry b))))
+   (if (equal? (el-state-text a) (el-state-text b))
+       '()
+       (list (format "~s text: ~s vs ~s" tag (el-state-text a) (el-state-text b))))
+   (style-disagreements tag a b)))
+
+(define (slide-disagreements p d)
+  (define by-tag
+    (for/hash ([e (in-list (slide-state-elements d))] #:when (el-state-tag e))
+      (values (el-state-tag e) e)))
+  (append
+   (if (equal? (slide-state-background p) (slide-state-background d))
+       '()
+       (list (format "slide ~a background: ~s vs ~s" (slide-state-index p)
+                     (slide-state-background p) (slide-state-background d))))
+   (append*
+    (for/list ([e (in-list (slide-state-elements p))] #:when (el-state-tag e))
+      (define o (hash-ref by-tag (el-state-tag e) #f))
+      (if o
+          (element-disagreements e o)
+          (list (format "~s is in the program and not the deck" (el-state-tag e))))))))
+
+(define (disagreements program deck)
+  (define ps (program-slide-states program))
+  (define ds (deck-slide-states deck))
+  (if (= (length ps) (length ds))
+      (append* (for/list ([p (in-list ps)] [d (in-list ds)]) (slide-disagreements p d)))
+      (list (format "~a slides in the program, ~a in the deck" (length ps) (length ds)))))
+
