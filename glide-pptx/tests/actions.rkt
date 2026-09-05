@@ -12,6 +12,7 @@
 ;; and never in the fifth place, which is *silence*: the deck and the program
 ;; disagreeing with nobody told. A property that stops being compared fails
 ;; here rather than going quiet.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          glide-pptx/sync glide-pptx/sync-state
          "editor-actions.rkt")
@@ -81,3 +82,8 @@
         (string-join (for/list ([k (in-list '(applied reported noted ignored))])
                        (format "~a ~a" (hash-ref counts k 0) k))
                      ", "))
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

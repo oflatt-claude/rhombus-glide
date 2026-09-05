@@ -7,6 +7,7 @@
 ;; The check every scenario ends with is the same one: sync again and nothing
 ;; is reported. That means the program, rendered, is the deck the editor holds
 ;; -- which is the whole point of the merge.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/format racket/path
          glide-pptx/sync glide-pptx/sync-state glide-pptx/export
          "deck-edit.rkt" "ir-diff.rkt")
@@ -261,3 +262,8 @@
           #:applied #f #:refused 0)
 
 (printf "scenario tests done; artifacts under ~a\n" work)
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

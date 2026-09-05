@@ -1,5 +1,6 @@
 #lang racket/base
 ;; Unit tests for the pieces that are pure functions of the file format.
+(require rackunit/log)
 (require rackunit racket/list racket/class racket/draw
          racket/file racket/string racket/runtime-path
          glide-pptx/units glide-pptx/xml-util glide-pptx/ir
@@ -423,3 +424,8 @@
                    f #:exists 'replace #:mode 'binary)
   (check-true (xml-element? (read-xexpr-file f)) "a part opening with a BOM reads")
   (delete-file f))
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

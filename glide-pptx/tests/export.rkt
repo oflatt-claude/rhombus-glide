@@ -8,6 +8,7 @@
 ;; The fixture decks are used as a convenient source of realistic picts; this
 ;; test is about the *export* path, so the reference is our own render rather
 ;; than LibreOffice's reading of the original deck.
+(require rackunit/log)
 (require rackunit racket/list racket/file racket/path racket/format
          racket/runtime-path pict
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
@@ -237,3 +238,8 @@
   (check-regexp-match #rx"<p:bg><p:bgPr><a:solidFill><a:srgbClr val=\"FFFFFF\"/>"
                       (slide-part out2 1)
                       "a white background is written, not left to a default"))
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

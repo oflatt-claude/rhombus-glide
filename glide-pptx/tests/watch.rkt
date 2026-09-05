@@ -3,6 +3,7 @@
 ;;
 ;; Timing-sensitive by nature, so the assertions are about the state the loop
 ;; settles into rather than about how quickly it gets there.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/port
          racket/system racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-rhombus glide-pptx/export
@@ -324,3 +325,8 @@
   (check-false (directory-exists? scratch) "and the scratch went with it")
   (check-true (file-exists? program) "the program is what is left")
   (kill-thread runner))
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))

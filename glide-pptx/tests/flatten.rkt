@@ -7,6 +7,7 @@
 ;; because the only thing the source names is the enclosing `at`. One picture
 ;; instead means one object per `at`, and dragging it lands on numbers that
 ;; exist.
+(require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/system
          racket/runtime-path pict
          glide-pptx/ir glide-pptx/export glide-pptx/semantic glide-pptx/runtime
@@ -106,3 +107,8 @@
               (format "onto the `at` numbers:\n~a" (file->string program))))
 
 (printf "flatten tests done\n")
+
+;; A check that fails prints and carries on, which is what makes a whole run
+;; readable -- and leaves the exit code saying nothing. Run on its own, this
+;; says so; required by a suite, the suite says it once at the end.
+(module+ main (void (test-log #:display? #t #:exit? #t)))
