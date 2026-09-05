@@ -82,9 +82,16 @@
 ;; located in a part: the tag is in the alt text and the shape is the element
 ;; that contains it.
 ;; A group is draggable too, so `grpSp` belongs here with `sp` and `pic`.
+;; The element itself, and not the group it is in: a shape's name sits in its
+;; header, before any child, so a match that has crossed another opening tag on
+;; the way to the name started too far out. Without that the first member of a
+;; group matches from `<p:grpSp>` to `</p:sp>`, and moving that chunk cuts the
+;; group in half. A group that holds shapes still does not match -- the closing
+;; side cannot count either -- and callers that need one say so themselves.
 (define (shape-rx tag)
   (pregexp (format (string-append
-                    "(?s:<p:(?:sp|pic|grpSp)>(?:(?!</p:(?:sp|pic|grpSp)>).)*?"
+                    "(?s:<p:(?:sp|pic|grpSp)>"
+                    "(?:(?!<p:(?:sp|pic|grpSp)>)(?!</p:(?:sp|pic|grpSp)>).)*?"
                     "(?:descr=\"glide-pptx:~a\"|name=\"~a\")"
                     "(?:(?!</p:(?:sp|pic|grpSp)>).)*?</p:(?:sp|pic|grpSp)>)")
                    (regexp-quote tag) (regexp-quote tag))))
