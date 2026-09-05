@@ -10,7 +10,9 @@
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-rhombus
          glide-pptx/export
          glide-pptx/sync glide-pptx/sync-state glide-pptx/runtime "deck-edit.rkt"
-         (only-in glide-pptx/watch program-picts))
+         (only-in glide-pptx/watch program-picts)
+         ;; What `raco glide --new` writes.
+         (only-in glide-pptx/main starter-deck))
 
 ;; Loads a program's slides the way the watcher does, in a fresh namespace, so
 ;; a re-export after a patch sees the patched source.
@@ -851,6 +853,33 @@
   (check-regexp-match #rx"~font: \"Courier New\"" src4)
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
+
+;; ------------------------------------------------------- a slideshow to start from
+
+;; `raco glide --new` writes one, through the same emitter that writes an
+;; imported deck -- so what it writes is what glide reads back, rather than a
+;; second idiom to keep in step. The check is that: write it, open it, and the
+;; two agree with nothing to merge.
+(let ()
+  (define dir (build-path work "new"))
+  (make-directory* dir)
+  (define program (build-path dir "new.rhm"))
+  (define deck (build-path dir "new.pptx"))
+  (write-rhombus-deck (starter-deck) program #:source-name #f)
+  (define base (base-path-for program))
+  (when (file-exists? base) (delete-file base))
+  (define picts (load-program-picts program))
+  (check-equal? (length picts) 2 "two slides to start from")
+  ;; No size given, which is what the watcher does: the deck takes the
+  ;; program's own.
+  (picts->pptx picts deck)
+  (void (sync-once program deck #:workdir (build-path dir "w")))
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir (build-path dir "w")
+                                                #:atomic? #t))
+                '()
+                "and the two of them agree from the start")
+  (check-regexp-match #rx"~tag: \"Title\"" (file->string program)
+                      "with tags, which is what an edit is written back to"))
 
 ;; --------------------------------------------------------- the size of the deck
 

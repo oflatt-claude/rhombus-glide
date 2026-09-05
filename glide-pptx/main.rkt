@@ -7,7 +7,7 @@
          "export.rkt" "sync.rkt" "watch.rkt"
          (only-in "semantic.rkt" current-flatten-opaque?)
          (only-in "parse.rkt" current-allow-unsupported?))
-(provide main)
+(provide main starter-deck)
 
 ;; A deck has to be unzipped to be read, and the images are read from there
 ;; while the slides draw -- so there is a scratch directory for the length of a
