@@ -117,10 +117,12 @@
         #:writes #rx"~caps: #'all")
 (act "superscript" 'applied (after "Line" #px"sz=\"2400\"" "sz=\"2400\" baseline=\"30000\"")
         #:writes #rx"~baseline: 0[.]3")
-;; The second run of a line, which is one word of it.
-;; The second run of a line, which is one word of it: it is the only one at
-;; 18pt, so that is what names it.
-(act "bold one word" 'applied (after "Line" #px"sz=\"1800\"" "sz=\"1800\" b=\"1\"")
+;; The second run of a line, which is one word of it. Its size is what names
+;; it -- and not one that is bold already: once the line above has been set to
+;; the default size there are two runs at 18pt, and bolding one of them twice
+;; writes the attribute twice, which is a deck no editor would save.
+(act "bold one word" 'applied
+        (after "Line" #px"sz=\"1800\"(?![^>]*b=\")" "sz=\"1800\" b=\"1\"")
         #:writes #rx"run[(]\"world\", ~font: \"Arial\", ~size: 18[.]0, ~bold: #true[)]")
 
 ;; ------------------------------------------------------- Home: the paragraph

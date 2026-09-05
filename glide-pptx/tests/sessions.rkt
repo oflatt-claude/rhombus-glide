@@ -10,15 +10,19 @@
 ;; program that drifts a little on every round until nothing matches.
 ;;
 ;; So: deal the catalogue out at random, apply what still applies, save, and
-;; insist on the three things that must hold however the cards fall.
+;; insist on what must hold however the cards fall.
 ;;
 ;;   * A save lands whole or not at all. If anything was refused, nothing was
 ;;     written and the program is byte for byte what it was.
 ;;   * A save that lands settles: another one straight after has nothing to say.
 ;;   * And then the program and the deck agree, property by property.
+;;   * A comment written in the source between saves is still there. The
+;;     program is theirs as well, and the merge writes into it, not over it.
 ;;
 ;; Seeded, so a failure names the round that produced it: re-run one with
-;; `GLIDE_SESSION_SEED=<n> GLIDE_SESSION_COUNT=1`.
+;; `GLIDE_SESSION_SEED=<n> GLIDE_SESSION_COUNT=1`. `GLIDE_SESSION_ROUNDS` and
+;; `GLIDE_SESSION_EDITS` make the sessions longer and the handfuls bigger,
+;; which is what a sweep looking for a combination wants.
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          glide-pptx/sync glide-pptx/sync-state glide-pptx/export
          "editor-actions.rkt" "ir-diff.rkt")
@@ -26,6 +30,9 @@
 (define SESSIONS (string->number (or (getenv "GLIDE_SESSION_COUNT") "6")))
 (define ROUNDS (string->number (or (getenv "GLIDE_SESSION_ROUNDS") "5")))
 (define BASE-SEED (string->number (or (getenv "GLIDE_SESSION_SEED") "20260905")))
+;; How many at once. Three is a save; more is a sweep looking for the pair that
+;; does not get on.
+(define EDITS (string->number (or (getenv "GLIDE_SESSION_EDITS") "3")))
 
 (define work (build-path (find-system-path 'temp-dir) "glide-pptx-sessions"))
 (delete-directory/files work #:must-exist? #f)
@@ -38,6 +45,22 @@
 (define (value-disagreements program deck)
   (filter (lambda (d) (not (regexp-match? #rx"is in the program and not the deck" d)))
           (disagreements program deck)))
+
+;; The person has the program open too -- it is the source, and they are working
+;; in it while the deck is open beside them. A comment they wrote is not
+;; something a deck can say, so nothing the merge does may eat it: it is written
+;; above an `at` form, which is where a comment is most in the way, and it has
+;; to be there afterwards.
+(define (comment-the-program! program n)
+  (define text (file->string program))
+  (define m (regexp-match-positions #px"(?m:^  at[(])" text))
+  (and m
+       (let ([at (caar m)])
+         (display-to-file (string-append (substring text 0 at)
+                                         (format "  // theirs ~a\n" n)
+                                         (substring text at))
+                          program #:exists 'replace)
+         #t)))
 
 (define all (catalogue))
 (define applied-total 0)
@@ -61,10 +84,16 @@
   ;; an editor -- applying one twice writes an attribute twice, which is a deck
   ;; nobody could make.
   (define deck-of-cards (shuffle all))
+  ;; A refusal that cannot be got past -- a group holding two shapes under one
+  ;; name is one -- would refuse every save after it as well, and the rest of
+  ;; the session would go by with nothing tried. The person would give up on
+  ;; that edit and let the program win, so after the second refusal in a row
+  ;; that is what happens here: the deck is written again from the program.
+  (define refused-in-a-row 0)
   (let round-loop ([n 0] [cards deck-of-cards])
     (when (and (< n ROUNDS) (pair? cards))
       ;; A handful, in the order they were dealt.
-      (define k (min (length cards) (add1 (random 3 rng))))
+      (define k (min (length cards) (add1 (random EDITS rng))))
       (define picked (take cards k))
       (define rest-cards (drop cards k))
       (define landed
@@ -74,6 +103,8 @@
           a))
       (define names (map act-spec-name landed))
       (set! rounds-total (add1 rounds-total))
+      ;; Now and then they leave a note in the source as well.
+      (define commented? (and (zero? (random 3 rng)) (comment-the-program! program n)))
       (with-check-info (['session seed] ['round n] ['edits names])
         (unless (null? landed)
           (define before (file->string program))
@@ -88,11 +119,17 @@
               ;; Refused: nothing written, and the program untouched.
               [(pair? (sync-report-skipped r))
                (set! refused-total (add1 refused-total))
+               (set! refused-in-a-row (add1 refused-in-a-row))
                (check-equal? (sync-report-applied r) '()
                              (format "seed ~a round ~a: a refused save wrote something" seed n))
                (check-equal? (file->string program) before
-                             (format "seed ~a round ~a: a refused save changed the program" seed n))]
+                             (format "seed ~a round ~a: a refused save changed the program" seed n))
+               (when (>= refused-in-a-row 2)
+                 (picts->pptx (load-program-picts program) deck)
+                 (void (sync-once program deck #:workdir workdir))
+                 (set! refused-in-a-row 0))]
               [else
+               (set! refused-in-a-row 0)
                (set! applied-total (+ applied-total (length (sync-report-applied r))))
                ;; Settles: a pass can leave the drawing order for the next.
                ;; A note is not an edit and does not go away: it says the deck
@@ -123,6 +160,16 @@
                  (check-equal? (value-disagreements program deck) '()
                                (format "seed ~a round ~a ~s: the program and the deck disagree"
                                        seed n names)))
+               ;; What they wrote is still theirs -- unless the form it sat
+               ;; above is gone, which takes the comment about it along.
+               (when (and commented?
+                          (not (ormap (lambda (x) (memq (sync-action-kind x)
+                                                        '(removed removed-slide)))
+                                      (sync-report-applied r))))
+                 (check-regexp-match (regexp (format "// theirs ~a" n))
+                                     (file->string program)
+                                     (format "seed ~a round ~a ~s: the merge ate a comment"
+                                             seed n names)))
                ;; Then the loop writes the deck again, which is what it does
                ;; after a merge -- and what gives a copy made in the editor the
                ;; name the program gave it.
