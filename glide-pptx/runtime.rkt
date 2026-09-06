@@ -7,7 +7,7 @@
 (require racket/treelist racket/class racket/list racket/math racket/string racket/promise
          racket/draw pict
          "ir.rkt" "geometry.rkt" "tagged.rkt")
-(provide shown-picts
+(provide shown-picts canvas-transition canvas-hidden?
          ;; composition
          (struct-out placed) at slide-canvas pin-placed placed-position
          ;; structure carried on the pict, for export
@@ -837,9 +837,15 @@
 ;; into one slide per click. Nothing here draws differently for it -- it is
 ;; there so that an edit to a shape on one frame can be written to the same
 ;; shape on the others.
+;; `transition` is how the show moves to this slide -- `'up`, `'down`, `'left`,
+;; `'right`, `'swirl` or `'none`. It belongs to the show rather than to the
+;; deck: nothing is drawn differently for it and it is not written back to the
+;; .pptx, because the transitions a deck can hold and the ones `staged.rhm`
+;; performs are not the same set.
 (define (slide-canvas #:width w #:height h #:background [bg (solid-fill white)]
                       #:hidden? [hidden? #f]
                       #:build [build #f]
+                      #:transition [transition #f]
                       . args)
   ;; A list argument is spliced, so a slide can be built with `for List` or
   ;; `for/list` without an `apply`. Generated code never does this; hand-written
@@ -864,7 +870,7 @@
                   (send dc set-brush old) (send dc set-pen oldp))
                 w h)]))
   (with-desc (for/fold ([acc base]) ([pl (in-list placeds)]) (pin-placed acc pl))
-             (slide-desc w h bg placeds hidden?)))
+             (slide-desc w h bg placeds hidden? transition)))
 
 ;; ------------------------------------- text description used by emitted code
 
@@ -935,6 +941,19 @@
 ;; A slide the editor was told to skip is skipped here too: the PDF and the
 ;; slideshow are the show, and `~hidden:` is what a program says to keep a
 ;; slide in the deck and out of it. The deck itself keeps them, marked.
+;; The transition a canvas asked for, or #f. A slide that has been wrapped --
+;; animated, faded, combined with another -- is no longer the canvas, and this
+;; says nothing about it: the show falls back to its own default.
+(define (canvas-transition p)
+  (define d (and (pict? p) (pict-desc p)))
+  (and (slide-desc? d) (slide-desc-transition d)))
+
+;; Whether a canvas said `~hidden:`. Answers #f for anything that is not a
+;; canvas, which includes a slide that has been given stages.
+(define (canvas-hidden? p)
+  (define d (pict-desc p))
+  (and (slide-desc? d) (slide-desc-hidden? d) #t))
+
 (define (shown-picts picts)
   (for/list ([p (in-list picts)]
              #:unless (let ([d (pict-desc p)]) (and (slide-desc? d) (slide-desc-hidden? d))))

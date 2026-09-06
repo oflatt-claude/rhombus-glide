@@ -32,7 +32,7 @@
 ;; ------------------------------------------------------------- descriptors
 
 ;; `placeds` are the runtime's `placed` structs, in paint order.
-(struct slide-desc (width height background placeds hidden?) #:transparent)
+(struct slide-desc (width height background placeds hidden? transition) #:transparent)
 (struct shape-desc (width height geom fill line body flip-h? flip-v? effect) #:transparent)
 (struct text-desc (width height body) #:transparent)
 (struct image-desc (width height src crop line flip-h? flip-v? opacity effect) #:transparent)

@@ -323,7 +323,30 @@
   (check-equal? (map sync-action-kind (sync-report-applied added)) '(added) "it was added")
   (check-equal? (length (regexp-match* #rx"~tag: \"Added\"" (file->string program))) 2
                 "to that frame and the one after it, and not to the one before")
-  (check-true (pair? (load-program-picts program)) "and the program still reads"))
+  (check-true (pair? (load-program-picts program)) "and the program still reads")
+
+  ;; A canvas may say more than the emitter wrote -- `~transition:` is written
+  ;; by hand, since a deck's transitions and the ones the show performs are not
+  ;; the same set. The merge reads a canvas by keyword, so another keyword is
+  ;; nothing to it; this is here because that is easy to say and easy to get
+  ;; wrong, and what breaks is every edit to the slide underneath it.
+  (let ()
+    (define before (file->string program))
+    (define with-transition
+      (regexp-replace #rx"slide_canvas[(]\n  ~width:" before
+                      "slide_canvas(\n  ~transition: #'left, ~width:"))
+    (check-not-equal? with-transition before "a canvas was given a transition")
+    (call-with-output-file program #:exists 'replace
+      (lambda (o) (write-string with-transition o)))
+    (picts->pptx (load-program-picts program) out)
+    (void (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+    (check-true (and (drag-in-deck! out 1 "Isosceles Triangle 4" 111.0 222.0) #t)
+                "and a shape on it was dragged")
+    (define r (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+    (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                  "the drag was written")
+    (check-regexp-match #rx"~transition: #'left" (file->string program)
+                        "and the transition is still there")))
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

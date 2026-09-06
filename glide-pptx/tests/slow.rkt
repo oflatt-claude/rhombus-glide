@@ -7,7 +7,11 @@
 ;; coverage modules say so and pass.
 (require rackunit/log)
 (require "export.rkt" "roundtrip.rkt" "fidelity.rkt" "elements.rkt" "render.rkt" "roundtrip-look.rkt"
-         "coverage.rkt" "corpus.rkt")
+         "coverage.rkt" "corpus.rkt"
+         ;; Here rather than in the fast suite because it runs whole Rhombus
+         ;; programs, and compiling one of those costs more than everything the
+         ;; fast suite does.
+         "staged.rkt")
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
