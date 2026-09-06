@@ -427,7 +427,10 @@
            "<p:nvPr/></p:nvGraphicFramePr>"
            "<p:xfrm><a:off x=\"~a\" y=\"~a\"/><a:ext cx=\"~a\" cy=\"~a\"/></p:xfrm>"
            "<a:graphic><a:graphicData uri=\"~a\">"
-           "<a:tbl><a:tblPr firstRow=\"1\" bandRow=\"1\"/><a:tblGrid>~a</a:tblGrid>~a</a:tbl>"
+                      ;; No style and no banding flags. The style a table named was
+           ;; resolved when it was read and each cell carries its own paint
+           ;; now, so asking for a style here paints it a second time.
+           "<a:tbl><a:tblPr/><a:tblGrid>~a</a:tblGrid>~a</a:tbl>"
            "</a:graphicData></a:graphic></p:graphicFrame>")
           id (xml-escape (or (it:table-tag i) (format "Table ~a" id)))
           (if (it:table-tag i)
