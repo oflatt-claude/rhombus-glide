@@ -431,8 +431,20 @@
     (log! "  clearing ~a, left from a session that did not finish\n"
           (file-name-from-path scratch))
     (delete-directory/files scratch #:must-exist? #f))
-  (regenerate! program pptx adapter #:width w #:height h)
-  (sync-once program pptx #:workdir workdir)
+  ;; The deck lives in the scratch, and clearing it took the folder with it.
+  ;; Put it back before writing the deck into it -- and put back whatever else
+  ;; the caller pointed the deck at, since `--out` can name anywhere.
+  (make-directory* scratch)
+  (let ([deck-dir (path-only (path->complete-path pptx))])
+    (when deck-dir (make-directory* deck-dir)))
+  (define wrote-deck? (regenerate! program pptx adapter #:width w #:height h))
+  ;; A deck that was never written is not one to merge from: reading it raises,
+  ;; and the session dies on the way up rather than waiting for the program to
+  ;; be fixed. Which is what watching is for.
+  (cond
+    [(and wrote-deck? (file-exists? pptx)) (sync-once program pptx #:workdir workdir)]
+    [else
+     (log! "  no deck to merge from yet; fix the program and save it\n")])
   ;; `stuck?` means the editor holds edits that were refused. Until they are
   ;; resolved the deck is not regenerated -- otherwise the obvious next move,
   ;; fixing the program as the message asks, would overwrite the very slides the

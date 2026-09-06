@@ -384,6 +384,67 @@
   (check-regexp-match #rx"fun slide_1[(][)]: slide_canvas" (file->string program)
                       "and the program still reads as it was written"))
 
+;; A slide the program does not lay out is left alone, and does not stop the
+;; rest of the save.
+;;
+;; A talk gives a slide stages, and what the name then holds is an animated pict
+;; built from canvases rather than a canvas. Its elements cannot be read back --
+;; the drawing is flattened -- and there would be no one `at` form to write them
+;; to. Compared as an empty slide, every shape the deck draws on it looked newly
+;; added: on one real talk, nine hundred refusals, and since a save lands whole
+;; or not at all, nothing else could be merged either. Not even dragging the
+;; slides about in the navigator, which touches no element at all.
+(let ()
+  (define dir (build-path work "staged-slide"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define out (build-path dir "out.pptx"))
+  (define (canvas x tag)
+    (format (string-append "slide_canvas(\n  ~~width: slide_width, ~~height: slide_height,\n"
+                           "  at(~a, 100.0, ~~tag: ~s,\n"
+                           "     shape_pict(~~width: 80.0, ~~height: 40.0, ~~fill: hex(\"4472C4\"))))")
+            x tag))
+  (call-with-output-file program #:exists 'replace
+    (lambda (o)
+      (write-string
+       (string-join
+        (list "#lang rhombus/and_meta"
+              "import:"
+              "  lib(\"glide-pptx/runtime.rhm\") open"
+              "  pict as pc"
+              ""
+              "export: slide_width slide_height all_slides slide_1 slide_2 slide_3"
+              ""
+              "def slide_width = 720.0"
+              "def slide_height = 540.0"
+              ""
+              (format "def slide_1 = ~a" (canvas "50.0" "One"))
+              "// The slide with stages: an animated pict, not a canvas."
+              "def slide_2:"
+              (format "  def base = pc.Pict.from_handle(~a)" (canvas "150.0" "Two"))
+              "  pc.switch(base, pc.animate(fun (t): base.alpha(t)))"
+              (format "def slide_3 = ~a" (canvas "250.0" "Three"))
+              ""
+              "def all_slides = [slide_1, slide_2, slide_3]")
+        "\n")
+       o)))
+  (check-equal? (length (load-program-picts program)) 3 "three slides, one of them staged")
+  (picts->pptx (load-program-picts program) out)
+  (void (sync-once program out #:workdir (build-path dir "w")))
+
+  ;; Drag the last slide to the front, as one does in the navigator.
+  (check-true (and (move-slide! out 3 1) #t) "the slides were reordered in the deck")
+  (define r (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+  (define kinds (map sync-action-kind (sync-report-actions r)))
+  (check-false (memq 'added kinds)
+               (format "nothing on the staged slide is reported as newly drawn: ~a" kinds))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(reordered)
+                "and the reorder is written")
+  (check-equal? (sync-report-skipped r) '() "with nothing refused")
+  (check-regexp-match #rx"all_slides = \\[slide_3, slide_1, slide_2\\]" (file->string program)
+                      "the program's slide list says the deck's order")
+  (check-true (pair? (load-program-picts program)) "and the program still reads"))
+
 ;; A program says which typefaces it needs, and stops if they are not there.
 ;;
 ;; racket/draw substitutes silently, and a substitute is not cosmetic: the

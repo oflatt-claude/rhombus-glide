@@ -333,9 +333,21 @@
   (picts->pptx (load-program-picts program) deck #:width 720.0 #:height 540.0)
   (void (sync-once program deck #:workdir (build-path dir "w")))
   (check-true (drag-in-deck! deck 1 "Box" 300.0 300.0))
-  (check-exn #rx"appears 2 times"
-             (lambda () (sync-once program deck #:workdir (build-path dir "w")))
-             "two sites under one tag is refused"))
+  ;; The drag could land on either `at`, so it is not written. It is this
+  ;; slide's edits that are refused, not the file's: a program can have one
+  ;; hand-written slide the merge cannot read -- a slide given stages holds
+  ;; several canvases and repeats their tags -- and everything else about the
+  ;; deck, its order included, still merges.
+  (define r (sync-once program deck #:workdir (build-path dir "w")))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '()
+                "an edit that could land on either `at` form is not written")
+  (check-equal? (length (sync-report-skipped r)) 1 "it is refused, and said so")
+  (check-regexp-match #rx"appears 2 times" (cdr (first (sync-report-skipped r)))
+                      "with what is wrong with the program")
+  (check-regexp-match #rx"different tags" (cdr (first (sync-report-skipped r)))
+                      "and what to do about it")
+  (check-regexp-match #rx"at[(]200[.]0, 60[.]0" (file->string program)
+                      "the program is untouched"))
 
 ;; ------------------------------------------ shapes added and deleted in the editor
 
