@@ -1948,6 +1948,32 @@
   (check-equal? (file->string program) was "the program was left as it was")
   (check-true (pair? (program-picts program)) "and it still reads")
 
+  ;; A shape the editor drew and did not name. LibreOffice writes `name=""` for
+  ;; one, and nameless it has no key: the merge could not name it, could not
+  ;; find it, and could not write it, so it refused -- and with a save landing
+  ;; whole or not at all, that refusal took everything else in the save with it.
+  (reset!)
+  (check-true (and (edit-slide-part!
+                    deck 1 #px"</p:spTree>"
+                    (string-append
+                     "<p:sp><p:nvSpPr><p:cNvPr id=\"99\" name=\"\"/><p:cNvSpPr/><p:nvPr/>"
+                     "</p:nvSpPr><p:spPr><a:xfrm><a:off x=\"3000000\" y=\"2000000\"/>"
+                     "<a:ext cx=\"1000000\" cy=\"800000\"/></a:xfrm>"
+                     "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>"
+                     "<a:solidFill><a:srgbClr val=\"70AD47\"/></a:solidFill></p:spPr>"
+                     "<p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>"
+                     "</p:spTree>"))
+                   #t)
+              "a nameless shape was drawn in the editor")
+  (define r-nameless (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-skipped r-nameless) '() "the save went through")
+  (check-equal? (map sync-action-kind (sync-report-applied r-nameless)) '(added)
+                "and it was added")
+  (check-regexp-match #rx"~tag: \"Shape 99\"" (file->string program)
+                      "under a name made from the id the file gave it")
+  (check-true (pair? (program-picts program)) "and the program still reads")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
   ;; The program is the source and there is one copy of it, so a save is a
   ;; rename rather than a write into the file it is replacing -- and the mode
   ;; comes across with it, since a temporary file is made with whatever the

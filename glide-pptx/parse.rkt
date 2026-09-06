@@ -241,15 +241,22 @@
 (define (uniquify-names elements [exempt '()])
   (define seen (make-hash))
   (define (rename e)
-    (define name (element-name e))
+    ;; A shape with no name at all gets one. Editors write them: draw a
+    ;; rectangle in LibreOffice and it is saved as `name=""`. Nameless, it has
+    ;; no key -- the merge sees an element it cannot name, cannot find, and
+    ;; cannot write, and a save that would otherwise have gone through is
+    ;; refused whole. The id is the file's own and unique within the slide.
+    (define name
+      (let ([n (element-name e)])
+        (if (string=? "" n) (format "Shape ~a" (element-id e)) n)))
+    (define e* (if (equal? name (element-name e)) e (element-with-name e name)))
     (define renamed
       (cond
-        [(string=? "" name) e]
-        [(member name exempt) e]
+        [(member name exempt) e*]
         [else
          (define n (hash-ref seen name 0))
          (hash-set! seen name (add1 n))
-         (if (zero? n) e (element-with-name e (format "~a (~a)" name (add1 n))))]))
+         (if (zero? n) e* (element-with-name e* (format "~a (~a)" name (add1 n))))]))
     (if (group? renamed)
         (group (element-id renamed) (element-name renamed) (element-bbox renamed)
                (map rename (group-children renamed)) (group-child-bbox renamed))
