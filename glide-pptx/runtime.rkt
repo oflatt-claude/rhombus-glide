@@ -28,6 +28,7 @@
          ;; like `slide-width` that generated code defines itself.
          solid-fill gradient-fill image-fill pattern-fill
          stroke make-stroke line-end
+         shadow make-shadow
          rgba rgb black white
          insets default-insets
          bullet no-bullet
@@ -582,10 +583,55 @@
 ;; An auto-shape: geometry filled and outlined, with its text on top.
 ;; `#:shape` names a preset directly, which is the common case; `#:geom` takes a
 ;; full geometry when adjustment values or a custom path are involved.
+;; A shadow as a program writes one: the colour first, since its alpha is what
+;; makes it a shadow, then how far it falls and in which direction.
+(define (make-shadow color #:blur [blur 0.0] #:distance [dist 0.0] #:direction [dir 0.0])
+  (shadow blur dist dir (if (rgba? color) color black)))
+
+;; Where a shadow falls: `direction` is degrees clockwise from east, which is
+;; how DrawingML says it and how the page's y runs.
+(define (shadow-offset sh)
+  (define r (* (shadow-dir sh) (/ pi 180.0)))
+  (values (* (shadow-dist sh) (cos r)) (* (shadow-dist sh) (sin r))))
+
+;; Drawn as a stack of copies, growing and fading outwards, because there is no
+;; blur here to ask for: a soft edge is several soft edges at once. Six steps is
+;; enough that the bands do not read as bands at the sizes decks use.
+(define SHADOW-STEPS 6)
+
+(define (draw-shadow! dc sh path-for w h dx dy)
+  (define-values (ox oy) (shadow-offset sh))
+  (define c (shadow-color sh))
+  (define blur (shadow-blur sh))
+  (define old-pen (send dc get-pen))
+  (define old-brush (send dc get-brush))
+  (define old-alpha (send dc get-alpha))
+  (define steps (if (> blur 0.01) SHADOW-STEPS 1))
+  (for ([i (in-range steps)])
+    ;; The innermost copy is the shape itself; the rest grow by a share of the
+    ;; blur, each fainter than the last.
+    (define grow (if (= steps 1) 0.0 (* blur (/ (exact->inexact i) (sub1 steps)))))
+    (define a (* (rgba-a c) (/ 1.0 steps)))
+    (send dc set-alpha (max 0.0 (min 1.0 a)))
+    (send dc set-pen (new pen% [style 'transparent]))
+    (send dc set-brush (new brush% [color (rgba->color c)]))
+    (define sx (if (> w 0.01) (/ (+ w (* 2 grow)) w) 1.0))
+    (define sy (if (> h 0.01) (/ (+ h (* 2 grow)) h) 1.0))
+    (define p (path-for))
+    (define t (send dc get-transformation))
+    (send dc translate (+ dx ox (- grow)) (+ dy oy (- grow)))
+    (send dc scale sx sy)
+    (send dc draw-path p 0 0)
+    (send dc set-transformation t))
+  (send dc set-alpha old-alpha)
+  (send dc set-pen old-pen)
+  (send dc set-brush old-brush))
+
 (define (shape-pict #:width w #:height h
                     #:shape [shape-name #f]
                     #:geom [geom0 #f]
                     #:fill [fill0 #f] #:line [line #f] #:body [body #f]
+                    #:shadow [sh #f]
                     #:flip-h? [fh #f] #:flip-v? [fv #f])
   (define geom (or geom0 (preset-geom (or shape-name "rect") '())))
   (define fill (if (rgba? fill0) (solid-fill fill0) fill0))
@@ -600,6 +646,17 @@
                              #:flip-h? fh #:flip-v? fv)))
           (define old-pen (send dc get-pen))
           (define old-brush (send dc get-brush))
+          ;; Behind the shape, and only where the shape is filled: an outline
+          ;; with nothing inside it casts no shadow from its middle.
+          (when (and (shadow? sh) closed?)
+            (draw-shadow! dc sh
+                          (lambda ()
+                            (if (custom-geom? geom)
+                                (custom-path geom w h #:flip-h? fh #:flip-v? fv)
+                                (preset-path (preset-geom-name geom) w h
+                                             (preset-geom-adjust geom)
+                                             #:flip-h? fh #:flip-v? fv)))
+                          w h dx dy))
           (cond
             [(image-fill? fill)
              ;; An image fill is the bitmap clipped to the shape's outline.
@@ -632,13 +689,24 @@
   (with-desc (if (and body (not (text-body-empty? body)))
                  (lt-superimpose base (text-pict body w h))
                  base)
-             (shape-desc w h geom fill line body fh fv)))
+             (shape-desc w h geom fill line body fh fv sh)))
 
 ;; A bitmap stretched into w x h, optionally cropped by fractions of its source.
 (define (image-pict src w h #:crop [crop #f] #:flip-h? [fh #f] #:flip-v? [fv #f]
-                    #:line [line #f] #:opacity [opacity 1.0])
-  (with-desc (image-pict* src w h crop fh fv line opacity)
-             (image-desc w h src crop line fh fv opacity)))
+                    #:line [line #f] #:opacity [opacity 1.0] #:shadow [sh #f])
+  (with-desc (let ([base (image-pict* src w h crop fh fv line opacity)])
+               (if (shadow? sh)
+                   (dc (lambda (dc dx dy)
+                         (draw-shadow! dc sh
+                                       (lambda ()
+                                         (let ([p (new dc-path%)])
+                                           (send p rectangle 0 0 w h)
+                                           p))
+                                       w h dx dy)
+                         (draw-pict base dc dx dy))
+                       w h)
+                   base))
+             (image-desc w h src crop line fh fv opacity sh)))
 
 (define (image-pict* src w h crop fh fv line opacity)
   (define bm (load-bitmap src))

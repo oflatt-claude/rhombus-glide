@@ -116,6 +116,29 @@
                                   (color-value (pattern-fill-bg f))))]
     [else (v:bool #f)]))
 
+;; The shadow a shape casts, as an argument. Its colour carries the alpha that
+;; makes it a shadow rather than a black copy of the shape, so the colour comes
+;; first the way a stroke's does.
+(define (shadow-args e)
+  (define sh (element-effect e))
+  (if (shadow? sh)
+      (list (kwv "shadow"
+                 (v:call "make-shadow"
+                         (append (list (color-value (shadow-color sh)))
+                                 (if (zero? (shadow-blur sh)) '()
+                                     (list (kwv "blur" (v:num (shadow-blur sh)))))
+                                 (if (zero? (shadow-dist sh)) '()
+                                     (list (kwv "distance" (v:num (shadow-dist sh)))))
+                                 (if (zero? (shadow-dir sh)) '()
+                                     (list (kwv "direction" (v:num (shadow-dir sh)))))))))
+      '()))
+
+;; Whichever of the two kinds of element carries one.
+(define (element-effect e)
+  (cond [(shape? e) (shape-effect e)]
+        [(picture? e) (picture-effect e)]
+        [else #f]))
+
 (define (line-value l)
   (cond
     [(not (stroke? l)) (v:bool #f)]
@@ -276,7 +299,8 @@
                         (if (plain-rect? (shape-geom e)) '() (geom-args (shape-geom e)))
                         (if (shape-fill e) (list (kwv "fill" (fill-value (shape-fill e)))) '())
                         (if (shape-line e) (list (kwv "line" (line-value (shape-line e)))) '())
-                        (if has-text? (list (kwv "body" (body-value (shape-body e)))) '())))])]
+                        (if has-text? (list (kwv "body" (body-value (shape-body e)))) '())
+                        (shadow-args e)))])]
     [(picture? e)
      (v:call "image-pict"
              (append (list (v:call "media" (list (v:str (media-name (or (picture-src e)
@@ -289,6 +313,7 @@
                          (list (kwv "line" (line-value (picture-line e)))) '())
                      (if (< (picture-opacity e) 0.999)
                          (list (kwv "opacity" (v:num (picture-opacity e)))) '())
+                     (shadow-args e)
                      (flip-args b)))]
     [(group? e)
      (define cb (group-child-bbox e))

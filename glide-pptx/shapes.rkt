@@ -187,6 +187,23 @@
                 #:default-bbox (make-bbox 0.0 0.0 0.0 0.0)))
   b)
 
+;; The shadow a shape casts, from the first `outerShdw` in the properties given.
+;; A shape says its effects itself, or inherits them from the placeholder it
+;; fills in; the theme's effect styles are another source and not read here.
+;;
+;; `dir` is in 60000ths of a degree clockwise from east, `dist` and `blurRad`
+;; in EMU. The colour carries its own alpha, which is what makes a shadow a
+;; shadow rather than a black copy of the shape.
+(define (parse-effect cctx . props-list)
+  (for/or ([props (in-list props-list)])
+    (define lst (and props (child props 'effectLst)))
+    (define sh (and lst (child lst 'outerShdw)))
+    (and sh
+         (shadow (or (string->emu-pt (attr sh 'blurRad)) 0.0)
+                 (or (string->emu-pt (attr sh 'dist)) 0.0)
+                 (or (string->angle (attr sh 'dir)) 0.0)
+                 (or (resolve-color-child cctx sh) black)))))
+
 (define (parse-shape ctx sp)
   (define-values (id name) (shape-id-name sp))
   (define-values (type idx) (placeholder-info sp))
@@ -220,7 +237,10 @@
   (define body
     (parse-text-body tctx (child sp 'txBody) #:default-anchor 'top))
   (shape id name (resolve-box ctx sp layout-sp master-sp)
-         geom fill line (and (not (text-body-empty? body)) body)))
+         geom fill line (and (not (text-body-empty? body)) body)
+         (parse-effect cctx spPr
+                       (and layout-sp (child layout-sp 'spPr))
+                       (and master-sp (child master-sp 'spPr)))))
 
 (define (text-box? sp)
   (define c (xpath sp 'nvSpPr 'cNvSpPr))
@@ -293,7 +313,8 @@
            (effective-fill (parse-fill cctx spPr #:media (shape-ctx-media ctx)) #f)
            (effective-line (parse-line cctx spPr) #f)
            crop
-           (blip-opacity blip)))
+           (blip-opacity blip)
+           (parse-effect cctx spPr)))
 
 ;; -------------------------------------------------------------- connectors
 
@@ -310,7 +331,8 @@
          (effective-line (parse-line cctx spPr)
                          (or (line-from-style cctx (child sp 'style)) 'inherit)
                          (make-stroke black #:width 1.0))
-         #f))
+         #f
+         (parse-effect cctx spPr)))
 
 ;; ------------------------------------------------------------------ groups
 
@@ -368,7 +390,7 @@
      ((shape-ctx-warn ctx)
       (format "graphicFrame ~a: unsupported content (chart or diagram), drawn as an empty bbox"
               name))
-     (shape id name b (preset-geom "rect" '()) #f #f #f)]))
+     (shape id name b (preset-geom "rect" '()) #f #f #f #f)]))
 
 ;; How a table style paints one cell.
 ;;
