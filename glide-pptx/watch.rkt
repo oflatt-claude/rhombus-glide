@@ -359,6 +359,12 @@
         [(pair? left)
          (log! "  ! nothing was merged: ~a of these could not be written\n" (length left))
          #f]
+        ;; A pass that carried an edit onto the other frames of a build has
+        ;; left the deck behind on purpose: those frames still hold the old
+        ;; value, and looking again would read that as an edit undoing the one
+        ;; just made. The deck is written from the program as soon as this
+        ;; returns, which is what puts them back in step.
+        [(sync-report-deck-behind? r) #t]
         [(or (null? (sync-report-applied r)) (>= pass 3)) #t]
         [else (loop (add1 pass))]))))
 

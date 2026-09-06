@@ -157,7 +157,7 @@
                              (list (shape 2 "Box" (make-bbox 0.0 0.0 10.0 10.0)
                                           (preset-geom "rect" '())
                                           (solid-fill (rgb 1 2 3)) #f #f #f))
-                             #f))
+                             #f #f))
                 "/tmp" "x.pptx")]
        [again (read (open-input-string (format "~s" d)))])
   (check-equal? again d "prefab structs survive a write/read round trip"))

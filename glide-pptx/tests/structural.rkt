@@ -11,7 +11,7 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/export glide-pptx/sync-state glide-pptx/sync
+         glide-pptx/export glide-pptx/sync-state glide-pptx/sync glide-pptx/emit-rhombus
          "ir-diff.rkt" "deck-edit.rkt")
 
 (define-runtime-path decks-dir "decks")
@@ -91,7 +91,7 @@
     (slide i "" 720.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
            (list (shape (+ 1 i) (format "Box~a" i) (bbox 60.0 60.0 120.0 80.0 0.0 #f #f)
                         (preset-geom "rect" '()) (solid-fill (rgba 200 100 50 1.0)) #f #f #f))
-           hidden?))
+           hidden? #f))
   (define d (deck 720.0 540.0 (list (a-slide 1 #f) (a-slide 2 #t)) #f "test"))
   (define out (build-path dir "d.pptx"))
   (picts->pptx (deck->picts d) out #:width 720.0 #:height 540.0)
@@ -127,7 +127,7 @@
                                                  (list 'line (cons 10800 5400))))
                                      21600 21600)
                                     (solid-fill (rgba 200 100 50 1.0)) #f #f #f))
-                       #f))
+                       #f #f))
           #f "test"))
   (define stated (build-path dir "stated.pptx"))
   (picts->pptx (deck->picts d) stated #:width 720.0 #:height 540.0)
@@ -263,6 +263,67 @@
   ;; build rather than as three slides that happen to look alike.
   (check-regexp-match #rx"1 of 3" (slide-name (first (deck-slides built))))
   (check-regexp-match #rx"3 of 3" (slide-name (third (deck-slides built)))))
+
+;; An edit to one frame of a build is an edit to the build.
+;;
+;; The frames are the same shapes drawn again -- a still slide is all a program
+;; can hold -- so moving a shape on one of them and not the others is not
+;; something anyone means: the build would jump as it played. And a shape added
+;; part way through a build stays for the rest of it, which is what a build is.
+(let ()
+  (define dir (build-path work "build-edits"))
+  (make-directory* dir)
+  (define deck (build-path dir "built.pptx"))
+  (copy-file (build-path decks-dir "03-shapes.pptx") deck #t)
+  (define timing
+    (string-append
+     "<p:timing><p:tnLst><p:par><p:cTn id=\"1\" dur=\"indefinite\" restart=\"never\""
+     " nodeType=\"tmRoot\"><p:childTnLst><p:seq concurrent=\"1\" nextAc=\"seek\">"
+     "<p:cTn id=\"2\" dur=\"indefinite\" nodeType=\"mainSeq\"><p:childTnLst>"
+     (apply string-append
+            (for/list ([spid (in-list '("3" "4"))])
+              (string-append
+               "<p:par><p:cTn nodeType=\"clickEffect\"><p:childTnLst>"
+               "<p:set><p:cBhvr><p:tgtEl><p:spTgt spid=\"" spid "\"/></p:tgtEl>"
+               "<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst>"
+               "</p:cBhvr><p:to><p:strVal val=\"visible\"/></p:to></p:set>"
+               "</p:childTnLst></p:cTn></p:par>")))
+     "</p:childTnLst></p:cTn></p:seq></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>"))
+  (void (edit-slide-part! deck 1 #px"</p:cSld>" (string-append "</p:cSld>" timing)))
+  (define program (build-path dir "p.rhm"))
+  (define out (build-path dir "out.pptx"))
+  (define built
+    (parameterize ([current-build-frames? #t])
+      (pptx->deck deck #:workdir (build-path dir "u"))))
+  (write-rhombus-deck built program #:source-name "built.pptx")
+  (check-regexp-match #rx"~build:" (file->string program)
+                      "each frame says which build it belongs to")
+  (picts->pptx (load-program-picts program) out)
+  (void (sync-once program out #:workdir (build-path dir "w")))
+
+  ;; "Rectangle 1" is on every frame, since nothing brings it in.
+  (check-true (and (drag-in-deck! out 3 "Rectangle 1" 500.0 400.0) #t)
+              "a shape was dragged on the last frame")
+  (define moved (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied moved)) '(moved) "the drag was written")
+  (check-true (sync-report-deck-behind? moved)
+              "and the merge says the deck's other frames are now behind the program")
+  ;; The deck is written again from the program after a merge, which is what
+  ;; puts the frames back in step. Without it the next pass reads the frames
+  ;; the merge just moved as a drag undoing itself.
+  (picts->pptx (load-program-picts program) out)
+  (define settled (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-actions settled) '() "and then it settles")
+  (check-equal? (length (regexp-match* #rx"at[(]500[.]0, 400[.]0" (file->string program))) 3
+                "on all three frames, not just the one that was dragged")
+
+  ;; Added part way through: there for the rest of the build and not before.
+  (check-true (and (add-shape-to-deck! out 2 "Added") #t) "something was drawn on the second frame")
+  (define added (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied added)) '(added) "it was added")
+  (check-equal? (length (regexp-match* #rx"~tag: \"Added\"" (file->string program))) 2
+                "to that frame and the one after it, and not to the one before")
+  (check-true (pair? (load-program-picts program)) "and the program still reads"))
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

@@ -129,7 +129,12 @@
 ;; `hidden?` is PowerPoint's Hide Slide and Keynote's Skip Slide: the slide is
 ;; in the deck and not in the show. It is the slide's own property, not a
 ;; property of anything on it, so nothing else can carry it.
-(struct slide (index name width height background inherited elements hidden?) #:prefab)
+;; `build` is the slide this one is a frame of, when a slide that is built in
+;; clicks was split into one slide per click: the name they share, so an edit to
+;; a shape on one frame can be written to the same shape on the others. Without
+;; it a build is ten slides that merely look alike, and moving something means
+;; moving it ten times.
+(struct slide (index name width height background inherited elements hidden? build) #:prefab)
 (struct deck (width height slides media-dir source) #:prefab)
 
 ;; ------------------------------------------------------------------ walking

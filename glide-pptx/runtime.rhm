@@ -77,8 +77,9 @@ fun shown_slides(slides):
   rt.#{shown-picts}(to_rkt_list(slides))
 
 fun slide_canvas(~width: w, ~height: h, ~background: bg = rt.#{white},
-                 ~hidden: hidden = #false, & elems):
-  rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, ~#{hidden?}: hidden, & elems)
+                 ~hidden: hidden = #false, ~build: build = #false, & elems):
+  rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, ~#{hidden?}: hidden,
+                     ~build: build, & elems)
 
 fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
   rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~nudge: to_rkt_list(nudge))
