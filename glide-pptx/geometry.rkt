@@ -187,13 +187,20 @@
   (let ([o (* w (adj-value adjust "adj" 0.25))])
     (path-of (list (cons o 0) (cons (- w o) 0) (cons w h) (cons 0 h)))))
 
+;; The point is set in from the right by a fraction of the *shortest* side, not
+;; of the width, and the fraction is half rather than a quarter: both of those
+;; are what the preset says, and both were wrong here, so a wide pentagon or
+;; chevron came out with too shallow a point and too shallow a notch.
+(define (point-inset w h adjust)
+  (* (min w h) (adj-value adjust "adj" 0.5)))
+
 (define-preset ("homePlate") (w h adjust)
-  (let ([o (* w (adj-value adjust "adj" 0.25))])
+  (let ([o (point-inset w h adjust)])
     (path-of (list (cons 0 0) (cons (- w o) 0) (cons w (/ h 2.0))
                    (cons (- w o) h) (cons 0 h)))))
 
 (define-preset ("chevron") (w h adjust)
-  (let ([o (* w (adj-value adjust "adj" 0.25))])
+  (let ([o (point-inset w h adjust)])
     (path-of (list (cons 0 0) (cons (- w o) 0) (cons w (/ h 2.0)) (cons (- w o) h)
                    (cons 0 h) (cons o (/ h 2.0))))))
 

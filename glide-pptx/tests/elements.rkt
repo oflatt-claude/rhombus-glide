@@ -14,7 +14,7 @@
 (require rackunit racket/list racket/file racket/path racket/format racket/string
          racket/class racket/draw racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
-         glide-pptx/export glide-pptx/verify)
+         glide-pptx/export glide-pptx/verify "ink.rkt")
 
 (define-runtime-path decks-dir "decks")
 
@@ -23,64 +23,24 @@
 (make-directory* work)
 
 (define MARGIN 12.0)
-;; Text used to sit at the top of this list around 30%, because a title's glyphs
-;; all shift together when the baseline is a point out. With the baseline fixed
-;; the worst element is under 8%, so the limit is low enough to catch a shape
-;; drawn wrong: it has already found an arrowhead that was never drawn and an
-;; arrow whose head was half the shape instead of a third, both invisible in a
-;; whole-slide diff.
-(define INK-LIMIT 0.15)
-
-;; The share of the drawing that differs: pixels that disagree, over pixels
-;; either side inked.
+;; With the metric no longer inventing differences, what is left is real. It
+;; reads 0.05% for the same drawing shifted half a pixel, and the worst element
+;; here is 0.2%, so one percent is twenty times the floor and five times the
+;; worst thing we draw -- room for a rasterizer disagreeing about a stem, and
+;; not much else.
 ;;
-;; Sampled on a common grid rather than compared pixel for pixel, because the two
-;; renderers do not agree on the page's pixel size -- 1205x836 against 1201x832
-;; for the same element. Four pixels of difference shifts everything, and against
-;; a thin outline that reads as almost every pixel being wrong.
-(define GRID 700)
-;; Ink is thin: an outline is two or three pixels wide, so a line that is a pixel
-;; off matches nothing at all when compared point for point. What is being asked
-;; is whether the drawing is *there*, not whether it is aligned to the pixel, so
-;; ink counts as matched when the other side has ink nearby.
-(define SLACK 3)
+;; It was fifteen percent an hour ago, and under it sat a strikethrough drawn
+;; twice as thick as it should be and in the wrong place, a chevron with the
+;; wrong notch, and a pentagon with the wrong point. A loose bound is not a
+;; lenient test; it is an absent one.
+(define INK-LIMIT 0.01)
 
-(define (sampler path)
-  (define bm (read-bitmap path))
-  (define w (send bm get-width)) (define h (send bm get-height))
-  (define px (make-bytes (* w h 4)))
-  (send bm get-argb-pixels 0 0 w h px)
-  ;; Sampled on a common grid, because the two renderers do not agree on the
-  ;; page's pixel size -- 1205x836 against 1201x832 for the same element.
-  (define g (make-vector (* GRID GRID) 255))
-  (for* ([j (in-range GRID)] [i (in-range GRID)])
-    (define x (min (sub1 w) (inexact->exact (floor (* (/ (+ i 0.5) GRID) w)))))
-    (define y (min (sub1 h) (inexact->exact (floor (* (/ (+ j 0.5) GRID) h)))))
-    (vector-set! g (+ i (* j GRID)) (bytes-ref px (+ 1 (* 4 (+ x (* y w)))))))
-  g)
-
-(define (near-ink? g i j)
-  (for*/or ([dj (in-range (- SLACK) (add1 SLACK))]
-            [di (in-range (- SLACK) (add1 SLACK))])
-    (define x (+ i di)) (define y (+ j dj))
-    (and (< -1 x GRID) (< -1 y GRID)
-         (< (vector-ref g (+ x (* y GRID))) 200))))
-
-(define (ink-error a-path b-path)
-  (define a (sampler a-path))
-  (define b (sampler b-path))
-  (define-values (diff ink)
-    (for*/fold ([d 0] [k 0]) ([j (in-range GRID)] [i (in-range GRID)])
-      (define ai (< (vector-ref a (+ i (* j GRID))) 200))
-      (define bi (< (vector-ref b (+ i (* j GRID))) 200))
-      (cond
-        [(and (not ai) (not bi)) (values d k)]
-        ;; Ink on one side with none near it on the other is a real difference:
-        ;; something drawn that should not be, or not drawn that should be.
-        [(and ai (not (near-ink? b i j))) (values (add1 d) (add1 k))]
-        [(and bi (not (near-ink? a i j))) (values (add1 d) (add1 k))]
-        [else (values d (add1 k))])))
-  (if (zero? ink) 0.0 (/ (exact->inexact diff) ink)))
+;; The share of the drawing that differs lives in `ink.rkt`, which explains what
+;; it does and does not count. What it does not count any more is a drawing that
+;; sits half a pixel away from where the other renderer put it: measured against
+;; itself, that used to read as up to 45% wrong, which is why the limit here had
+;; to be 15% and why 14.2% of a strikethrough drawn in the wrong place, twice as
+;; thick as it should be, sat under it and said nothing.
 
 ;; One element, alone, on a page the size of its own box.
 (define (element-deck src-deck e)

@@ -49,7 +49,7 @@
   (hash "font-scale.pptx" 0.15
         "bullet-indent.pptx" 0.02
         "paraMarginAndIndentation.pptx" 0.01
-        "bulletMarginAndIndent.pptx" 0.01
+        "bulletMarginAndIndent.pptx" 0.004
         "poi-layouts.pptx" 0.03
         "tdf105150.pptx" 0.02
         "activex_picture.pptx" 0.06
