@@ -67,26 +67,40 @@
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
   (define ns (make-base-empty-namespace))
-  (for ([m (in-list '(pict glide-pptx/runtime glide-pptx/tagged glide-pptx/ir))])
-    (namespace-attach-module (current-namespace) m ns))
+  ;; Everything comes from one registry: the namespace the last program was read
+  ;; into, when there has been one, and this thread's otherwise.
+  ;;
   ;; A program whose helpers import slideshow pulls in racket/gui, and that
-  ;; cannot be instantiated twice in one process -- while the watch loop loads
-  ;; the program again on every save. The first load instantiates it in its own
-  ;; namespace, so the one to carry forward is that namespace's, not this
-  ;; thread's: each load hands the next one what it has. Nothing is attached
-  ;; when nothing has loaded a GUI, which is the usual case and must stay that
-  ;; way -- translating a deck should never start one.
-  (for ([m (in-list '(racket/draw racket/gui/base))])
-    (define from (unbox previous-program-namespace))
-    (when from
+  ;; cannot be instantiated twice in one process -- while the watch loop reads
+  ;; the program again on every save. The first read instantiates it in its own
+  ;; namespace, so that is where the second must take it from. Taking the picts
+  ;; from here and the GUI from there does not work: the two registries
+  ;; disagree about the modules underneath them, and the attach fails rather
+  ;; than mixing them -- which left the GUI to be started a second time.
+  (define from (or (unbox previous-program-namespace) (current-namespace)))
+  (for ([m (in-list '(pict glide-pptx/runtime glide-pptx/tagged glide-pptx/ir))])
+    (namespace-attach-module from m ns))
+  ;; And the GUI itself, once some program has started one. Nothing is attached
+  ;; when none has, which is the usual case and has to stay that way:
+  ;; translating a deck should never start a GUI.
+  (when (unbox previous-program-namespace)
+    (for ([m (in-list '(racket/draw racket/gui/base))])
       (with-handlers ([exn:fail? void]) (namespace-attach-module from m ns))))
   (define names (if named (list (string->symbol named)) '(all_slides all-slides)))
+  ;; Recorded before the program runs, not after: a program that fails part way
+  ;; through may already have started a GUI, and the next read has to take that
+  ;; one rather than start a second.
+  (set-box! previous-program-namespace ns)
   (define found
-    (parameterize ([current-media-base (path-only full)] [current-namespace ns])
-      (begin0
-        (for/or ([name (in-list names)])
-          (dynamic-require `(file ,(path->string full)) name (lambda () #f)))
-        (set-box! previous-program-namespace ns))))
+    (parameterize ([current-media-base (path-only full)] [current-namespace ns]
+                   ;; A program that imports slideshow reads the command line
+                   ;; when it loads, and refuses anything that is not a single
+                   ;; module file -- so `raco glide talk.rhm --app none` failed
+                   ;; to load the program it was given. The arguments are this
+                   ;; command's, not the program's.
+                   [current-command-line-arguments (vector)])
+      (for/or ([name (in-list names)])
+        (dynamic-require `(file ,(path->string full)) name (lambda () #f)))))
   ;; A slide may be written as a function of no arguments, so that a talk which
   ;; starts part way through never builds the slides it skipped. Everything but
   ;; the show wants the picture, so this is where they are called.
