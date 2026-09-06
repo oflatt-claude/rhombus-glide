@@ -12,7 +12,8 @@
          "ir.rkt" "tagged.rkt" "draw-ir.rkt"
          (only-in "record-adapt.rkt" pict->display-page current-adapt-warnings)
          (only-in "runtime.rkt" placed placed? placed-x placed-y placed-rot
-                  placed-pict placed-tag placed-position pin-placed))
+                  placed-pict placed-tag placed-position pin-placed
+                  body-natural-size))
 (provide pict->page semantic-page? canvas-tags current-flatten-opaque?)
 
 ;; A pict is exported semantically when it says how it was built.
@@ -24,7 +25,7 @@
 
 (define (pict->page p width height)
   (define d (pict-desc p))
-  (define inner (and (not (slide-desc? d)) (pict? p) (layers-within p)))
+  (define inner (and (not (slide-desc? d)) (pict? p) (pieces-within p)))
   (cond
     [(slide-desc? d)
      (display-page width height
@@ -44,8 +45,9 @@
                    ;; The background is the first canvas's; a stage that is a
                    ;; group has none of its own.
                    (let ([canvas (for/first ([e (in-list inner)]
-                                             #:when (slide-desc? (car e)))
-                                   (car e))])
+                                             #:when (and (eq? 'layer (first e))
+                                                         (slide-desc? (second e))))
+                                   (second e))])
                      (and canvas (ir-fill->fill (slide-desc-background canvas))))
                    (composed-items inner width height)
                    #f)]
@@ -56,32 +58,48 @@
 ;; one that shows the most of the slide is the one worth reading.
 (define (canvas-tags p)
   (define d (pict-desc p))
-  (define cs (if (slide-desc? d)
-                 (list (cons d (xf 0.0 0.0 1.0 1.0)))
-                 (if (pict? p) (layers-within p) '())))
+  (define layers
+    (cond
+      [(slide-desc? d) (list d)]
+      [(pict? p) (for/list ([e (in-list (pieces-within p))] #:when (eq? 'layer (first e)))
+                   (second e))]
+      [else '()]))
   (remove-duplicates
    (filter values
-           (append* (for/list ([entry (in-list cs)])
-                      (define ld (car entry))
+           (append* (for/list ([ld (in-list layers)])
                       (for/list ([pl (in-list (if (slide-desc? ld)
                                                   (slide-desc-placeds ld)
                                                   (group-desc-placeds ld)))])
                         (placed-tag pl)))))))
 
-;; Every layer inside `p` -- a canvas, or a group that a stage laid over it --
-;; each with where it sits, in the order they are drawn. Nothing inside a layer
-;; is looked for: the layer already says what it holds, and its elements keep
-;; the tags their `at` forms gave them, which is what makes them editable.
+;; How a slide that is not a canvas is taken apart, in the order it is drawn.
+;;
+;; A talk composes a slide out of pieces: a base canvas, a group per stage it
+;; reveals, and whatever else it draws around them -- a section header, an
+;; outline, a divider built from bare picts. The pieces that are canvases or
+;; groups say what they hold, and their elements keep the tags their `at` forms
+;; gave them, which is what makes them editable. The rest says nothing, and is
+;; kept as what it draws.
+;;
+;; Keeping the rest is the point. Composing only the layers dropped everything
+;; else on the floor: four divider slides came out blank, and the section header
+;; would have gone missing from every slide that has one.
 ;;
 ;; `pict-children` lists the last-drawn child first, so consing as the walk goes
-;; gives them back in the order they are drawn: base first, then what each stage
-;; put over it.
-(define (layers-within p)
+;; gives the pieces back in the order they are drawn.
+(define (pieces-within p)
+  (define (has-layer? p)
+    (and (pict? p)
+         (let ([d (pict-desc p)])
+           (or (slide-desc? d) (group-desc? d)
+               (for/or ([c (in-list (pict-children p))]) (has-layer? (child-pict c)))))))
   (let walk ([p p] [t (xf 0.0 0.0 1.0 1.0)] [acc '()])
     (define d (and (pict? p) (pict-desc p)))
     (cond
       [(not (pict? p)) acc]
-      [(or (slide-desc? d) (group-desc? d)) (cons (cons d t) acc)]
+      [(or (slide-desc? d) (group-desc? d)) (cons (list 'layer d t) acc)]
+      ;; Nothing addressable in here, so what it draws is what it is.
+      [(not (has-layer? p)) (cons (list 'drawn p t) acc)]
       [else
        (for/fold ([acc acc]) ([c (in-list (pict-children p))])
          (walk (child-pict c)
@@ -91,22 +109,34 @@
                    (* (xf-sy t) (child-sy c)))
                acc))])))
 
-;; What one layer draws, in the page's own coordinates. A canvas draws its
+;; What one piece draws, in the page's own coordinates. A canvas draws its
 ;; elements; a stage laid over the slide is a group, and its children are the
 ;; elements -- the group itself is not one, since nothing placed it and it has
-;; no tag of its own to be edited by.
-(define (layer-items entry width height)
-  (define d (car entry))
-  (define t (cdr entry))
-  (if (slide-desc? d)
-      (append* (for/list ([pl (in-list (slide-desc-placeds d))])
-                 (placed-items pl t width height)))
-      (group-items d (xf-ox t) (xf-oy t) t width height)))
+;; no tag of its own to be edited by. Anything else is read back from its
+;; drawing, the way an arbitrary pict has always been.
+(define (piece-items entry width height)
+  (define kind (first entry))
+  (define t (third entry))
+  (cond
+    [(eq? 'layer kind)
+     (define d (second entry))
+     (if (slide-desc? d)
+         (append* (for/list ([pl (in-list (slide-desc-placeds d))])
+                    (placed-items pl t width height)))
+         (group-items d (xf-ox t) (xf-oy t) t width height))]
+    [else
+     (define p (second entry))
+     (define q (if (and (= 1.0 (xf-sx t)) (= 1.0 (xf-sy t)))
+                   p
+                   (scale p (xf-sx t) (xf-sy t))))
+     (display-page-items
+      (pict->display-page (lambda (dc) (draw-pict q dc (xf-ox t) (xf-oy t)))
+                          width height))]))
 
 
-(define (composed-items layers width height)
+(define (composed-items pieces width height)
   (define items
-    (append* (for/list ([entry (in-list layers)]) (layer-items entry width height))))
+    (append* (for/list ([entry (in-list pieces)]) (piece-items entry width height))))
   (define seen (make-hash))
   (for ([i (in-list (reverse items))])
     (define tag (item-tag i))
@@ -197,8 +227,29 @@
   (cond
     [(shape-desc? d) (shape-items d x y rot t f tag)]
     [(text-desc? d)
-     (list (it:textbox x y (* (xf-sx t) (text-desc-width d)) (* (xf-sy t) (text-desc-height d))
-                       rot (scale-body (text-desc-body d) f) tag))]
+     ;; The box the text needs, not only the box it was given. A box that does
+     ;; not wrap is as wide as its longest line and one set to grow is as tall
+     ;; as its lines come to -- and a renderer that ignores `wrap="none"` wraps
+     ;; at whatever width it was handed, which is how "Floating point" came out
+     ;; as "Floatin g poin t" in one editor. Never smaller than the box: a box
+     ;; someone drew larger than its text stays that size.
+     (define body (text-desc-body d))
+     (define-values (nat-w nat-h)
+       (body-natural-size body (text-desc-width d) (text-desc-height d)))
+     ;; A little more than the text needs. Two renderers do not measure a
+     ;; string to the same width -- across four strings in one deck they
+     ;; differed by up to 1.3% -- so a box sized exactly to our own measurement
+     ;; is one the other may still wrap. "CAD" at 48pt needs 98 of its 100
+     ;; points here and rather more there. A box that does not wrap has nothing
+     ;; to lose by being wider, and its text is anchored, not stretched.
+     (define w (if (text-body-wrap? body)
+                   (text-desc-width d)
+                   (max (text-desc-width d) (+ nat-w 4.0))))
+     (define h (if (eq? 'grow (text-body-autofit body))
+                   (max (text-desc-height d) nat-h)
+                   (text-desc-height d)))
+     (list (it:textbox x y (* (xf-sx t) w) (* (xf-sy t) h)
+                       rot (scale-body body f) tag))]
     [(image-desc? d)
      (list (it:picture x y (* (xf-sx t) (image-desc-width d))
                        (* (xf-sy t) (image-desc-height d)) rot

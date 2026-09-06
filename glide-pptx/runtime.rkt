@@ -30,7 +30,7 @@
          stroke make-stroke line-end
          shadow make-shadow
          rgba rgb black white
-         insets default-insets
+         insets default-insets body-natural-size
          bullet no-bullet
          preset-geom custom-geom
          tbl-cell)
@@ -366,6 +366,23 @@
 
 ;; The full vertical layout of a text body inside w x h.
 ;; Returns (listof (list para line-box y)) plus the total height.
+;; The size a text body needs, laid out in a box `w` wide.
+;;
+;; A box that does not wrap is as wide as its longest line, whatever its own
+;; width says, and one set to grow is as tall as its lines come to. PowerPoint
+;; stores the box the author drew and grows it as the text is edited; a renderer
+;; that does not honour `wrap="none"` wraps at the stored width instead, and the
+;; label reads "Floatin g poin t". So the export writes the size the text
+;; actually takes, and then every renderer agrees.
+(define (body-natural-size tb w h)
+  (define-values (lines total) (layout-body tb w h))
+  (define ins (text-body-insets tb))
+  (define widest
+    (for/fold ([m 0.0]) ([entry (in-list lines)])
+      (max m (line-box-width (second entry)))))
+  (values (+ widest (insets-l ins) (insets-r ins))
+          (+ total (insets-t ins) (insets-b ins))))
+
 (define (layout-body tb w h)
   (define ins (text-body-insets tb))
   (define avail-w (max 1.0 (- w (insets-l ins) (insets-r ins))))
