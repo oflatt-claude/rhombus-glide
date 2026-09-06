@@ -62,18 +62,24 @@
 ;; PowerPoint matches a slide placeholder to a layout placeholder by index,
 ;; except that the title is matched by kind -- a slide's ctrTitle finds the
 ;; layout's title even though both carry index 0 among other index-0 shapes.
+;;
+;; Kind before index, though, once the index has failed to find something of
+;; the same kind. Indexes are only unique within a part: a slide's second
+;; content placeholder is index 2, and so is the master's date placeholder,
+;; which is vertically centred and right-aligned because that is what a date is.
+;; Matching those two put the body of a comparison slide in the middle of its
+;; box and its first line against the right edge -- and the master is matched by
+;; kind anyway, since it holds one placeholder of each.
 (define (find-placeholder phs type idx)
   (define entries (filter values phs))
+  (define (same-kind? e) (eq? (normalize-ph-type type) (normalize-ph-type (first e))))
   (or (and (memq type title-types)
            (for/first ([e (in-list entries)] #:when (memq (first e) title-types)) (third e)))
       (for/first ([e (in-list entries)]
-                  #:when (and (equal? idx (second e))
-                              (eq? (normalize-ph-type type) (normalize-ph-type (first e)))))
+                  #:when (and (equal? idx (second e)) (same-kind? e)))
         (third e))
-      (for/first ([e (in-list entries)] #:when (equal? idx (second e))) (third e))
-      (for/first ([e (in-list entries)]
-                  #:when (eq? (normalize-ph-type type) (normalize-ph-type (first e))))
-        (third e))))
+      (for/first ([e (in-list entries)] #:when (same-kind? e)) (third e))
+      (for/first ([e (in-list entries)] #:when (equal? idx (second e))) (third e))))
 
 ;; ------------------------------------------------------------ style sources
 
@@ -206,10 +212,12 @@
   (define geom (parse-geometry ctx spPr layout-sp master-sp))
   (define-values (lvl-sources body-prs) (text-sources ctx sp layout-sp master-sp type))
   (define tctx (text-ctx cctx (shape-ctx-theme ctx) lvl-sources body-prs))
-  ;; Autoshapes center their text vertically; text boxes and placeholders top it.
+  ;; Top, which is what the format says when a shape says nothing: PowerPoint
+  ;; writes `anchor="ctr"` on the autoshapes it centres, so a shape with no
+  ;; anchor at all is one nobody centred. Assuming otherwise put a box of
+  ;; overflowing text half a block higher than every other renderer draws it.
   (define body
-    (parse-text-body tctx (child sp 'txBody)
-                     #:default-anchor (if (or type (text-box? sp)) 'top 'center)))
+    (parse-text-body tctx (child sp 'txBody) #:default-anchor 'top))
   (shape id name (resolve-box ctx sp layout-sp master-sp)
          geom fill line (and (not (text-body-empty? body)) body)))
 
