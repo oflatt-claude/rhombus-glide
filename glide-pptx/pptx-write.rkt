@@ -283,7 +283,12 @@
             [(center) "ctr"] [(bottom) "b"] [else "t"])
           (if (ir:text-body-anchor-center? body) "1" "0")
           (case (ir:text-body-autofit body)
-            [(shrink) "<a:normAutofit/>"] [(grow) "<a:spAutoFit/>"]
+            ;; The scale is stated as spent. PowerPoint caches how far it
+            ;; shrank the text in this attribute, and that shrink is folded
+            ;; into the sizes when the deck is read -- so a bare normAutofit,
+            ;; which means "no cache", invites the next renderer to work the
+            ;; shrink out again and apply it a second time.
+            [(shrink) "<a:normAutofit fontScale=\"100000\" lnSpcReduction=\"0\"/>"] [(grow) "<a:spAutoFit/>"]
             [else "<a:noAutofit/>"])
           (apply string-append
                  (for/list ([p (in-list (ir:text-body-paras body))]) (para-xml p)))))
@@ -312,22 +317,47 @@
           (apply string-append
                  (for/list ([r (in-list (ir:para-runs p))]) (run-xml r)))))
 
+;; The order is the format's: colour, then size, then font, then the bullet
+;; itself.
+(define (bullet-size-xml b)
+  (define frac (ir:bullet-size-frac b))
+  ;; Read, drawn, and until now never written: a bullet set to two fifths of
+  ;; its line came back the full size of the text.
+  (if (and frac (not (= frac 1.0)))
+      (format "<a:buSzPct val=\"~a\"/>" (inexact->exact (round (* 100000 frac))))
+      ""))
+
 (define (bullet-xml b)
   (case (ir:bullet-kind b)
-    [(char) (format "~a~a<a:buChar char=\"~a\"/>"
+    [(char) (format "~a~a~a<a:buChar char=\"~a\"/>"
                     (if (ir:bullet-color b)
                         (format "<a:buClr>~a</a:buClr>"
                                 (clr (ir-rgba (ir:bullet-color b)))) "")
+                    (bullet-size-xml b)
                     (if (ir:bullet-font b)
                         (format "<a:buFont typeface=\"~a\"/>" (xml-escape (ir:bullet-font b)))
                         "")
                     (xml-escape (or (ir:bullet-char b) "\u2022")))]
-    [(number) (format "<a:buAutoNum type=\"~a\"/>"
+    [(number) (format "~a~a<a:buAutoNum type=\"~a\"/>"
+                      (if (ir:bullet-color b)
+                          (format "<a:buClr>~a</a:buClr>"
+                                  (clr (ir-rgba (ir:bullet-color b)))) "")
+                      (bullet-size-xml b)
                       (xml-escape (or (ir:bullet-char b) "arabicPeriod")))]
     [else "<a:buNone/>"]))
 
+;; A run holding a line break is written as one: the parser reads `<a:br/>` as a
+;; newline in the run's text, and a newline inside `<a:t>` is not a line break
+;; but whitespace, so a paragraph that had been broken by hand came back as one
+;; long line with a stray space in it.
 (define (run-xml r)
-  (format (string-append "<a:r><a:rPr lang=\"en-US\" sz=\"~a\"~a~a~a~a~a~a dirty=\"0\">"
+  (define pieces (string-split (ir:trun-text r) "\n" #:trim? #f))
+  (string-join (for/list ([piece (in-list pieces)])
+                 (if (string=? "" piece) "" (run-piece-xml r piece)))
+               "<a:br/>"))
+
+(define (run-piece-xml r text)
+  (format (string-append "<a:r><a:rPr lang=\"en-US\" sz=\"~a\"~a~a~a~a~a~a~a dirty=\"0\">"
                          "<a:solidFill>~a</a:solidFill>"
                          "<a:latin typeface=\"~a\"/><a:cs typeface=\"~a\"/></a:rPr>"
                          "<a:t>~a</a:t></a:r>")
@@ -336,13 +366,19 @@
           (if (ir:trun-italic? r) " i=\"1\"" "")
           (if (ir:trun-underline? r) " u=\"sng\"" "")
           (if (ir:trun-strike? r) " strike=\"sngStrike\"" "")
+          ;; Read, drawn, and until now never written: a title that a layout
+          ;; had set in capitals came back in the case it was typed in.
+          (case (ir:trun-caps r)
+            [(all) " cap=\"all\""]
+            [(small) " cap=\"small\""]
+            [else ""])
           (if (zero? (ir:trun-spacing r)) ""
               (format " spc=\"~a\"" (inexact->exact (round (* 100 (ir:trun-spacing r))))))
           (if (zero? (ir:trun-baseline r)) ""
               (format " baseline=\"~a\"" (pct* (ir:trun-baseline r))))
           (clr (ir-rgba (ir:trun-color r)))
           (xml-escape (ir:trun-family r)) (xml-escape (ir:trun-family r))
-          (xml-escape (ir:trun-text r))))
+          (xml-escape text)))
 
 (define (ir-rgba c)
   (rgba* (ir:rgba-r c) (ir:rgba-g c) (ir:rgba-b c) (ir:rgba-a c)))

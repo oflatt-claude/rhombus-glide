@@ -247,14 +247,21 @@
      (define-values (anchor anchor-ctr? wrap? autofit ins rot scale) 
        (parse-body-pr tctx #:default-anchor default-anchor))
      (define paras (for/list ([p (in-list (children tx-body 'p))]) (parse-paragraph tctx p)))
-     ;; Fold PowerPoint's cached autofit scale into the sizes, so the IR needs
-     ;; no notion of "shrunk to fit" downstream.
+     ;; Fold PowerPoint's cached autofit into the sizes and the line spacing, so
+     ;; the IR needs no notion of "shrunk to fit" downstream. Both halves of it:
+     ;; shrinking to fit moves the lines closer together as well as making the
+     ;; letters smaller, and a box that had only the letters folded in came back
+     ;; a fifth taller than it went in, wrapping in different places.
      (define font-scale (car scale))
+     (define line-scale (- 1.0 (cdr scale)))
+     (define (scaled-spacing ls)
+       (if (pair? ls) (cons (car ls) (* line-scale (cdr ls))) ls))
      (define paras*
-       (if (= 1.0 font-scale)
+       (if (and (= 1.0 font-scale) (= 1.0 line-scale))
            paras
            (for/list ([p (in-list paras)])
              (struct-copy para p
+                          [line-spacing (scaled-spacing (para-line-spacing p))]
                           [runs (for/list ([r (in-list (para-runs p))])
                                   (struct-copy trun r [size (* font-scale (trun-size r))]))]))))
      (text-body paras* anchor anchor-ctr? wrap? autofit ins rot
