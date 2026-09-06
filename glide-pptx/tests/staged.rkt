@@ -83,8 +83,9 @@
      (format "glide.deck_to_pdf([canvas, hidden, with_stages], ~s, ~~width: w, ~~height: h)"
              (path->string (build-path work "deck.pdf")))
      ""
-     "// Counted with the reveal and the transitions off, so that what is counted"
-     "// is the slides and not the frames they are played through."
+     "// Counted as the defaults leave them -- a cut between slides and no fade"
+     "// up from blank -- so that what is counted is the slides themselves and"
+     "// not the frames they would be played through."
      "fun emitted():"
      "  recur count(n = 0):"
      "    if ss.#{most-recent-slide}()"
@@ -92,13 +93,16 @@
      "        ss.#{retract-most-recent-slide}()"
      "        count(n + 1)"
      "    | n"
-     "set_reveal(#false)"
-     "set_transitions(#false)"
-     "show_slides([canvas, panned, hidden], ~width: w, ~height: h)"
+     "show_slides([canvas, canvas, hidden], ~width: w, ~height: h)"
      "println(\"stills \" +& emitted())"
+     "// A slide that names a transition still gets one: the default is what a"
+     "// slide gets when it says nothing, not a veto."
+     "show_slides([canvas, panned], ~width: w, ~height: h)"
+     "println(\"panned \" +& emitted())"
      "show_slides([with_stages], ~width: w, ~height: h)"
      "println(\"stages \" +& emitted())"
-     "// And with the reveal on, a still slide is faded up rather than cut to."
+     "// And with the reveal turned on, a still slide is faded up rather than cut"
+     "// to, which costs it an advance."
      "set_reveal(#true)"
      "show_slides([canvas, panned], ~width: w, ~height: h)"
      "println(\"revealed \" +& emitted())"
@@ -146,7 +150,12 @@
    ;; ------------------------------------------------------------ the show
    ;; Three slides in, one of them hidden. A slide with stages reaches `slide`
    ;; as a `Pict`, which is what used to raise here.
+   ;; Two slides, one advance each: by default a slide is cut to, not faded up,
+   ;; and not panned to either. A deck behaves the way it did in PowerPoint
+   ;; unless the talk asks for something else.
    (check-regexp-match #rx"stills 2" out "a hidden slide is not shown, and a still slide is one slide")
+   (check-regexp-match #px"panned ([3-9]|[0-9][0-9]+)" out
+                       "and a slide that asks to be panned to is played into")
    (check-regexp-match #px"stages ([2-9]|[0-9][0-9]+)" out
                        "a slide with stages is played out rather than shown once")
    (check-regexp-match #px"revealed ([3-9]|[0-9][0-9]+)" out
