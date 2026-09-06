@@ -82,6 +82,9 @@
   (define ln (and props (child props 'ln)))
   (if ln (parse-line-element ctx ln) 'inherit))
 
+;; The thinnest width that means something on both sides of a round trip.
+(define HAIRLINE 0.75)
+
 (define (parse-line-element ctx ln)
   (define fill (parse-fill ctx ln))
   (define color (cond [(solid-fill? fill) (solid-fill-color fill)]
@@ -93,7 +96,17 @@
     [else
      ;; A line width is in EMU, unlike font sizes and spacing, which are
      ;; hundredths of a point.
-     (define w (or (string->emu-pt (attr ln 'w)) 'inherit))
+     ;;
+     ;; A width of zero is a hairline: the thinnest the renderer can draw. The
+     ;; writer has always put the thinnest real width in its place, since a
+     ;; zero can be taken as "no line at all" -- so reading it as zero left the
+     ;; program saying one thing and the deck the next, and a merge reporting a
+     ;; restyle of a line nobody had touched, over and over.
+     (define w
+       (let ([v (string->emu-pt (attr ln 'w))])
+         (cond [(not v) 'inherit]
+               [(zero? v) HAIRLINE]
+               [else v])))
      ;; A line can name a preset dash or spell one out. Spelled out is the
      ;; common case in decks written by Keynote, and ignoring it drew every one
      ;; of those lines solid.
