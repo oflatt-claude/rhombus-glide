@@ -6,7 +6,7 @@
 ;; `tools/fetch-corpus.sh` downloads the decks; without them the corpus and
 ;; coverage modules say so and pass.
 (require rackunit/log)
-(require "export.rkt" "roundtrip.rkt" "fidelity.rkt" "elements.rkt"
+(require "export.rkt" "roundtrip.rkt" "fidelity.rkt" "elements.rkt" "render.rkt"
          "coverage.rkt" "corpus.rkt")
 
 ;; A check that fails prints and carries on, which is what makes a whole run

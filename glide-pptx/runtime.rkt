@@ -169,9 +169,25 @@
 (define (measure-scale-for size)
   (max 1.0 (min MEASURE-SCALE (/ 1000.0 (max 0.01 size)))))
 
+;; A run that sits off the baseline is drawn smaller, which is what a
+;; superscript or a subscript is. The format says only how far to shift it --
+;; the size is the renderer's to choose, and every one of them chooses a
+;; smaller one. 58% is what LibreOffice draws, measured against it rather than
+;; guessed, and it is the same whatever the shift.
+;;
+;; It is the drawn size that matters for where a line breaks, which is why this
+;; is here and not at the drawing: full-size subscripts made every line wider
+;; than it should have been, and a line that had fitted before wrapped its last
+;; character onto the next one.
+(define SHIFTED-SIZE 0.58)
+
+(define (run-size r)
+  (define b (trun-baseline r))
+  (if (or (not b) (zero? b)) (trun-size r) (* SHIFTED-SIZE (trun-size r))))
+
 (define (run-font r [scale 1.0])
   (hash-ref! font-cache
-             (list (trun-family r) (* scale (trun-size r)) (trun-bold? r)
+             (list (trun-family r) (* scale (run-size r)) (trun-bold? r)
                    (trun-italic? r) (trun-underline? r))
              (lambda ()
                ;; The device unit is the point, so the font size has to be a
@@ -179,7 +195,7 @@
                ;; inch, which would come out a third too large.
                (make-font #:face (trun-family r)
                           #:family 'default
-                          #:size (max 1.0 (* scale (trun-size r)))
+                          #:size (max 1.0 (* scale (run-size r)))
                           #:size-in-pixels? #t
                           #:weight (if (trun-bold? r) 'bold 'normal)
                           #:style (if (trun-italic? r) 'italic 'normal)
@@ -193,7 +209,7 @@
 
 ;; Metrics for one run's text, at the run's real size.
 (define (measure-run str r)
-  (define k (measure-scale-for (trun-size r)))
+  (define k (measure-scale-for (run-size r)))
   (measure-scaled str (run-font r k) k))
 
 (define (run-display-text r)
