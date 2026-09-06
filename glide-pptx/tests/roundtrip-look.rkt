@@ -43,11 +43,13 @@
         "master-bg-color.pptx" 0.002
         "tdf111863.pptx" 0.002
         "n778859.pptx" 0.005
-        ;; A table comes back as the shapes it was drawn from, and its cell
-        ;; borders do not come back at all -- the text is all that survives.
-        ;; Recorded as it stands, with a number on it, so the day a program can
-        ;; say "table" this says so by failing.
-        "poi-table-with-no-theme.pptx" 0.86))
+        ;; A table is written back as a table now, so the style that draws its
+        ;; borders applies again on the far side and it comes back exactly.
+        "poi-table-with-no-theme.pptx" 0.0
+        ;; A title slide whose whole design is its layout's background picture.
+        ;; Its first page is exact; the rest carry tables and are recorded as
+        ;; they stand.
+        "poi-aptia.pptx" 0.41))
 
 ;; The round trip, as the command line does it.
 (define (round-trip src dir)

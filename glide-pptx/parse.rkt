@@ -107,8 +107,11 @@
     (parameterize ([current-tag-names tag-names])
       (parse-sp-tree (ctx-for slide-name layout-phs master-phs tx-styles) slide-tree)))
 
-  (define bg (resolve-background cctx (media-for slide-name)
-                                 (list slide-x layout-x master-x)))
+  (define bg (resolve-background
+              cctx
+              (list (cons slide-x (media-for slide-name))
+                    (cons layout-x (and layout-name (media-for layout-name)))
+                    (cons master-x (and master-name (media-for master-name))))))
   (slide index
          (or (slide-display-name slide-x) (format "Slide ~a" index))
          width height bg
@@ -174,8 +177,15 @@
   (or (override-of slide-x) (override-of layout-x) base))
 
 ;; The first of slide/layout/master that states a background.
-(define (resolve-background cctx media candidates)
-  (for/or ([x (in-list candidates)])
+;; `candidates` are (part-xexpr . media-for-that-part) pairs, slide first, then
+;; layout, then master. Each part's own relationships resolve its own image
+;; ids: a background picture named in the layout is r:embed "rId2" *there*, and
+;; looking that up in the slide's relationships finds whatever the slide
+;; happens to call rId2 -- a notes page, in the deck that turned this up.
+(define (resolve-background cctx candidates)
+  (for/or ([c (in-list candidates)])
+    (define x (car c))
+    (define media (cdr c))
     (define bg (and x (xpath x 'cSld 'bg)))
     (cond
       [(not bg) #f]
