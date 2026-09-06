@@ -49,12 +49,18 @@
                  #:fill (resolve-fill (shape-fill e))
                  #:line (shape-line e)
                  #:body (shape-body e)
+                 ;; The shadow the deck says it casts. A program carries this as
+                 ;; `~shadow:` and draws it; rendering a deck straight to a page
+                 ;; did not, which made a shadowed box the one thing the
+                 ;; comparisons against LibreOffice could not see.
+                 #:shadow (shape-effect e)
                  #:flip-h? (bbox-flip-h? b) #:flip-v? (bbox-flip-v? b))]
     [(picture? e)
      (image-pict (media-path (picture-src e)) w h
                  #:crop (picture-crop e)
                  #:line (picture-line e)
                  #:opacity (picture-opacity e)
+                 #:shadow (picture-effect e)
                  #:flip-h? (bbox-flip-h? b) #:flip-v? (bbox-flip-v? b))]
     [(group? e)
      (define cb (group-child-bbox e))

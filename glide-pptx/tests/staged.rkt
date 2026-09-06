@@ -102,6 +102,24 @@
      "set_reveal(#true)"
      "show_slides([canvas, panned], ~width: w, ~height: h)"
      "println(\"revealed \" +& emitted())"
+     ""
+     "// A slide written as a function is built when it is shown and not before,"
+     "// which is what makes starting part way through worth anything."
+     "def built = Array(0)"
+     "fun lazy_slide(n):"
+     "  fun ():"
+     "    built[0] := built[0] + n"
+     "    canvas"
+     "set_reveal(#false)"
+     "// The slide number counts up across the whole program, so `start_from` is"
+     "// set past every slide there could be rather than to a number this test"
+     "// would have to know."
+     "set_start_from(100000)"
+     "show_slides([lazy_slide(1), lazy_slide(10)], ~width: w, ~height: h)"
+     "println(\"skipped: built \" +& built[0] +& \", shown \" +& emitted())"
+     "set_start_from(0)"
+     "show_slides([lazy_slide(100)], ~width: w, ~height: h)"
+     "println(\"kept: built \" +& built[0] +& \", shown \" +& emitted())"
      "// A program that has registered slides ends by showing them, and a show"
      "// waits for a keypress that is not coming. Everything asked of it has been"
      "// answered by here, so leave rather than open a window nobody is at."
@@ -133,6 +151,14 @@
                        "a slide with stages is played out rather than shown once")
    (check-regexp-match #px"revealed ([3-9]|[0-9][0-9]+)" out
                        "and with the reveal on, a still slide is faded up rather than cut to")
+
+   ;; Nothing is built for the slides that are skipped, and the one that is
+   ;; shown is built when it is shown. Starting part way through a real talk is
+   ;; six of the nine seconds it takes to start.
+   (check-regexp-match #rx"skipped: built 0, shown 0" out
+                       "a slide the show skips is never built")
+   (check-regexp-match #rx"kept: built 100, shown 1" out
+                       "and the one it shows is")
 
    ;; --------------------------------------------------------- the backup PDF
    (define pdf (build-path work "deck.pdf"))

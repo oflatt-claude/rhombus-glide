@@ -27,10 +27,23 @@ export:
   all_from(lib("glide-pptx/staged.rhm"))
 
 // A slide is shown through `staged_slide`: numbered, revealed, and arrived at.
-// See `staged.rhm`. A slide may be a canvas -- which is a pict handle -- or a
-// `Pict`, which is what a slide becomes once it animates: a converted deck is
-// meant to be rewritten by hand, and the first thing anyone does by hand is
-// give a slide stages.
+// See `staged.rhm`. A slide may be
+//
+//   * a canvas, which is a pict handle;
+//   * a `Pict`, which is what a slide becomes once it animates -- a converted
+//     deck is meant to be rewritten by hand, and the first thing anyone does by
+//     hand is give a slide stages;
+//   * a function of no arguments returning either, which is a slide that is not
+//     built until it is shown.
+//
+// The third is what makes `set_start_from` worth having. A slide is handed to
+// `staged_slide` unbuilt, and `staged_slide` calls it only if it is going to
+// show it -- so starting at slide twenty costs nothing for the nineteen before
+// it. In one real talk that is six seconds of the nine it takes to start.
+//
+// `~hidden:` is read off the canvas, which means building it; a slide written
+// as a function is therefore always shown. A program that wants a slide left
+// out of a lazy deck leaves it out of the list.
 fun show_slides(slides, ~width: w :: Real, ~height: h :: Real):
   def page = blank_client()
   def m = ss.margin
@@ -40,8 +53,11 @@ fun show_slides(slides, ~width: w :: Real, ~height: h :: Real):
   // A deck's aspect ratio and slideshow's are close but not equal, so the slide
   // fits rather than being cropped.
   def zoom = math.min(page_w / w, page_h / h)
+  fun lazy_slide(s): s is_a Function.of_arity(0)
+  fun fit(v) :~ Pict:
+    def p :: Pict = if v is_a Pict | v | Pict.from_handle(v)
+    p.scale(zoom).pad(-m)
   for (s in glide.shown_slides(slides)):
-    def p :: Pict = if s is_a Pict | s | Pict.from_handle(s)
-    do_staged_slide(p.scale(zoom).pad(-m),
-                    ~transition: glide.transition_of(s),
-                    ~layout: #'center)
+    if lazy_slide(s)
+    | do_staged_slide(fun (): fit(s()), ~layout: #'center)
+    | do_staged_slide(fit(s), ~transition: glide.transition_of(s), ~layout: #'center)

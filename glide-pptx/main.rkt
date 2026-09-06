@@ -4,7 +4,7 @@
          racket/pretty racket/format
          "ir.rkt" "parse.rkt" "render.rkt" "runtime.rkt"
          "emit-rhombus.rkt" "verify.rkt" "geometry.rkt"
-         "export.rkt" "sync.rkt" "watch.rkt"
+         "export.rkt" "sync.rkt" "watch.rkt" "fonts.rkt"
          (only-in "semantic.rkt" current-flatten-opaque?)
          (only-in "parse.rkt" current-allow-unsupported?))
 (provide main starter-deck default-app)
@@ -403,6 +403,64 @@
     (printf "  raco glide ~a   opens it in an editor and keeps both in step\n"
             (path->string (file-name-from-path path)))))
 
+;; The fonts a program or a deck names, copied in beside it.
+;;
+;; A program that carries its fonts runs the same on a machine that has never
+;; heard of them: `register_fonts` loads what is in the folder before anything
+;; is drawn. It is a copy, so the licence on each font is the licence on the
+;; copy -- most typefaces may not be redistributed, and this says which ones it
+;; took so that is a decision and not an accident.
+(define (families-named path)
+  (cond
+    [(regexp-match? #rx"[.]pptx$" (path->string path))
+     (deck-font-families (with-deck path))]
+    [else
+     ;; Read rather than run: a program that names a font it has not got is
+     ;; exactly the program this is for, and running it would refuse.
+     (define src (file->string path))
+     (remove-duplicates
+      (append (for/list ([m (in-list (regexp-match* #px"~font:\\s*\"([^\"]+)\"" src
+                                                    #:match-select cadr))])
+                m)
+              (for/list ([m (in-list (regexp-match* #px"current_default_font\\(\"([^\"]+)\"\\)" src
+                                                    #:match-select cadr))])
+                m)))]))
+
+(define (cmd-fonts args)
+  (define files
+    (parse-command-line
+     "glide fonts" args '() (lambda (_ . fs) fs) '("program.rhm-or-deck.pptx")))
+  (when (null? files)
+    (error 'glide "name a program or a deck: raco glide fonts talk.rhm"))
+  (for ([f (in-list files)])
+    (define path (path->complete-path f))
+    (unless (file-exists? path) (error 'glide "~a is not there" f))
+    (define families (families-named path))
+    (define dir (build-path (or (path-only path) (current-directory)) "fonts"))
+    (make-directory* dir)
+    (printf "~a names ~a ~a\n" (file-name-from-path path) (length families)
+            (if (= 1 (length families)) "typeface" "typefaces"))
+    (define taken
+      (for/list ([fam (in-list families)])
+        (define src (font-file-for fam))
+        (cond
+          [(not src)
+           (printf "  ~a -- not installed here, so there is nothing to copy\n" fam)
+           #f]
+          [else
+           (define dest (build-path dir (file-name-from-path src)))
+           (copy-file src dest #t)
+           (printf "  ~a -> fonts/~a\n" fam (file-name-from-path src))
+           dest])))
+    (define n (length (filter values taken)))
+    (cond
+      [(zero? n) (printf "  nothing was copied\n")]
+      [else
+       (printf "  ~a copied into ~a\n" n (path->string dir))
+       (printf "  They travel with the program now. Check you may redistribute\n")
+       (printf "  them: most typefaces say, and a talk in a public repository is\n")
+       (printf "  a redistribution.\n")])))
+
 (define (cmd-presets args)
   (printf "~a preset geometries drawn exactly:\n" (length (preset-names)))
   (for ([g (in-list (preset-names))]) (printf "  ~a\n" g))
@@ -418,6 +476,7 @@
         (list "watch" "the same thing, under its older name" cmd-edit)
         (list "verify" "compare our PDF against LibreOffice's" cmd-verify)
         (list "ir" "print the intermediate representation" cmd-ir)
+        (list "fonts" "copy the fonts a program names in beside it" cmd-fonts)
         (list "presets" "list the shape geometries we draw exactly" cmd-presets)))
 
 (define (usage)

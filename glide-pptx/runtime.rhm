@@ -9,6 +9,7 @@
 import:
   lib("glide-pptx/runtime.rkt") as rt
   lib("glide-pptx/export.rkt") as ex
+  lib("glide-pptx/fonts.rkt") as ft
   lib("pict/main.rkt") as pict_rkt
   // Prefixed, not `open`: this module exports `blank` of its own.
   pict as pc
@@ -48,6 +49,8 @@ export:
   deck_to_pdf
   shown_slides
   transition_of
+  register_fonts
+  check_fonts
   picts_to_pptx
   pict_to_png
   media_lookup
@@ -84,6 +87,29 @@ fun slide_canvas(~width: w, ~height: h, ~background: bg = rt.#{white},
                  ~transition: transition = #false, & elems):
   rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, ~#{hidden?}: hidden,
                      ~build: build, ~transition: transition, & elems)
+
+// The fonts a deck asks for.
+//
+// `register_fonts` loads every font file in a folder beside the program, so a
+// deck can carry the faces it is set in rather than hope for them. It has to
+// run before anything is drawn or measured -- the drawing library builds its
+// font map once -- which is why a generated program calls it at the top.
+//
+// `check_fonts` refuses to run on substitutes. Each entry is a family, or a
+// family and the stand-in it will accept: `["Helvetica Neue", "Nimbus Sans"]`
+// says that a metric-compatible clone will do, and checks that the name really
+// does resolve to it rather than to whatever the machine had to hand.
+// Quiet: a program's own output is its slides, and a top-level expression's
+// value is printed. The count is the Racket side's to return; here it is not
+// news, and a number on the terminal every time a talk starts is noise.
+fun register_fonts(dir):
+  ft.#{register-fonts!}(dir)
+  #void
+fun check_fonts(& spec): ft.#{check-fonts!}(to_rkt_spec(spec))
+
+// A Rhombus list of lists, as the Racket side wants it.
+fun to_rkt_spec(spec):
+  to_rkt_list(for List (e in spec): to_rkt_list(e))
 
 // How the show moves to this slide, when the slide said. `staged.rhm` performs
 // it; nothing is drawn differently for it here.
@@ -216,7 +242,14 @@ fun pair(a, b): Pair(a, b)
 // backup PDF holding only the first is not a backup -- so an advance is a page,
 // which is the slides the animation was made from and the count the deck had
 // before anyone gave it stages.
-fun slide_pages(s):
+// A slide may be written as a function of no arguments -- see `show.rhm` -- so
+// that a talk starting part way through never builds what it skipped. A page
+// wants the picture, so here it is called.
+fun forced(s):
+  if s is_a Function.of_arity(0) | s() | s
+
+fun slide_pages(s0):
+  def s = forced(s0)
   match s
   | q :: pc.Pict:
       for List (i in 0 .. math.max(1, q.duration)): q.snapshot(i, 1.0).handle
@@ -230,12 +263,16 @@ fun deck_to_pdf(picts, path, ~width: w = #false, ~height: h = #false):
     List.append(& for List (s in picts):
                     if rt.#{canvas-hidden?}(s) | [] | slide_pages(s))
   rt.#{deck->pdf}(to_rkt_list(pages), path, ~width: w, ~height: h)
+  // Quiet, for the same reason `register_fonts` is: a top-level expression's
+  // value is printed, and the path is not news to whoever passed it in.
+  #void
 
 fun pict_to_png(p, path, ~scale: s = 1.0): rt.#{pict->png}(p, path, ~scale: s)
 
 // Writing a .pptx lives in its own module, so it is imported where it is used.
 fun picts_to_pptx(picts, path, ~width: w = #false, ~height: h = #false):
-  ex.#{picts->pptx}(to_rkt_list(picts), path, ~width: w, ~height: h)
+  ex.#{picts->pptx}(to_rkt_list(for List (s in picts): forced(s)), path,
+                    ~width: w, ~height: h)
 
 def media_lookup = rt.#{media-lookup}
 def current_media_base = rt.#{current-media-base}
