@@ -13,7 +13,7 @@
          (only-in "record-adapt.rkt" pict->display-page current-adapt-warnings)
          (only-in "runtime.rkt" placed placed? placed-x placed-y placed-rot
                   placed-pict placed-tag placed-position pin-placed))
-(provide pict->page semantic-page? current-flatten-opaque?)
+(provide pict->page semantic-page? canvas-tags current-flatten-opaque?)
 
 ;; A pict is exported semantically when it says how it was built.
 (define (semantic-page? p) (slide-desc? (pict-desc p)))
@@ -24,13 +24,97 @@
 
 (define (pict->page p width height)
   (define d (pict-desc p))
+  (define inner (and (not (slide-desc? d)) (pict? p) (layers-within p)))
   (cond
     [(slide-desc? d)
      (display-page width height
                    (ir-fill->fill (slide-desc-background d))
                    (slide-items d p width height)
                    (slide-desc-hidden? d))]
+    ;; A slide built from canvases rather than being one: a talk that gives a
+    ;; slide stages holds a base canvas and one per reveal, and what reaches
+    ;; here is the picture they compose into. The canvases are still inside it
+    ;; -- an element's tag rides on the pict as a field, so every combinator on
+    ;; the way has kept it -- so the page is what they draw between them, in the
+    ;; order they draw it, and every element on it keeps the tag its `at` gave
+    ;; it. Without this the drawing is read back as anonymous shapes, which is
+    ;; a slide nobody can edit.
+    [(pair? inner)
+     (display-page width height
+                   ;; The background is the first canvas's; a stage that is a
+                   ;; group has none of its own.
+                   (let ([canvas (for/first ([e (in-list inner)]
+                                             #:when (slide-desc? (car e)))
+                                   (car e))])
+                     (and canvas (ir-fill->fill (slide-desc-background canvas))))
+                   (composed-items inner width height)
+                   #f)]
     [else (pict->display-page (lambda (dc) (draw-pict p dc 0 0)) width height)]))
+
+;; The tags a pict would give a page, whether it is a canvas or is built from
+;; some. Used to choose between the frames an animated slide settles on: the
+;; one that shows the most of the slide is the one worth reading.
+(define (canvas-tags p)
+  (define d (pict-desc p))
+  (define cs (if (slide-desc? d)
+                 (list (cons d (xf 0.0 0.0 1.0 1.0)))
+                 (if (pict? p) (layers-within p) '())))
+  (remove-duplicates
+   (filter values
+           (append* (for/list ([entry (in-list cs)])
+                      (define ld (car entry))
+                      (for/list ([pl (in-list (if (slide-desc? ld)
+                                                  (slide-desc-placeds ld)
+                                                  (group-desc-placeds ld)))])
+                        (placed-tag pl)))))))
+
+;; Every layer inside `p` -- a canvas, or a group that a stage laid over it --
+;; each with where it sits, in the order they are drawn. Nothing inside a layer
+;; is looked for: the layer already says what it holds, and its elements keep
+;; the tags their `at` forms gave them, which is what makes them editable.
+;;
+;; `pict-children` lists the last-drawn child first, so consing as the walk goes
+;; gives them back in the order they are drawn: base first, then what each stage
+;; put over it.
+(define (layers-within p)
+  (let walk ([p p] [t (xf 0.0 0.0 1.0 1.0)] [acc '()])
+    (define d (and (pict? p) (pict-desc p)))
+    (cond
+      [(not (pict? p)) acc]
+      [(or (slide-desc? d) (group-desc? d)) (cons (cons d t) acc)]
+      [else
+       (for/fold ([acc acc]) ([c (in-list (pict-children p))])
+         (walk (child-pict c)
+               (xf (+ (xf-ox t) (* (xf-sx t) (child-dx c)))
+                   (+ (xf-oy t) (* (xf-sy t) (child-dy c)))
+                   (* (xf-sx t) (child-sx c))
+                   (* (xf-sy t) (child-sy c)))
+               acc))])))
+
+;; What one layer draws, in the page's own coordinates. A canvas draws its
+;; elements; a stage laid over the slide is a group, and its children are the
+;; elements -- the group itself is not one, since nothing placed it and it has
+;; no tag of its own to be edited by.
+(define (layer-items entry width height)
+  (define d (car entry))
+  (define t (cdr entry))
+  (if (slide-desc? d)
+      (append* (for/list ([pl (in-list (slide-desc-placeds d))])
+                 (placed-items pl t width height)))
+      (group-items d (xf-ox t) (xf-oy t) t width height)))
+
+
+(define (composed-items layers width height)
+  (define items
+    (append* (for/list ([entry (in-list layers)]) (layer-items entry width height))))
+  (define seen (make-hash))
+  (for ([i (in-list (reverse items))])
+    (define tag (item-tag i))
+    (when (and tag (not (hash-ref seen tag #f))) (hash-set! seen tag i)))
+  (for/list ([i (in-list items)]
+             #:when (let ([tag (item-tag i)])
+                      (or (not tag) (eq? i (hash-ref seen tag #f)))))
+    i))
 
 ;; ------------------------------------------------------------------ colors
 

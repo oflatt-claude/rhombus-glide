@@ -384,6 +384,88 @@
   (check-regexp-match #rx"fun slide_1[(][)]: slide_canvas" (file->string program)
                       "and the program still reads as it was written"))
 
+;; A slide built from stages is edited like any other.
+;;
+;; A talk gives a slide stages: a base canvas, a group per reveal, and an
+;; animation that fades them in. What the program then holds is an animated
+;; `Pict`, not a canvas -- but the tag an element carries rides on the pict as a
+;; field, so every canvas and every group it was built from is still in there
+;; with its tags. Settling the slide to the frame that shows the most of it and
+;; composing those layers gives back the slide as a page: every element it
+;; draws, tagged, in the order it draws them. Without that a staged slide
+;; reached the deck as anonymous shapes, and nothing on it could be edited.
+(let ()
+  (define dir (build-path work "staged-edit"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define out (build-path dir "out.pptx"))
+  (call-with-output-file program #:exists 'replace
+    (lambda (o)
+      (write-string
+       (string-join
+        (list "#lang rhombus/and_meta"
+              "import:"
+              "  lib(\"glide-pptx/runtime.rhm\") open"
+              "  pict as pc"
+              ""
+              "export: slide_width slide_height all_slides"
+              ""
+              "def slide_width = 480.0"
+              "def slide_height = 270.0"
+              ""
+              "fun slide_1():"
+              "  def base_canvas:"
+              "    slide_canvas("
+              "      ~width: slide_width, ~height: slide_height,"
+              "      at(40.0, 60.0, ~tag: \"Base\","
+              "         shape_pict(~width: 80.0, ~height: 40.0, ~fill: hex(\"4472C4\"))),"
+              "      at(40.0, 160.0, ~tag: \"Twice\","
+              "         shape_pict(~width: 60.0, ~height: 30.0, ~fill: hex(\"70AD47\"))))"
+              "  // A stage: a group laid over the base, and one shape the base"
+              "  // already drew, drawn again -- which is what a reveal does."
+              "  def stage_1:"
+              "    group_pict(~width: slide_width, ~height: slide_height,"
+              "               at(240.0, 60.0, ~tag: \"Revealed\","
+              "                  shape_pict(~width: 80.0, ~height: 40.0, ~fill: hex(\"ED7D31\"))),"
+              "               at(40.0, 160.0, ~tag: \"Twice\","
+              "                  shape_pict(~width: 60.0, ~height: 30.0, ~fill: hex(\"70AD47\"))))"
+              "  def b = pc.Pict.from_handle(base_canvas)"
+              "  def s = pc.Pict.from_handle(stage_1)"
+              "  def settled = b.snapshot(math.max(0, b.duration - 1), 1.0)"
+              "  pc.switch(b, pc.animate(fun (t):"
+              "                            pc.overlay(~horiz: #'left, ~vert: #'top,"
+              "                                       settled, s.alpha(t))"
+              "                              .refocus(settled)))"
+              ""
+              "def all_slides = [slide_1]")
+        "\n")
+       o)))
+  (define states (program-slide-states program))
+  (check-equal? (length states) 1 "one slide")
+  (define tags (map el-state-tag (slide-state-elements (first states))))
+  (check-equal? (sort tags string<?) '("Base" "Revealed" "Twice")
+                (format "the base's elements and the stage's, all of them tagged: ~s" tags))
+
+  (picts->pptx (load-program-picts program) out)
+  (void (sync-once program out #:workdir (build-path dir "w")))
+
+  ;; An element the stage introduced: dragging it lands in the stage.
+  (check-true (and (drag-in-deck! out 1 "Revealed" 300.0 200.0) #t) "the stage's own shape was dragged")
+  (define r (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                (format "and the drag was written: ~s" (map (lambda (s) (cdr s)) (sync-report-skipped r))))
+  (check-regexp-match #rx"at[(]300[.]0, 200[.]0, ~tag: \"Revealed\"" (file->string program)
+                      "into the `at` form the stage holds")
+
+  ;; And a shape the base and the stage both draw moves as one: they are the
+  ;; same shape, and moving one and not the other is not something anyone means.
+  (check-true (and (drag-in-deck! out 1 "Twice" 111.0 222.0) #t) "the twinned shape was dragged")
+  (define r2 (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r2)) '(moved) "the drag was written")
+  (check-equal? (length (regexp-match* #rx"at[(]111[.]0, 222[.]0" (file->string program))) 2
+                "to both the base's copy and the stage's")
+  (check-true (pair? (load-program-picts program)) "and the program still reads"))
+
 ;; A slide the program does not lay out is left alone, and does not stop the
 ;; rest of the save.
 ;;
