@@ -286,6 +286,119 @@
                     (format "~a: every `at` written was found again" name)))
     (delete-file out)))
 
+;; ------------------------------------------- a leading space is not a wrap
+
+;; Text that starts with spaces is indented by them. They used to be dropped
+;; along with the space a line breaks at -- one rule for both -- so a line the
+;; deck indents by two spaces was drawn flush left, and every line under it in
+;; the same box lined up with the wrong thing.
+(let ()
+  (local-require glide-pptx/runtime glide-pptx/draw-ir glide-pptx/record-adapt
+                 pict racket/list racket/string)
+  (define (left-of text #:width [w 2000.0])
+    (define box (textbox #:width w #:height 200.0
+                         (para* (run* text #:size 40.0 #:font "Liberation Sans"))))
+    (define page (pict->display-page (lambda (dc) (draw-pict box dc 0 0)) w 200.0))
+    ;; The first thing with ink on it: the spaces are drawn too, as pieces of
+    ;; the line, and where they sit is not what is being asked.
+    (define ts (sort (for/list ([i (in-list (display-page-items page))]
+                                #:when (and (it:text? i)
+                                            (not (string=? "" (string-trim (it:text-str i))))))
+                       i)
+                     < #:key it:text-x))
+    (and (pair? ts) (it:text-x (first ts))))
+  (define flush (left-of "(a + 1) - 1"))
+  (define indented (left-of "  (a + 1) - 1"))
+  (check-true (> indented flush)
+              (format "two spaces indent the line: ~a against ~a" indented flush))
+
+  ;; And the space a line actually breaks at is still dropped, so wrapped text
+  ;; stays flush with the line above it.
+  (define (line-lefts text w)
+    (define box (textbox #:width w #:height 400.0
+                         (para* (run* text #:size 40.0 #:font "Liberation Sans"))))
+    (define page (pict->display-page (lambda (dc) (draw-pict box dc 0 0)) w 400.0))
+    (define ts (for/list ([i (in-list (display-page-items page))]
+                          #:when (and (it:text? i)
+                                      (not (string=? "" (string-trim (it:text-str i))))))
+                 i))
+    (define rows (group-by it:text-y ts))
+    (for/list ([r (in-list (sort rows < #:key (lambda (r) (it:text-y (first r)))))])
+      (apply min (map it:text-x r))))
+  (define lefts (line-lefts "aaaaaaa bbbbbbb ccccccc ddddddd" 260.0))
+  (check-true (> (length lefts) 1) "the text wrapped")
+  (when (> (length lefts) 1)
+    (check-= (second lefts) (first lefts) 0.6
+             "and the wrapped line starts where the first one does")))
+
+;; ----------------------------------------- character spacing goes *between*
+
+;; A run's character spacing is drawn between its characters, so a segment's
+;; width has to be measured the same way. It used to be added to the advance
+;; from one word to the next while each word was drawn at its natural width, so
+;; every word landed `spacing` times its length to the left of where it should
+;; -- and at -3pt on a 116pt title, nine characters of "Efficient" swallowed the
+;; space after it. The words in a talk's title ran together and nothing here
+;; noticed, because the only spaced fixture spells `l e t t e r s`, whose words
+;; are one character long and for whom the two rules agree.
+(let ()
+  (local-require glide-pptx/runtime glide-pptx/draw-ir glide-pptx/record-adapt
+                 pict racket/list)
+  ;; The talk's own title, at the size it is set in: ten characters before the
+  ;; space is what makes the difference visible rather than arithmetic.
+  (define TEXT "Efficient Extraction")
+  (define SPACING -3.0)
+  (define (drawn spacing)
+    (define box
+      (textbox #:width 4000.0 #:height 400.0
+               (para* (run* TEXT #:size 116.0 #:font "Liberation Sans" #:spacing spacing))))
+    (define page (pict->display-page (lambda (dc) (draw-pict box dc 0 0)) 4000.0 400.0))
+    (sort (filter it:text? (display-page-items page)) < #:key it:text-x))
+  (define plain (drawn 0.0))
+  (define tight (drawn SPACING))
+  (check-equal? (apply string-append (map it:text-str plain)) TEXT
+                "unspaced, the line is drawn as it reads")
+  (check-equal? (apply string-append (map it:text-str tight)) TEXT
+                "and spaced, every character is still drawn, in order")
+  ;; The line from the left of its first character to the right of its last.
+  ;; Measured this way because the two are drawn differently -- unspaced a word
+  ;; is one call, spaced it is one call per character -- and what has to agree
+  ;; is where the line ends, not how many calls it took.
+  (define (extent items)
+    (and (pair? items)
+         (- (apply max (for/list ([i (in-list items)]) (+ (it:text-x i) (it:text-w i))))
+            (apply min (map it:text-x items)))))
+  ;; One gap per pair of characters, each of them `SPACING` tighter.
+  ;; Within a point or so: a spaced line is drawn character by character and so
+  ;; loses the kerning a whole word is drawn with, which is worth about that
+  ;; much across twenty characters at this size.
+  (check-= (extent tight)
+           (+ (extent plain) (* SPACING (sub1 (string-length TEXT)))) 2.5
+           "the characters are drawn closer by the spacing, not the words")
+  ;; And the symptom: the gap between the B and the C. Measured from the right
+  ;; of whatever was drawn ending in B to the left of whatever begins with C, so
+  ;; that it reads the same whether the line was drawn word by word or character
+  ;; by character. With the spacing applied to the advance and not to the
+  ;; drawing this went *negative*: the words overlapped, and the space with them.
+  ;; The space is drawn either way -- it is a piece of the line like any other --
+  ;; so the gap is measured from what is drawn on each side of it.
+  (define (gap items)
+    (define i (for/first ([(it k) (in-indexed items)]
+                          #:when (string=? " " (it:text-str it)))
+                k))
+    (and i (positive? i) (< (add1 i) (length items))
+         (let ([before (list-ref items (sub1 i))]
+               [after (list-ref items (add1 i))])
+           (- (it:text-x after) (+ (it:text-x before) (it:text-w before))))))
+  (check-true (and (gap tight) (> (gap tight) (* 0.5 (gap plain))))
+              (format "the space is still there: ~a points of it against ~a unspaced"
+                      (gap tight) (gap plain)))
+  ;; The gap crosses two character boundaries -- after the t and after the space
+  ;; -- so it narrows by twice the spacing and no more. It used to narrow by the
+  ;; whole word's worth, which at ten characters left nothing of it.
+  (check-= (gap tight) (+ (gap plain) (* 2 SPACING)) 0.6
+           "and it is the spacing narrower, not gone"))
+
 ;; --------------------------------------------- line spacing is 1.2 per cent
 
 ;; A percentage line spacing is a percentage of *single* spacing, and single

@@ -11,7 +11,10 @@
          ;; Here rather than in the fast suite because it runs whole Rhombus
          ;; programs, and compiling one of those costs more than everything the
          ;; fast suite does.
-         "staged.rkt")
+         "staged.rkt"
+         ;; A whole talk, when there is one to compare against; it says so and
+         ;; passes when there is not.
+         "talk.rkt")
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

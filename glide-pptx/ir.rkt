@@ -137,6 +137,39 @@
 (struct slide (index name width height background inherited elements hidden? build) #:prefab)
 (struct deck (width height slides media-dir source) #:prefab)
 
+;; ------------------------------------------------------------------- fonts
+
+;; Every typeface the deck's own text names, in the order they first appear.
+;; A generated program lists these so that it can refuse to run on substitutes:
+;; racket/draw picks a stand-in without saying so, and a stand-in with different
+;; metrics lays the deck out differently -- line spacing is a percentage of the
+;; font size, so the leading stays where it was while the ink moves.
+;;
+;; Inherited shapes are not walked: they belong to the layout and the master,
+;; and a program that does not draw them does not need their fonts.
+(define (deck-font-families d)
+  (define seen (make-hash))
+  (define out '())
+  (define (note! family)
+    (when (and family (string? family) (not (string=? "" family))
+               (not (hash-ref seen family #f)))
+      (hash-set! seen family #t)
+      (set! out (cons family out))))
+  (define (walk-body! b)
+    (when (text-body? b)
+      (for* ([p (in-list (text-body-paras b))] [r (in-list (para-runs p))])
+        (note! (trun-family r)))))
+  (define (walk-element! e)
+    (cond
+      [(shape? e) (walk-body! (shape-body e))]
+      [(group? e) (for-each walk-element! (group-children e))]
+      [(tbl? e) (for* ([row (in-list (tbl-cells e))] [c (in-list row)])
+                  (when (tbl-cell? c) (walk-body! (tbl-cell-body c))))]
+      [else (void)]))
+  (for* ([s (in-list (deck-slides d))] [e (in-list (slide-elements s))])
+    (walk-element! e))
+  (reverse out))
+
 ;; ------------------------------------------------------------------ walking
 
 ;; Rebuilds `e` with a different bounding box, preserving everything else.

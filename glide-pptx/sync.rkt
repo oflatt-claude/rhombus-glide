@@ -71,10 +71,15 @@
     (parameterize ([current-media-base (path-only full)] [current-namespace ns])
       (for/or ([name (in-list names)])
         (dynamic-require `(file ,(path->string full)) name (lambda () #f)))))
+  ;; A slide may be written as a function of no arguments, so that a talk which
+  ;; starts part way through never builds the slides it skipped. Everything but
+  ;; the show wants the picture, so this is where they are called.
+  (define (force-slide s) (if (and (procedure? s) (procedure-arity-includes? s 0)) (s) s))
   (cond
-    [(list? found) found]
-    [(treelist? found) (treelist->list found)]
+    [(list? found) (map force-slide found)]
+    [(treelist? found) (map force-slide (treelist->list found))]
     [(pict? found) (list found)]
+    [(and (procedure? found) (procedure-arity-includes? found 0)) (list (found))]
     [else
      (error 'glide
             (string-append "~a provides no list of slide picts.\n"
@@ -1070,14 +1075,39 @@
   (define shut (and open (rhombus-close text open)))
   (and shut (rng (rng-start r) (add1 shut))))
 
+;; The `slide_canvas` a slide is defined by, and the parentheses it is called
+;; with, in either shape a definition can take:
+;;
+;;   def slide_1 = slide_canvas(...)      built when the program loads
+;;   fun slide_1(): slide_canvas(...)     built when the slide is shown
+;;
+;; The second is what lets a talk skip ahead without paying for the slides it
+;; skipped: `set_start_from` never calls the ones before it. Everything else
+;; here reads the same either way, which is why both are allowed.
+(define (rhombus-canvas-parts l)
+  (cond
+    [(and (= 6 (length l)) (eq? 'slide_canvas (syntax-e* (fifth l))))
+     (values (fifth l) (sixth l))]
+    [(and (= 5 (length l)) (eq? 'fun (syntax-e* (second l)))
+          (rhombus-head? (fourth l) 'parens))
+     (define blk (let ([e (syntax-e (fifth l))]) (and (list? e) e)))
+     (define grp (and blk (eq? 'block (syntax-e* (first blk))) (= 2 (length blk))
+                      (let ([e (syntax-e (second blk))]) (and (list? e) e))))
+     (cond
+       [(and grp (= 3 (length grp)) (eq? 'group (syntax-e* (first grp)))
+             (eq? 'slide_canvas (syntax-e* (second grp)))
+             (rhombus-head? (third grp) 'parens))
+        (values (second grp) (third grp))]
+       [else (values #f #f)])]
+    [else (values #f #f)]))
+
 (define (rhombus-slide-sites groups text)
   (filter values
           (for/list ([g (in-list groups)])
             (define scope (rhombus-def-name g))
             (define l (let ([e (syntax-e g)]) (and (list? e) e)))
-            (define name (and l (= 6 (length l))
-                              (eq? 'slide_canvas (syntax-e* (fifth l)))
-                              (fifth l)))
+            (define-values (name canvas-parens)
+              (if l (rhombus-canvas-parts l) (values #f #f)))
             (and scope name
                  (let* ([r (range-of name)]
                         [open (and r (next-open text (rng-end r)))]
@@ -1087,13 +1117,13 @@
                         (slide-site scope (first ins) 2
                                     (let ([d (range-of (second l))]) (and d (rng-start d)))
                                     (add1 shut)
-                                    (canvas-paint-site (sixth l))
-                                    (canvas-size-site (sixth l) '#:width 'slide-width)
-                                    (canvas-size-site (sixth l) '#:height 'slide-height)
-                                    (canvas-flag-site (sixth l) '#:hidden 'hidden)
+                                    (canvas-paint-site canvas-parens)
+                                    (canvas-size-site canvas-parens '#:width 'slide-width)
+                                    (canvas-size-site canvas-parens '#:height 'slide-height)
+                                    (canvas-flag-site canvas-parens '#:hidden 'hidden)
                                     ;; Which build this slide is a frame of, if
                                     ;; it is one.
-                                    (canvas-string (sixth l) '#:build))))))))
+                                    (canvas-string canvas-parens '#:build))))))))
 
 ;; Where the canvas states its background, which is always somewhere: the
 ;; emitter writes one whether the slide had a background of its own or not.

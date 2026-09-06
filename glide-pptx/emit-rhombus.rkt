@@ -161,6 +161,8 @@
     (line out 0 "// The theme font. Runs that name no typeface use this one, so restyling")
     (line out 0 "// the whole deck is one edit.")
     (line out 0 "current_default_font(~s)" (current-deck-font))
+    (newline out)
+    (write-font-check out d)
     (unless (zero? (hash-count media-names))
       (newline out)
       (line out 0 "// Images sit next to this file, so the program travels as a folder.")
@@ -190,6 +192,37 @@
     (line out 2 "deck_to_pdf(all_slides, ~s, ~~width: slide_width, ~~height: slide_height)"
           pdf-name)
     (line out 2 "println(\"wrote \" +& ~s)" pdf-name)))
+
+;; The typefaces this deck is set in, and what to do about them.
+;;
+;; racket/draw substitutes silently for a font that is not installed, and a
+;; substitute is not a cosmetic difference: this runtime's line spacing is a
+;; percentage of the font size, so the leading does not move when the face does
+;; -- a 116pt title's two lines overlapped by 5.6pt when Helvetica Neue was
+;; drawn as Noto Sans. So the program says which faces it needs and stops if
+;; they are not there, rather than draw a deck nobody would recognise.
+;;
+;; Fonts in a `fonts` folder beside the program are loaded first, so a deck can
+;; carry the faces it is set in. That has to happen before anything is drawn:
+;; the drawing library builds its font map once.
+(define (write-font-check out d)
+  (define families (deck-font-families d))
+  (define named (remove-duplicates (cons (current-deck-font) families)))
+  (line out 0 "// The typefaces this deck is set in. A font file in `fonts` beside this")
+  (line out 0 "// program is loaded from there; anything else has to be installed.")
+  (line out 0 "//")
+  (line out 0 "// Add a stand-in to any of these to accept a metric-compatible clone --")
+  (line out 0 "//   [\"Helvetica Neue\", \"Nimbus Sans\"]")
+  (line out 0 "// -- which is checked by measuring, since a font reports the face that was")
+  (line out 0 "// asked for and not the one that was drawn.")
+  (line out 0 "register_fonts(\"fonts\")")
+  (cond
+    [(null? named) (void)]
+    [else
+     (line out 0 "check_fonts(")
+     (for ([f (in-list named)] [i (in-naturals)])
+       (line out 2 "[~s]~a" f (if (= i (sub1 (length named))) "" ",")))
+     (line out 0 ")")]))
 
 (define (write-rhombus-deck d path
                             #:source-name [source-name #f]

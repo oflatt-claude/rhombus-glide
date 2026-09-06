@@ -212,9 +212,26 @@
   (values (/ w scale) (/ h scale) (/ d scale)))
 
 ;; Metrics for one run's text, at the run's real size.
+;;
+;; A run with character spacing is measured the way it is drawn: character by
+;; character, with the spacing added after each one. Measuring the string whole
+;; and adding the spacing to the total would be the same number, but only if
+;; the string were also drawn whole -- and it cannot be, because the spacing
+;; has to go *between* the characters. Widths and drawing have to come from the
+;; same rule or the two disagree, which is how the spaces went missing from a
+;; 116pt title: every word was drawn at its natural width and the next one
+;; started three points per character to the left of it.
 (define (measure-run str r)
   (define k (measure-scale-for (run-size r)))
-  (measure-scaled str (run-font r k) k))
+  (define spc (trun-spacing r))
+  (cond
+    [(or (not spc) (zero? spc) (string=? str ""))
+     (measure-scaled str (run-font r k) k)]
+    [else
+     (define font (run-font r k))
+     (for/fold ([w 0.0] [h 0.0] [d 0.0]) ([ch (in-string str)])
+       (define-values (cw ch* cd) (measure-scaled (string ch) font k))
+       (values (+ w cw spc) (max h ch*) (max d cd)))]))
 
 (define (run-display-text r)
   (case (trun-caps r)
@@ -277,17 +294,21 @@
   (define trimmed (let loop ([rs (reverse segs)])
                     (cond [(and (pair? rs) (seg-space? (car rs))) (loop (cdr rs))]
                           [else (reverse rs)])))
-  (for/sum ([s (in-list trimmed)]) (+ (seg-w s) (* (trun-spacing (seg-run s))
-                                                   (string-length (seg-text s))))))
+  (for/sum ([s (in-list trimmed)]) (seg-w s)))
 
 (define (wrap-paragraph p avail wrap?)
   (define toks (append* (for/list ([r (in-list (para-runs p))]) (tokenize-run r))))
   (define lines '())
   (define cur '())
   (define curw 0.0)
-  (define (flush!)
+  ;; Whether the line being filled was started by running out of room. A space
+  ;; that starts a *wrapped* line is the one the text broke at, and drawing it
+  ;; would leave the wrapped text hanging; a space that starts a paragraph, or a
+  ;; line after a hard break, is what someone typed and belongs on the page.
+  (define wrapped? #f)
+  (define (flush! [w? #f])
     (set! lines (cons (reverse cur) lines))
-    (set! cur '()) (set! curw 0.0))
+    (set! cur '()) (set! curw 0.0) (set! wrapped? w?))
   (define (push! t) (set! cur (cons t cur)) (set! curw (+ curw (seg-w t))))
   ;; Places one non-space token, breaking inside it when it cannot fit a line
   ;; even on its own -- which is what PowerPoint does with a long unbroken run
@@ -295,18 +316,18 @@
   (define (place-word! t)
     (cond
       [(or (not wrap?) (<= (+ curw (seg-w t)) avail)) (push! t)]
-      [(pair? cur) (flush!) (place-word! t)]
+      [(pair? cur) (flush! #t) (place-word! t)]
       [else
        (define-values (head tail) (split-seg t avail))
        (cond
          [(not head) (push! t)]
-         [else (push! head) (flush!) (when tail (place-word! tail))])]))
+         [else (push! head) (flush! #t) (when tail (place-word! tail))])]))
   (for ([t (in-list toks)])
     (cond
       [(eq? t 'break) (flush!)]
       [(seg-space? t)
-       ;; A space that starts a line is dropped, so wrapped text stays flush.
-       (unless (null? cur) (push! t))]
+       ;; Dropped only where the line broke, not where someone indented.
+       (unless (and (null? cur) wrapped?) (push! t))]
       [else (place-word! t)]))
   (flush!)
   (define raw (reverse lines))
@@ -494,7 +515,19 @@
                      ;; Superscript and subscript shift the baseline by a
                      ;; fraction of the font size.
                      (* (trun-baseline r) (trun-size r))))
-      (send dc draw-text (seg-text s) (+ dx x) (+ dy top) #t)
+      ;; Character by character when the run is spaced, because the spacing
+      ;; goes between the characters and `draw-text` has nowhere to put it.
+      (define spc (trun-spacing r))
+      (cond
+        [(or (not spc) (zero? spc)) (send dc draw-text (seg-text s) (+ dx x) (+ dy top) #t)]
+        [else
+         (define k (measure-scale-for (run-size r)))
+         (define mfont (run-font r k))
+         (for/fold ([cx (+ dx x)]) ([ch (in-string (seg-text s))])
+           (send dc draw-text (string ch) cx (+ dy top) #t)
+           (define-values (cw _h _d) (measure-scaled (string ch) mfont k))
+           (+ cx cw spc))
+         (void)])
       ;; Both rules are drawn here rather than left to the font. The one the
       ;; font draws is a hairline whatever the size, which at 40pt is a third
       ;; of the weight LibreOffice gives it; and both of these sat higher than
@@ -508,7 +541,7 @@
         (send dc draw-line (+ dx x) y (+ dx x (seg-w s)) y))
       (when (trun-strike? r) (rule! 0.78 14.0))
       (when (trun-underline? r) (rule! 1.07 15.0))
-      (+ x (seg-w s) (* (trun-spacing r) (string-length (seg-text s))))))
+      (+ x (seg-w s))))
   (send dc set-font old-font)
   (send dc set-text-foreground old-fg)
   (send dc set-pen old-pen)
@@ -954,9 +987,14 @@
   (define d (pict-desc p))
   (and (slide-desc? d) (slide-desc-hidden? d) #t))
 
+;; A slide written as a function of no arguments is not built yet, and asking
+;; whether it is hidden would build it -- which is the one thing being lazy is
+;; for. It is kept; a lazy deck leaves out what it does not want shown.
 (define (shown-picts picts)
   (for/list ([p (in-list picts)]
-             #:unless (let ([d (pict-desc p)]) (and (slide-desc? d) (slide-desc-hidden? d))))
+             #:unless (and (not (procedure? p))
+                           (let ([d (pict-desc p)])
+                             (and (slide-desc? d) (slide-desc-hidden? d)))))
     p))
 
 (define (picts->pdf picts0 path #:width w #:height h)

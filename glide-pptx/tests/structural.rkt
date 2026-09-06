@@ -12,6 +12,7 @@
          racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
          glide-pptx/export glide-pptx/sync-state glide-pptx/sync glide-pptx/emit-rhombus
+         glide-pptx/fonts
          "ir-diff.rkt" "deck-edit.rkt")
 
 (define-runtime-path decks-dir "decks")
@@ -347,6 +348,89 @@
                   "the drag was written")
     (check-regexp-match #rx"~transition: #'left" (file->string program)
                         "and the transition is still there")))
+
+;; A slide may be written as a function, and everything still finds it.
+;;
+;; `def slide_1 = slide_canvas(...)` builds every slide when the program loads;
+;; `fun slide_1(): slide_canvas(...)` builds one when it is shown, which is what
+;; lets a talk start at slide twenty without paying for the nineteen before it.
+;; The merge has to read both, or taking the faster shape would cost the editor.
+(let ()
+  (define dir (build-path work "lazy"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define out (build-path dir "out.pptx"))
+  (define d (pptx->deck (build-path decks-dir "03-shapes.pptx")
+                        #:workdir (build-path dir "u")))
+  (write-rhombus-deck d program #:source-name "03-shapes.pptx")
+  ;; The same program, with its slides written as functions.
+  (define eager (file->string program))
+  (define lazy (regexp-replace* #px"def (slide_\\d+) = slide_canvas[(]" eager
+                                "fun \\1(): slide_canvas("))
+  (check-not-equal? lazy eager "the slides were rewritten as functions")
+  (call-with-output-file program #:exists 'replace
+    (lambda (o) (write-string lazy o)))
+
+  (check-equal? (length (load-program-picts program)) (length (deck-slides d))
+                "every slide is still found, and called")
+  (picts->pptx (load-program-picts program) out)
+  (void (sync-once program out #:workdir (build-path dir "w")))
+  (check-true (and (drag-in-deck! out 1 "Rectangle 1" 321.0 123.0) #t) "a shape was dragged")
+  (define r (sync-once program out #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                "and the drag was written into the function's canvas")
+  (check-regexp-match #rx"at[(]321[.]0, 123[.]0" (file->string program)
+                      "where the shape now is")
+  (check-regexp-match #rx"fun slide_1[(][)]: slide_canvas" (file->string program)
+                      "and the program still reads as it was written"))
+
+;; A program says which typefaces it needs, and stops if they are not there.
+;;
+;; racket/draw substitutes silently, and a substitute is not cosmetic: the
+;; leading here is a percentage of the font size, so it stays where it was while
+;; the ink moves. A deck drawn in the wrong face is worse than one that refuses
+;; to draw, because only one of the two tells you.
+(let ()
+  (define dir (build-path work "fonts"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define d (pptx->deck (build-path decks-dir "06-drawn.pptx")
+                        #:workdir (build-path dir "u")))
+  (check-equal? (deck-font-families d) '("DejaVu Sans Mono" "DejaVu Sans")
+                "the families the deck's own text names, in the order they appear")
+  (write-rhombus-deck d program #:source-name "06-drawn.pptx")
+  (define src (file->string program))
+  (check-regexp-match #rx"register_fonts[(]\"fonts\"[)]" src
+                      "fonts beside the program are loaded before anything is drawn")
+  (check-regexp-match #rx"check_fonts[(]" src "and the program says which it needs")
+  (for ([f (in-list (deck-font-families d))])
+    (check-regexp-match (regexp (format "\\[~s\\]" f)) src
+                        (format "~a is named" f)))
+  (check-true (pair? (load-program-picts program))
+              "and it runs, because these fonts are here")
+
+  ;; The refusal, which is the point of writing the check at all.
+  (define missing (build-path dir "missing.rhm"))
+  (call-with-output-file missing #:exists 'replace
+    (lambda (o) (write-string (string-replace src "[\"DejaVu Sans\"]" "[\"Nonexistent Face 91\"]") o)))
+  (define why
+    (with-handlers ([exn:fail? (lambda (e) (exn-message e))])
+      (load-program-picts missing)
+      #f))
+  (check-true (and why (regexp-match? #rx"Nonexistent Face 91" why))
+              (format "a font that is not there stops the program: ~a" why))
+
+  ;; And a font file beside the program is loaded from there. Any installed file
+  ;; will do to show that the loading works -- an uninstalled one would show
+  ;; more, and there is not one of those to be sure of on every machine.
+  (define sample (font-file-for "DejaVu Sans"))
+  (cond
+    [(not sample) (printf "no fc-match; bundled fonts are not exercised\n")]
+    [else
+     (define bundle (build-path dir "fonts"))
+     (make-directory* bundle)
+     (copy-file sample (build-path bundle (file-name-from-path sample)) #t)
+     (check-equal? (register-fonts! bundle) 1 "the font file beside the program was loaded")]))
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
