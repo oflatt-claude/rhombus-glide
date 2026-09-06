@@ -7,7 +7,8 @@
 (require rackunit racket/list racket/string racket/file racket/path racket/port
          racket/system racket/runtime-path
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-rhombus glide-pptx/export
-         glide-pptx/sync glide-pptx/watch glide-pptx/runtime "deck-edit.rkt")
+         glide-pptx/sync glide-pptx/watch glide-pptx/runtime "deck-edit.rkt"
+         (only-in glide-pptx/main default-app))
 
 (define-runtime-path decks-dir "decks")
 
@@ -325,6 +326,18 @@
   (check-false (directory-exists? scratch) "and the scratch went with it")
   (check-true (file-exists? program) "the program is what is left")
   (kill-thread runner))
+
+;; Which editor a bare `raco glide program.rhm` opens. One that is known to
+;; work, or a refusal to start: opening nothing and carrying on is how a
+;; session ends up reporting an AppleScript syntax error about a property,
+;; which says nothing about what is wrong.
+(let ()
+  (cond
+    [(soffice-exe)
+     (check-equal? (default-app) 'libreoffice "LibreOffice, where there is one")]
+    [else
+     (check-exn #rx"no LibreOffice" (lambda () (default-app))
+                "and otherwise it says so and stops")]))
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
