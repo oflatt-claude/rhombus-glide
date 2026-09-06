@@ -177,6 +177,58 @@
       (check-equal? (and m (string->number (cadr m))) 4
                     "an advance is a page, and a hidden slide is not")])])
 
+;; A program can be loaded twice in one process.
+;;
+;; `load-program-picts` reads a program in a namespace of its own, because a
+;; second `dynamic-require` in the same one hands back the instance it already
+;; has and the merge would never see its own patch. But a talk whose helpers
+;; import slideshow pulls in racket/gui, which cannot be instantiated twice in a
+;; process -- and the watch loop loads the program again on every save. So the
+;; second save died on a program that drew through slideshow, which is to say on
+;; a talk.
+(cond
+  [(not display?)
+   (printf "no display and no xvfb-run; loading twice is not checked\n")]
+  [else
+   (define dir (build-path work "twice"))
+   (make-directory* dir)
+   (define program (build-path dir "p.rhm"))
+   (call-with-output-file program #:exists 'replace
+     (lambda (o)
+       (write-string
+        (string-join
+         (list "#lang rhombus/and_meta"
+               "import:"
+               "  lib(\"glide-pptx/runtime.rhm\") open"
+               "  // The import that pulls in the GUI, as a talk's helpers do."
+               "  slideshow as ss"
+               ""
+               "export: all_slides"
+               "def slide_1 = slide_canvas(~width: 320.0, ~height: 240.0)"
+               "def all_slides = [slide_1]")
+         "\n")
+        o)))
+   (define driver (build-path dir "twice.rkt"))
+   (call-with-output-file driver #:exists 'replace
+     (lambda (o)
+       (write-string
+        (format "#lang racket/base\n(require glide-pptx/sync)\n~a\n~a\n~a\n"
+                (format "(define p ~s)" (path->string program))
+                "(printf \"first ~a\\n\" (length (load-program-picts p)))"
+                "(printf \"second ~a\\n\" (length (load-program-picts p)))")
+        o)))
+   (define out (open-output-string))
+   (define err (open-output-string))
+   (define ok?
+     (parameterize ([current-output-port out] [current-error-port err])
+       (if xvfb
+           (system* xvfb "-a" racket-exe (path->string driver))
+           (system* racket-exe (path->string driver)))))
+   (check-true ok? (format "the program loaded twice: ~a" (get-output-string err)))
+   (check-regexp-match #rx"first 1" (get-output-string out) "the first load found the slide")
+   (check-regexp-match #rx"second 1" (get-output-string out)
+                       "and so did the second, in the same process")])
+
 (printf "staged tests done\n")
 
 (module+ main (void (test-log #:display? #t #:exit? #t)))

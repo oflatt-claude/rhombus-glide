@@ -61,16 +61,32 @@
 ;; runtime and `pict` are attached rather than re-instantiated, so the picts that
 ;; come back are the same struct types this module knows, and the media base is
 ;; the same parameter.
+;; The namespace the last program was loaded into. See `load-program-picts`.
+(define previous-program-namespace (box #f))
+
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
   (define ns (make-base-empty-namespace))
   (for ([m (in-list '(pict glide-pptx/runtime glide-pptx/tagged glide-pptx/ir))])
     (namespace-attach-module (current-namespace) m ns))
+  ;; A program whose helpers import slideshow pulls in racket/gui, and that
+  ;; cannot be instantiated twice in one process -- while the watch loop loads
+  ;; the program again on every save. The first load instantiates it in its own
+  ;; namespace, so the one to carry forward is that namespace's, not this
+  ;; thread's: each load hands the next one what it has. Nothing is attached
+  ;; when nothing has loaded a GUI, which is the usual case and must stay that
+  ;; way -- translating a deck should never start one.
+  (for ([m (in-list '(racket/draw racket/gui/base))])
+    (define from (unbox previous-program-namespace))
+    (when from
+      (with-handlers ([exn:fail? void]) (namespace-attach-module from m ns))))
   (define names (if named (list (string->symbol named)) '(all_slides all-slides)))
   (define found
     (parameterize ([current-media-base (path-only full)] [current-namespace ns])
-      (for/or ([name (in-list names)])
-        (dynamic-require `(file ,(path->string full)) name (lambda () #f)))))
+      (begin0
+        (for/or ([name (in-list names)])
+          (dynamic-require `(file ,(path->string full)) name (lambda () #f)))
+        (set-box! previous-program-namespace ns))))
   ;; A slide may be written as a function of no arguments, so that a talk which
   ;; starts part way through never builds the slides it skipped. Everything but
   ;; the show wants the picture, so this is where they are called.
