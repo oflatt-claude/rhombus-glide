@@ -199,7 +199,10 @@
                           #:size-in-pixels? #t
                           #:weight (if (trun-bold? r) 'bold 'normal)
                           #:style (if (trun-italic? r) 'italic 'normal)
-                          #:underlined? (and (trun-underline? r) #t)))))
+                          ;; Drawn beside the text instead, where its weight
+                          ;; and its distance below the baseline are ours to
+                          ;; match against LibreOffice.
+                          #:underlined? #f))))
 
 ;; (values width height descent) of `str` in `font`, where `font` was built at
 ;; `scale` times its nominal size.
@@ -491,11 +494,19 @@
                      ;; fraction of the font size.
                      (* (trun-baseline r) (trun-size r))))
       (send dc draw-text (seg-text s) (+ dx x) (+ dy top) #t)
-      (when (trun-strike? r)
-        (define mid (+ dy top (* 0.62 (- (seg-h s) (seg-desc s)))))
+      ;; Both rules are drawn here rather than left to the font. The one the
+      ;; font draws is a hairline whatever the size, which at 40pt is a third
+      ;; of the weight LibreOffice gives it; and both of these sat higher than
+      ;; LibreOffice puts them. The fractions are of the ascent, measured
+      ;; against LibreOffice across three faces rather than guessed, and they
+      ;; land within a pixel of it at 40pt.
+      (define (rule! frac weight)
+        (define y (+ dy top (* frac (- (seg-h s) (seg-desc s)))))
         (send dc set-pen (new pen% [color (rgba->color (trun-color r))]
-                              [width (max 0.5 (/ (trun-size r) 14.0))]))
-        (send dc draw-line (+ dx x) mid (+ dx x (seg-w s)) mid))
+                              [width (max 0.5 (/ (trun-size r) weight))]))
+        (send dc draw-line (+ dx x) y (+ dx x (seg-w s)) y))
+      (when (trun-strike? r) (rule! 0.78 14.0))
+      (when (trun-underline? r) (rule! 1.07 15.0))
       (+ x (seg-w s) (* (trun-spacing r) (string-length (seg-text s))))))
   (send dc set-font old-font)
   (send dc set-text-foreground old-fg)
