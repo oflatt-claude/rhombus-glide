@@ -232,11 +232,16 @@
                         (px (seg:curve-x2 s)) (py (seg:curve-y2 s))
                         (px (seg:curve-x s)) (py (seg:curve-y s)))]
                [else "<a:close/>"]))))
+  ;; The text rectangle is named rather than measured: `r` and `b` are the
+  ;; shape's own right and bottom, which is what PowerPoint writes and what
+  ;; every file here has. Written as numbers instead -- the same numbers, in
+  ;; the space the path is drawn in -- LibreOffice puts the text somewhere it
+  ;; cannot be seen, and a callout comes back as an empty bubble.
   (format (string-append "<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/>"
-                         "<a:rect l=\"0\" t=\"0\" r=\"~a\" b=\"~a\"/>"
+                         "<a:rect l=\"0\" t=\"0\" r=\"r\" b=\"b\"/>"
                          "<a:pathLst><a:path w=\"~a\" h=\"~a\">~a</a:path></a:pathLst>"
                          "</a:custGeom>")
-          (emu w) (emu h) (emu w) (emu h) body))
+          (emu w) (emu h) body))
 
 ;; -------------------------------------------------------------------- text
 
