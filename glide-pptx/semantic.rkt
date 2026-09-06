@@ -123,9 +123,19 @@
                        (ir-line->pen (image-desc-line d) f)
                        (image-desc-opacity d) tag))]
     [(group-desc? d) (list (group-item d x y rot t tag page-w page-h))]
-    ;; A table is drawn rather than described, but it flattens into shapes and
-    ;; text that read correctly, so it keeps that treatment.
-    [(table-desc? d) (raw-items pl page-w page-h)]
+    [(table-desc? d)
+     (list (it:table x y (* (xf-sx t) (table-desc-width d)) (* (xf-sy t) (table-desc-height d))
+                     rot
+                     (for/list ([w (in-list (table-desc-col-widths d))]) (* (xf-sx t) w))
+                     (for/list ([h (in-list (table-desc-row-heights d))]) (* (xf-sy t) h))
+                     (for/list ([row (in-list (table-desc-cells d))])
+                       (for/list ([c (in-list row)])
+                         (it:cell (and (tbl-cell-body c) (scale-body (tbl-cell-body c) f))
+                                  (ir-fill->fill (tbl-cell-fill c))
+                                  (ir-line->pen (tbl-cell-line c) f)
+                                  (tbl-cell-row-span c) (tbl-cell-col-span c)
+                                  (tbl-cell-merged? c))))
+                     tag))]
     [else (opaque-items pl t x y rot tag page-w page-h)]))
 
 ;; How much of an element's structure the editor is allowed to see.

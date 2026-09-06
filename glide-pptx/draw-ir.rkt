@@ -74,13 +74,21 @@
 ;; grouping the author made in the editor -- and anything attached to the group,
 ;; an appear animation most of all, would have nothing left to attach to.
 (struct it:group (x y w h rot flip-h? flip-v? items tag) #:prefab)
+;; One cell of a table, at the display level: its fill and its border are a
+;; `fill:` and a `pen*` like every other item's, rather than the IR's.
+(struct it:cell (body fill pen row-span col-span merged?) #:prefab)
+;; A table, kept as one. Flattened into a cell's worth of rectangle and a
+;; cell's worth of text it reads correctly and edits terribly -- and the borders
+;; a table style draws, which are in no cell, are not in the flattening either,
+;; so the table came back without them. `cells` are `ir:tbl-cell`s, row by row.
+(struct it:table (x y w h rot col-widths row-heights cells tag) #:prefab)
 
 ;; An item that stands for one element of a slide, and so takes part in a sync.
 ;; A flattened element counts: it is a picture rather than a shape, but it is
 ;; still one object with one identity, and dragging it has somewhere to land.
 (define (semantic-item? i)
   (or (it:preset? i) (it:textbox? i) (it:shape-path? i) (it:picture? i)
-      (it:group? i)
+      (it:group? i) (it:table? i)
       (and (it:image? i) (it:image-tag i) #t)))
 
 ;; The element name an item carries, or #f.
@@ -92,6 +100,7 @@
     [(it:picture? i) (it:picture-tag i)]
     [(it:image? i) (it:image-tag i)]
     [(it:group? i) (it:group-tag i)]
+    [(it:table? i) (it:table-tag i)]
     [else #f]))
 
 ;; A page of items in paint order, plus the size it was drawn at. `background`

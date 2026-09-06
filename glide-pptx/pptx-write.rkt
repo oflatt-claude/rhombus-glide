@@ -125,20 +125,25 @@
                                (inexact->exact (round (* 1000 (cdr ds))))))))
       (hash-ref dash-xml (pen*-dash p) "")))
 
-(define (line-xml p)
+(define (line-xml p) (line-xml/name "ln" p))
+
+;; A cell's borders are the same line under four other names.
+(define (line-xml/name name p)
   (cond
-    [(not p) "<a:ln><a:noFill/></a:ln>"]
+    [(not p) (format "<a:~a><a:noFill/></a:~a>" name name)]
     [else
      ;; A hairline has no width in DrawingML; the thinnest real line stands in.
      (define w (if (zero? (pen*-width p)) 0.75 (pen*-width p)))
-     (format "<a:ln w=\"~a\" cap=\"~a\"><a:solidFill>~a</a:solidFill>~a<a:~a/>~a~a</a:ln>"
+     (format "<a:~a w=\"~a\" cap=\"~a\"><a:solidFill>~a</a:solidFill>~a<a:~a/>~a~a</a:~a>"
+             name
              (emu w)
              (case (pen*-cap p) [(round) "rnd"] [(square) "sq"] [else "flat"])
              (clr (pen*-color p))
              (dash-part p)
              (case (pen*-join p) [(round) "round"] [(bevel) "bevel"] [else "miter"])
              (end-xml "headEnd" (pen*-head p))
-             (end-xml "tailEnd" (pen*-tail p)))]))
+             (end-xml "tailEnd" (pen*-tail p))
+             name)]))
 
 ;; The decoration at one end of a line. The order matters: DrawingML wants the
 ;; head before the tail, both after the dash and join.
@@ -406,6 +411,67 @@
           geom (fill-xml (it:preset-fill i)) (line-xml (it:preset-pen i))
           (body-or-empty (it:preset-body i))))
 
+;; A table, written as one. Flattened into rectangles and text it reads
+;; correctly and edits terribly, and the borders a table style draws -- which
+;; live in no cell -- are not in the flattening at all, so a table came back
+;; without them. Written as `<a:tbl>` the style applies again on the far side
+;; and the borders come back on their own.
+(define (table-item-xml id i)
+  (define cols (it:table-col-widths i))
+  (define rows (it:table-row-heights i))
+  (define cells (it:table-cells i))
+  (format (string-append
+           "<p:graphicFrame>"
+           "<p:nvGraphicFramePr><p:cNvPr id=\"~a\" name=\"~a\"~a/>"
+           "<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp=\"1\"/></p:cNvGraphicFramePr>"
+           "<p:nvPr/></p:nvGraphicFramePr>"
+           "<p:xfrm><a:off x=\"~a\" y=\"~a\"/><a:ext cx=\"~a\" cy=\"~a\"/></p:xfrm>"
+           "<a:graphic><a:graphicData uri=\"~a\">"
+           "<a:tbl><a:tblPr firstRow=\"1\" bandRow=\"1\"/><a:tblGrid>~a</a:tblGrid>~a</a:tbl>"
+           "</a:graphicData></a:graphic></p:graphicFrame>")
+          id (xml-escape (or (it:table-tag i) (format "Table ~a" id)))
+          (if (it:table-tag i)
+              (format " descr=\"glide-pptx:~a\"" (xml-escape (it:table-tag i)))
+              "")
+          (emu (it:table-x i)) (emu (it:table-y i))
+          (max 1 (emu (it:table-w i))) (max 1 (emu (it:table-h i)))
+          "http://schemas.openxmlformats.org/drawingml/2006/table"
+          (apply string-append
+                 (for/list ([w (in-list cols)]) (format "<a:gridCol w=\"~a\"/>" (max 1 (emu w)))))
+          (apply string-append
+                 (for/list ([row (in-list cells)] [h (in-list rows)])
+                   (format "<a:tr h=\"~a\">~a</a:tr>" (max 1 (emu h))
+                           (apply string-append (map cell-xml row)))))))
+
+(define (cell-body-xml body)
+  (regexp-replace* #rx"(</?)p:txBody" (body-or-empty body) "\\1a:txBody"))
+
+(define (cell-xml c)
+  (define span (it:cell-col-span c))
+  (define rspan (it:cell-row-span c))
+  (define merged (it:cell-merged? c))
+  (format "<a:tc~a~a~a>~a<a:tcPr>~a~a</a:tcPr></a:tc>"
+          (if (and span (> span 1)) (format " gridSpan=\"~a\"" span) "")
+          (if (and rspan (> rspan 1)) (format " rowSpan=\"~a\"" rspan) "")
+          ;; A cell covered by the one that spans it says so and holds nothing.
+          (case merged
+            [("1" #t) " hMerge=\"1\""]
+            [else ""])
+          ;; A cell's text body is `a:txBody`, not the `p:txBody` a shape
+          ;; carries. Written with a shape's name it is not read at all, and
+          ;; the table comes back with its borders and none of its words.
+          (cell-body-xml (it:cell-body c))
+          ;; The one line a cell carries is the line on all four of its sides:
+          ;; that is what it was read from, and a table whose cells state their
+          ;; own borders states the same one on each.
+          (let ([pen (it:cell-pen c)])
+            (if pen
+                (apply string-append
+                       (for/list ([side (in-list '("lnL" "lnR" "lnT" "lnB"))])
+                         (line-xml/name side pen)))
+                ""))
+          (fill-xml (it:cell-fill c))))
+
 (define (textbox-item-xml id i)
   (format (string-append "<p:sp>~a<p:spPr>~a<a:prstGeom prst=\"rect\"><a:avLst/>"
                          "</a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr>~a</p:sp>")
@@ -510,6 +576,7 @@
       [(it:text? i) (text-item-xml n i)]
       [(it:image? i) (image-item-xml n i (register-image! i "image" ".png"))]
       [(it:group? i) (group-item-xml n i item->xml)]
+      [(it:table? i) (table-item-xml n i)]
       [(it:preset? i) (preset-item-xml n i)]
       [(it:textbox? i) (textbox-item-xml n i)]
       [(it:shape-path? i) (shape-path-item-xml n i)]
