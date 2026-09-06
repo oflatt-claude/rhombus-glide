@@ -17,14 +17,15 @@
 ;; tx-styles is the master's <p:txStyles>; default-text-style is the
 ;; presentation's <p:defaultTextStyle>.
 (struct shape-ctx (clr-ctx theme layout-phs master-phs tx-styles default-text-style
-                   media warn))
+                   media warn table-styles))
 
 (define (make-shape-ctx #:clr-ctx clr-ctx #:theme theme
                         #:layout-phs [layout-phs '()] #:master-phs [master-phs '()]
                         #:tx-styles [tx-styles #f] #:default-text-style [dts #f]
                         #:media [media (lambda (rid) #f)]
-                        #:warn [warn void])
-  (shape-ctx clr-ctx theme layout-phs master-phs tx-styles dts media warn))
+                        #:warn [warn void]
+                        #:table-styles [table-styles #f])
+  (shape-ctx clr-ctx theme layout-phs master-phs tx-styles dts media warn table-styles))
 
 ;; ------------------------------------------------------------- placeholders
 
@@ -369,6 +370,80 @@
               name))
      (shape id name b (preset-geom "rect" '()) #f #f #f)]))
 
+;; How a table style paints one cell.
+;;
+;; A table made in an editor says which style it uses and nothing else: the
+;; fills and the borders live in `ppt/tableStyles.xml`, under names like
+;; `wholeTbl` and `band1H`. Read as the cells alone, such a table has no paint
+;; at all -- which is how a banded blue table came back as an empty grid.
+;;
+;; The parts apply in the order the format gives them, each overriding the last:
+;; the whole table, then the banding, then the first and last column, then the
+;; first and last row.
+;; Only the style the table actually names. A table that names none is painted
+;; by whatever draws it -- a plain grid -- and not by the file's `def` style:
+;; falling back to that painted a deliberately plain table in banded blue.
+(define (table-style-for styles-x id)
+  (and styles-x id
+       (for/first ([st (in-list (children styles-x 'tblStyle))]
+                   #:when (equal? id (attr st 'styleId)))
+         st)))
+
+;; The names of the style parts that paint the cell at (row, col), in the order
+;; they are applied.
+(define (style-parts-for flags rows cols r c)
+  (define (on? k) (hash-ref flags k #f))
+  (define first-row? (and (on? 'firstRow) (= r 0)))
+  (define last-row? (and (on? 'lastRow) (= r (sub1 rows))))
+  (define first-col? (and (on? 'firstCol) (= c 0)))
+  (define last-col? (and (on? 'lastCol) (= c (sub1 cols))))
+  ;; Banding counts from after the header, and the first band is band1.
+  (define band-row (- r (if (on? 'firstRow) 1 0)))
+  (define band-col (- c (if (on? 'firstCol) 1 0)))
+  (append
+   (list 'wholeTbl)
+   (if (and (on? 'bandCol) (not first-col?) (not last-col?) (>= band-col 0))
+       (list (if (even? band-col) 'band1V 'band2V)) '())
+   (if (and (on? 'bandRow) (not first-row?) (not last-row?) (>= band-row 0))
+       (list (if (even? band-row) 'band1H 'band2H)) '())
+   (if first-col? (list 'firstCol) '())
+   (if last-col? (list 'lastCol) '())
+   (if first-row? (list 'firstRow) '())
+   (if last-row? (list 'lastRow) '())))
+
+;; (values fill line) that a style paints a cell with, or (values #f #f).
+(define (style-paint cctx style parts media)
+  (for/fold ([fill #f] [line #f]) ([part-name (in-list parts)])
+    (define part (and style (child style part-name)))
+    (define tc (and part (child part 'tcStyle)))
+    (cond
+      [(not tc) (values fill line)]
+      [else
+       (define f (let ([node (child tc 'fill)])
+                   (and node
+                        (let ([inner (let ([ks (children* node)])
+                                       (and (pair? ks) (first ks)))])
+                          (and inner (let ([v (parse-fill-element cctx inner #:media media)])
+                                       (and (not (eq? 'inherit v)) v)))))))
+       ;; One line for the cell, since that is what a cell here carries. The
+       ;; sides of a style are almost always the same line under six names.
+       (define bdr (child tc 'tcBdr))
+       (define l (and bdr
+                      (for/or ([side (in-list '(insideH insideV left top right bottom))])
+                        (let ([node (child bdr side)])
+                          (and node (let ([v (parse-line cctx node)])
+                                      (and (not (eq? 'inherit v)) v)))))))
+       (values (or f fill) (or l line))])))
+
+;; The border a cell states for itself: one line for the four sides, taken from
+;; whichever of them it names first, since that is all a cell carries here.
+(define (cell-own-line cctx tcPr)
+  (or (and tcPr
+           (for/or ([side (in-list '(lnL lnT lnR lnB))])
+             (let ([node (child tcPr side)])
+               (and node (parse-line-element cctx node)))))
+      'inherit))
+
 (define (parse-table ctx id name b tbl-node)
   (define cctx (shape-ctx-clr-ctx ctx))
   (define col-widths (for/list ([g (in-list (xpath* tbl-node 'tblGrid 'gridCol))])
@@ -376,17 +451,35 @@
   (define rows (children tbl-node 'tr))
   (define row-heights (for/list ([r (in-list rows)])
                         (or (string->emu-pt (attr r 'h)) 0.0)))
+  (define tblPr (child tbl-node 'tblPr))
+  (define flags
+    (for/hash ([k (in-list '(firstRow lastRow firstCol lastCol bandRow bandCol))])
+      (values k (and tblPr (string->bool (attr tblPr k) #f)))))
+  (define style
+    (table-style-for (shape-ctx-table-styles ctx)
+                     (let ([n (and tblPr (child tblPr 'tableStyleId))])
+                       (and n (all-text n)))))
+  (define n-rows (length rows))
   (define cells
-    (for/list ([r (in-list rows)])
-      (for/list ([tc (in-list (children r 'tc))])
+    (for/list ([r (in-list rows)] [ri (in-naturals)])
+      (define n-cols (length (children r 'tc)))
+      (for/list ([tc (in-list (children r 'tc))] [ci (in-naturals)])
+        (define-values (style-fill style-line)
+          (style-paint cctx style (style-parts-for flags n-rows n-cols ri ci)
+                       (shape-ctx-media ctx)))
         (define tcPr (child tc 'tcPr))
         (define tctx (text-ctx cctx (shape-ctx-theme ctx)
                                (filter values (list (xpath tc 'txBody 'lstStyle)
                                                     (shape-ctx-default-text-style ctx)))
                                (filter values (list (xpath tc 'txBody 'bodyPr) tcPr))))
         (tbl-cell (parse-text-body tctx (child tc 'txBody) #:default-anchor 'top)
-              (effective-fill (parse-fill cctx tcPr #:media (shape-ctx-media ctx)) #f)
-              (effective-line (parse-line cctx tcPr) #f)
+              (effective-fill (parse-fill cctx tcPr #:media (shape-ctx-media ctx))
+                              style-fill #f)
+              ;; A cell states its borders one side at a time -- `lnL`, `lnT`,
+              ;; `lnR`, `lnB` -- and never as the plain `ln` a shape uses, so
+              ;; asking for that found nothing and every stated border was
+              ;; thrown away in favour of the style's.
+              (effective-line (cell-own-line cctx tcPr) style-line #f)
               (or (attr-num tc 'rowSpan) 1)
               (or (attr-num tc 'gridSpan) 1)
               (or (attr tc 'hMerge) (attr tc 'vMerge) #f)))))

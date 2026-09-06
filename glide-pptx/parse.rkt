@@ -20,6 +20,7 @@
 (define TYPE/LAYOUT "/slideLayout")
 (define TYPE/MASTER "/slideMaster")
 (define TYPE/THEME "/theme")
+(define TYPE/TABLE-STYLES "/tableStyles")
 
 (define (pptx->deck pptx-path #:workdir workdir)
   (make-directory* workdir)
@@ -36,9 +37,14 @@
     (for/list ([sid (in-list (xpath* pres 'sldIdLst 'sldId))])
       (define rid (attr-ns sid 'id))
       (and rid (rel-target pkg pres-name rid))))
+  ;; How tables are painted when they say only which style they use, which is
+  ;; what a table made in an editor says. Read once for the package.
+  (define table-styles
+    (let ([n (single-rel pkg pres-name TYPE/TABLE-STYLES)])
+      (and n (part-xexpr pkg n))))
   (define slides
     (for/list ([name (in-list (filter values slide-names))] [i (in-naturals 1)])
-      (parse-slide pkg name i width height default-text-style)))
+      (parse-slide pkg name i width height default-text-style table-styles)))
   (deck width height slides workdir (path->string (simplify-path pptx-path))))
 
 ;; The package root's relationships name the main document part; for a
@@ -53,7 +59,7 @@
   (define ts (rel-targets-by-type pkg from suffix))
   (and (pair? ts) (first ts)))
 
-(define (parse-slide pkg slide-name index width height default-text-style)
+(define (parse-slide pkg slide-name index width height default-text-style table-styles)
   (define slide-x (part-xexpr pkg slide-name))
   (define layout-name (single-rel pkg slide-name TYPE/LAYOUT))
   (define layout-x (and layout-name (part-xexpr pkg layout-name)))
@@ -79,7 +85,8 @@
     (make-shape-ctx #:clr-ctx cctx #:theme th
                     #:layout-phs layout-phs #:master-phs master-phs
                     #:tx-styles tx-styles #:default-text-style default-text-style
-                    #:media (media-for part) #:warn warn!))
+                    #:media (media-for part) #:warn warn!
+                    #:table-styles table-styles))
 
   (define tx-styles (and master-x (child master-x 'txStyles)))
 

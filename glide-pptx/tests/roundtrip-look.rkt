@@ -43,6 +43,11 @@
         "master-bg-color.pptx" 0.002
         "tdf111863.pptx" 0.002
         "n778859.pptx" 0.005
+        ;; Tables that name a style. What the style paints is resolved when the
+        ;; deck is read and written into the cells, so the far side needs no
+        ;; style to draw them the same way.
+        "n90190.pptx" 0.05
+        "bnc887225.pptx" 0.20
         ;; A table is written back as a table now, so the style that draws its
         ;; borders applies again on the far side and it comes back exactly.
         "poi-table-with-no-theme.pptx" 0.0
