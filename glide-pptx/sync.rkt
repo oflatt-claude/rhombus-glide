@@ -12,7 +12,7 @@
 ;;
 ;; Nothing here ever restructures the program. Every edit is one of two things:
 ;; replace a numeric or string literal, or wrap an expression in a known form.
-(require racket/list racket/string racket/format racket/file racket/path
+(require racket/list racket/set racket/string racket/format racket/file racket/path
          racket/math racket/port racket/treelist racket/promise pict
          (only-in racket/draw get-face-list)
          (only-in shrubbery/parse parse-all)
@@ -666,8 +666,59 @@
     (sync-action 'removed-slide (format "slide ~a" (slide-state-index s))
                  (slide-state-index s) (list (slide-state-index s)) #f)))
 
+;; The slides the program holds as a canvas, by their place in `all_slides`.
+;;
+;; A slide can be something else: a talk gives one stages, and what the name
+;; then holds is an animated pict built from several canvases rather than a
+;; canvas. Its elements cannot be read back and could not be written to if they
+;; were -- there is no one `at` form to write. The merge leaves those slides
+;; alone rather than reporting every shape on them as newly drawn, which is
+;; what it used to do: nine hundred refusals on a talk with ten staged slides,
+;; and, because a save lands whole or not at all, nothing else could be merged
+;; either.
+(define (canvas-slide-indexes program-path)
+  (with-handlers ([exn:fail? (lambda (_) #f)])
+    (define-values (all-sites scopes slide-sites layout) (find-program-sites program-path))
+    (and scopes
+         (let ([held (for/list ([ss (in-list slide-sites)]) (slide-site-scope ss))])
+           (for/set ([scope (in-list scopes)] [i (in-naturals 1)]
+                     #:when (memq scope held))
+             i)))))
+
+;; A slide the program does not hold as a canvas, described by the deck instead.
+;;
+;; A talk that gives a slide stages holds an animated pict there, built from
+;; several canvases. Nothing can read its elements back, and nothing could be
+;; written to them if it could -- there is no one `at` form to write to. Left as
+;; the empty state that reading it produces, every shape the deck draws on that
+;; slide looks newly added, and a slide that matches nothing makes the matcher
+;; give up on the deck's order as well: on one real talk that was nine hundred
+;; refusals, and, because a save lands whole or not at all, no way to merge
+;; anything else either -- not even dragging the slides about in the navigator,
+;; which touches no element at all.
+;;
+;; So for those slides the deck is taken as read. What is on them is the talk's
+;; own business; what is around them -- their order, their number -- is still
+;; the merge's.
+(define (as-deck-says prog deck canvases)
+  (cond
+    [(not canvases) prog]
+    [else
+     (define by-index (for/hash ([d (in-list deck)]) (values (slide-state-index d) d)))
+     (for/list ([p (in-list prog)])
+       (define i (slide-state-index p))
+       (define d (hash-ref by-index i #f))
+       (if (or (set-member? canvases i) (not d))
+           p
+           (struct-copy slide-state d [index i])))]))
+
 (define (merge-states base prog deck [program-path "the program"] #:deck-ir [deck-ir #f])
   (define-values (pairs added removed) (match-slides base deck))
+  ;; #f when the program could not be read for them, in which case every slide
+  ;; is compared as before: this must not be the thing that stops a merge.
+  (define canvases (and (or (path? program-path) (path-string? program-path))
+                        (file-exists? program-path)
+                        (canvas-slide-indexes program-path)))
   ;; A slide the base has that the deck does not, *and* a slide the deck has
   ;; that the base does not, in the same merge: that is a slide the matching
   ;; could not follow, not a deletion and a new slide. Telling those apart is a
@@ -706,6 +757,15 @@
       (define ps (for/first ([s (in-list prog)]
                              #:when (= index (slide-state-index s))) s))
       (cond
+        ;; A slide the program does not hold as a canvas: nothing here can be
+        ;; written, so nothing here is compared. Said once, rather than once per
+        ;; shape on it.
+        [(and canvases ps (not (set-member? canvases index)))
+         (list (sync-action 'noted (format "slide ~a" index) index
+                            (list (list 'slide-not-a-canvas
+                                        "is built rather than laid out"
+                                        "so what is on it is not merged"))
+                            #f))]
         [ps
          (define as (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
                                  (slide-state-elements ds)
@@ -1836,21 +1896,43 @@
 ;; thing an edit is matched on. Across slides it need not be: "Title 1" on every
 ;; slide is the normal case. When the slide list is computed there is no per-slide
 ;; scope to speak of, so uniqueness has to hold file-wide.
-(define (check-site-tags sites scopes path)
+;; Which slides cannot be told apart, and why -- a hash from the slide's
+;; definition name to what is wrong with it.
+;;
+;; A slide written by hand often holds more than one canvas: a base and a stage
+;; per reveal, all inside one definition, drawing the same shapes again. The
+;; tags then repeat, and an edit to that slide cannot be matched to an `at`
+;; form. That is a refusal for *that slide*, not for the file: a reorder writes
+;; the slide list and touches no element, and a drag on some other slide has
+;; nothing to do with this one. It used to stop every save a program like that
+;; ever made.
+(define (ambiguous-scopes sites scopes path)
   (define where (format "~a" (if (path? path) (path->string path) path)))
   (cond
-    [scopes
-     (for ([scope (in-list (remove-duplicates (map at-site-scope sites)))])
-       (check-unique-tags (for/list ([s (in-list sites)]
-                                    #:when (equal? scope (at-site-scope s)))
-                            (at-site-tag s))
-                          (if scope (format "~a: ~a" where scope) where)
-                          TAG-HINT))]
-    [else
+    [(not scopes)
+     ;; With a computed slide list there is no slide to attach the trouble to,
+     ;; and nothing can be matched at all: that is still the whole file's
+     ;; problem.
      (check-unique-tags (map at-site-tag sites)
                         (format "~a (its slide list is computed, so tags have to be unique file-wide)"
                                 where)
-                        TAG-HINT)]))
+                        TAG-HINT)
+     (hash)]
+    [else
+     (for/fold ([h (hash)]) ([scope (in-list (remove-duplicates (map at-site-scope sites)))])
+       (define dups (duplicate-tags (for/list ([s (in-list sites)]
+                                               #:when (equal? scope (at-site-scope s)))
+                                      (at-site-tag s))))
+       (cond
+         [(null? dups) h]
+         [else
+          (hash-set h scope
+                    (format "~a uses one tag for more than one element, so this cannot be told apart: ~a"
+                            (or scope "the slide")
+                            (string-join
+                             (for/list ([d (in-list dups)])
+                               (format "~s appears ~a times" (car d) (cdr d)))
+                             ", ")))]))]))
 
 ;; An element added in the editor has to be written as source, which is the same
 ;; job the translator does -- so it is the same code, for one element, at the
@@ -2001,7 +2083,14 @@
   ;; names. The deck still holds the old value on those frames, and only the
   ;; caller can put that right, by writing the deck again from the program.
   (define spread? (box #f))
-  (check-site-tags all-sites scopes program-path)
+  (define ambiguous (ambiguous-scopes all-sites scopes program-path))
+  ;; Said once per slide, whether or not anything was edited on it: a program
+  ;; whose tags do not tell its elements apart cannot be edited there, and the
+  ;; time to learn that is before trying.
+  (define ambiguity-notes
+    (for/list ([(scope why) (in-hash ambiguous)])
+      (cons (sync-action 'noted (format "~a" scope) 0 '() #f)
+            (string-append why ". " TAG-HINT))))
   ;; Keyed by the slide's definition, so "Title 1" on slide 3 finds slide 3's
   ;; `at`. When the slide list is computed there is no definition to key on, and
   ;; `check-site-tags` has already established that tags are unique file-wide.
@@ -2149,6 +2238,10 @@
            (string-join pieces (string-append ",\n" (spaces ind))))
     (for ([a (in-list (cons gone (second l)))])
       (set! applied (cons a applied))))
+  ;; The slide an action is about, when it is about one.
+  (define (scope-of a)
+    (and scopes (<= 1 (sync-action-slide a) (length scopes))
+         (list-ref scopes (sub1 (sync-action-slide a)))))
   (for ([a (in-list actions)] #:unless (or (eq? 'added-slide (sync-action-kind a))
                                            (hash-ref consumed a #f)))
     (define site (site-for a))
@@ -2158,6 +2251,14 @@
     ;; had written is dropped: a half-applied edit is how a program stops
     ;; compiling.
     (define before-edits edits)
+    (define ambiguity (let ([sc (scope-of a)]) (and sc (hash-ref ambiguous sc #f))))
+    (cond
+      ;; This slide's own tags do not tell its elements apart, so an edit to one
+      ;; of them cannot be placed. Only this slide's edits: the rest of the save
+      ;; is not its business, and neither is a reorder, which names no element.
+      [(and ambiguity (not (memq (sync-action-kind a) '(noted reordered))))
+       (set! skipped (cons (cons a (string-append ambiguity ". " TAG-HINT)) skipped))]
+      [else
     (case (sync-action-kind a)
       [(moved resized)
        (define g (sync-action-detail a))
@@ -2688,14 +2789,17 @@
       [(ambiguous)
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
       [else (set! skipped (cons (cons a "reported only") skipped))])
+      ])
     (unless (or (memq a applied) (eq? 'noted (sync-action-kind a)))
       (set! edits before-edits)))
   (cond
     ;; All of it, or none of it.
-    [(and atomic? (pair? skipped)) (values '() (reverse skipped) (reverse notes) #f)]
+    [(and atomic? (pair? skipped))
+     (values '() (reverse skipped) (append ambiguity-notes (reverse notes)) #f)]
     [else
      (when (pair? edits) (splice-file! program-path edits))
-     (values (reverse applied) (reverse skipped) (reverse notes)
+     (values (reverse applied) (reverse skipped)
+             (append ambiguity-notes (reverse notes))
              (and (pair? applied) (unbox spread?)))]))
 
 ;; Whether the deck's rotation or mirroring differs from what the source says.
@@ -3300,7 +3404,7 @@
            (file-name-from-path base-file) recorded-program
            (path->string (path->complete-path program-path))
            (let ([d (path-only base-file)]) (if d (path->string d) base-file))))
-  (define prog (program-slide-states program-path))
+  (define prog0 (program-slide-states program-path))
   ;; The program has been loaded now, so the typeface it falls back on is known.
   (define fallback-font (current-default-font))
   ;; The deck is unzipped to be read. When the caller did not say where, this
@@ -3309,6 +3413,9 @@
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
   (define deck-ir (pptx->deck pptx-path #:workdir dir))
   (define deck (deck->slide-states deck-ir))
+  ;; Slides the program does not lay out are taken as the deck has them, so that
+  ;; they neither look edited nor stop the slides being matched.
+  (define prog (as-deck-says prog0 deck (canvas-slide-indexes program-path)))
   (define (done! v)
     (when (and (not given-dir) (not (current-keep-work?)))
       (delete-directory/files dir #:must-exist? #f))
@@ -3338,7 +3445,11 @@
           [else
            ;; The new base is the program as it now reads, so the next pass
            ;; compares against something both sides agree on.
-           (define after (program-slide-states program-path))
+           ;; Read again after the patch, and with the same slides taken as the
+           ;; deck has them, so the base says what the next merge will read.
+           (define after (as-deck-says (program-slide-states program-path)
+                                       (deck->slide-states (pptx->deck pptx-path #:workdir dir))
+                                       (canvas-slide-indexes program-path)))
            (write-sync-base base-file after
                             #:program (path->string (path->complete-path program-path))
                             #:deck (path->string (path->complete-path pptx-path)))

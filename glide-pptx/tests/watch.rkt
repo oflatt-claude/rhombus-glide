@@ -147,15 +147,73 @@
 (define (deck-slide-count pptx)
   (length (deck-slides (pptx->deck pptx #:workdir (make-temporary-file "wc~a" 'directory)))))
 
+;; A merge goes through when nothing in it was refused -- which is what the
+;; watch loop asks, and is not the same as not raising: a program the merge
+;; cannot read on one slide refuses that slide's edits and carries on with the
+;; rest, so the refusal is in the report rather than in an exception.
 (define (merge-back-once program pptx workdir)
   (with-handlers ([exn:fail? (lambda (_e) #f)])
-    (sync-once program pptx #:workdir workdir)
-    #t))
+    (define r (sync-once program pptx #:workdir workdir #:atomic? #t))
+    (null? (sync-report-skipped r))))
 
 (define (merge-back-message program pptx workdir)
   (with-handlers ([exn:fail? exn-message])
-    (sync-once program pptx #:workdir workdir)
-    ""))
+    (define r (sync-once program pptx #:workdir workdir #:atomic? #t))
+    (string-join (map cdr (sync-report-skipped r)) "\n")))
+
+;; A session that starts on a scratch left by one that did not finish.
+;;
+;; The scratch holds the deck, and clearing it took the folder with it -- so the
+;; deck could not be written into the folder it lives in, and the loop then read
+;; a deck that was never written and died on the way up. Twice in a row was the
+;; giveaway: the second run had a scratch to clear.
+(let ()
+  (define dir (build-path work "stale-scratch"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export:"
+          "  all_slides"
+          "def slide_1 = slide_canvas("
+          "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+          "  at(40.0, 60.0, ~tag: \"Box\","
+          "     shape_pict(~width: 100.0, ~height: 40.0, ~fill: hex(\"4472C4\")))"
+          ")"
+          "def all_slides = [slide_1]"
+          "")
+    "\n")
+   program #:exists 'replace)
+  (define scratch (scratch-dir-of program))
+  (define pptx (build-path scratch "deck.pptx"))
+  (make-directory* scratch)
+
+  (define lines '())
+  (define (note fmt . args) (set! lines (cons (apply format fmt args) lines)))
+  (define (said? rx) (ormap (lambda (l) (regexp-match? rx l)) lines))
+  (define (run!)
+    (set! lines '())
+    (parameterize ([current-watch-log note])
+      (watch-loop program pptx #:width 480.0 #:height 270.0
+                  #:adapter (adapter-named 'none)
+                  #:workdir (build-path dir "w")
+                  #:interval 0.05 #:ticks 2)))
+
+  ;; The first session lays the deck and the base down.
+  (run!)
+  (check-true (file-exists? pptx) "the first session wrote the deck")
+  (check-true (file-exists? (base-path-for program)) "and recorded a base")
+
+  ;; The second finds them and clears them, which is what a session that did not
+  ;; finish leaves behind.
+  (run!)
+  (check-true (said? #rx"clearing") "the second session cleared the scratch")
+  (check-true (file-exists? pptx) "and wrote the deck again, into the folder it put back")
+  (check-false (said? #rx"did not run|does not exist")
+               (format "with nothing to complain about: ~a" (reverse lines))))
 
 ;; ------------------------------------- a refused merge protects the deck
 
@@ -214,12 +272,14 @@
   (sync-once program pptx #:workdir (build-path dir "w"))
   (check-equal? (deck-slide-count pptx) 2 "the deck starts with the program's two slides")
 
-  ;; A program the merge cannot read at all: two `at` forms answering to one
-  ;; tag, so an edit could land on either. The whole message comes through,
+  ;; A slide the merge cannot read: two `at` forms answering to one tag, so an
+  ;; edit could land on either. It is that slide's edits that are refused --
+  ;; the rest of the deck still merges -- and the whole message comes through,
   ;; because what to do about it is not on the first line.
   (write-program! "4472C4" #:duplicate-tag? #t)
+  (check-true (drag-in-deck! pptx 1 "Box" 300.0 100.0) "a shape on that slide was dragged")
   (check-false (merge-back-once program pptx (build-path dir "w"))
-               "and merging into it is refused")
+               "and merging that drag is refused")
   (define msg (merge-back-message program pptx (build-path dir "w")))
   (check-regexp-match #rx"Box" msg)
   (check-regexp-match #rx"different tags" msg "the message keeps its later lines")

@@ -845,6 +845,11 @@
   (add! "ppt/slideLayouts/_rels/slideLayout1.xml.rels" layout-rels)
   (add! "ppt/theme/theme1.xml" theme-xml)
   (define target (path->complete-path path))
+  ;; The folder a deck is asked for in may not be there: `raco glide` keeps the
+  ;; deck in `.glide`, and a session that finds one left by a session that did
+  ;; not finish clears it -- folder and all -- before writing the deck again.
+  ;; `zip` opens the file and does not make the way to it, so this did.
+  (let ([into (path-only target)]) (when into (make-directory* into)))
   (when (file-exists? target) (delete-file target))
   (parameterize ([current-directory dir])
     (apply zip target (map string->path (reverse names))))

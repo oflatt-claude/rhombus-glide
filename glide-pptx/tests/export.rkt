@@ -241,5 +241,26 @@
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
-;; says so; required by a suite, the suite says it once at the end.
+;; says so; required by a suite, the suite says it once at the end.;; A deck can be written into a folder that is not there yet.
+;;
+;; `raco glide` keeps the deck in `.glide`, and a session that finds one left by
+;; a session that did not finish clears it -- the folder with it -- before
+;; writing the deck again. `zip` opens the file and does not make the way to it,
+;; so the deck could not be written, and the loop then read a deck that was
+;; never written and died on the way up. What it said was
+;; "open-output-file: error opening file", which names neither the folder nor
+;; the deck.
+(let ()
+  (define dir (build-path work "missing-folder"))
+  (delete-directory/files dir #:must-exist? #f)
+  (define out (build-path dir "not" "there" "deck.pptx"))
+  (check-false (directory-exists? dir) "the folder is not there to begin with")
+  (picts->pptx (list (slide-canvas #:width 480.0 #:height 270.0
+                                   #:background (solid-fill (rgba 255 255 255 1.0))))
+               out)
+  (check-true (file-exists? out) "and the deck is written into it anyway")
+  (check-equal? (length (deck-slides (pptx->deck out #:workdir (build-path dir "u")))) 1
+                "and reads back as the slide it was"))
+
+
 (module+ main (void (test-log #:display? #t #:exit? #t)))
