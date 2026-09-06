@@ -90,7 +90,7 @@
   (define (a-slide i hidden?)
     (slide i "" 720.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()
            (list (shape (+ 1 i) (format "Box~a" i) (bbox 60.0 60.0 120.0 80.0 0.0 #f #f)
-                        (preset-geom "rect" '()) (solid-fill (rgba 200 100 50 1.0)) #f #f))
+                        (preset-geom "rect" '()) (solid-fill (rgba 200 100 50 1.0)) #f #f #f))
            hidden?))
   (define d (deck 720.0 540.0 (list (a-slide 1 #f) (a-slide 2 #t)) #f "test"))
   (define out (build-path dir "d.pptx"))
@@ -126,7 +126,7 @@
                                                  (list 'line (cons 21600 21600))
                                                  (list 'line (cons 10800 5400))))
                                      21600 21600)
-                                    (solid-fill (rgba 200 100 50 1.0)) #f #f))
+                                    (solid-fill (rgba 200 100 50 1.0)) #f #f #f))
                        #f))
           #f "test"))
   (define stated (build-path dir "stated.pptx"))
@@ -207,6 +207,62 @@
 
 (printf "structural tests done; ~a difference~a in total\n"
         total-diffs (if (= 1 total-diffs) "" "s"))
+
+
+;; ---------------------------------------------------------------- builds
+
+;; A slide the presenter advances through is several slides here. PowerPoint
+;; and Keynote both record a build as a timeline of clicks, each naming the
+;; shapes it brings in; a program holds still slides and nothing else, so the
+;; only faithful thing a translation can do is hand back one slide per click.
+;;
+;; The timing is written into a fixture rather than kept as one, because what
+;; is being tested is the reading of it and a hand-written block says exactly
+;; what is being read.
+(let ()
+  (define dir (build-path work "builds"))
+  (make-directory* dir)
+  (define deck (build-path dir "built.pptx"))
+  (copy-file (build-path decks-dir "03-shapes.pptx") deck #t)
+  ;; Two clicks: the rounded rectangle appears on the first, the oval on the
+  ;; second. Everything else is there from the start.
+  (define timing
+    (string-append
+     "<p:timing><p:tnLst><p:par><p:cTn id=\"1\" dur=\"indefinite\" restart=\"never\""
+     " nodeType=\"tmRoot\"><p:childTnLst><p:seq concurrent=\"1\" nextAc=\"seek\">"
+     "<p:cTn id=\"2\" dur=\"indefinite\" nodeType=\"mainSeq\"><p:childTnLst>"
+     (apply string-append
+            (for/list ([spid (in-list '("3" "4"))])
+              (string-append
+               "<p:par><p:cTn nodeType=\"clickEffect\"><p:childTnLst>"
+               "<p:set><p:cBhvr><p:tgtEl><p:spTgt spid=\"" spid "\"/></p:tgtEl>"
+               "<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst>"
+               "</p:cBhvr><p:to><p:strVal val=\"visible\"/></p:to></p:set>"
+               "</p:childTnLst></p:cTn></p:par>")))
+     "</p:childTnLst></p:cTn></p:seq></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>"))
+  (check-true (and (edit-slide-part! deck 1 #px"</p:cSld>" (string-append "</p:cSld>" timing)) #t)
+              "a build was written into the fixture")
+
+  (define plain
+    (parameterize ([current-build-frames? #f])
+      (pptx->deck deck #:workdir (build-path dir "u1"))))
+  (define built
+    (parameterize ([current-build-frames? #t])
+      (pptx->deck deck #:workdir (build-path dir "u2"))))
+  ;; The fixture has a second slide with no build, which stays one slide.
+  (check-equal? (length (deck-slides plain)) 2 "read as it is, the deck has two slides")
+  (check-equal? (length (deck-slides built)) 4
+                "and four with the build split out: one per click, and one before")
+
+  (define counts (for/list ([s (in-list (take (deck-slides built) 3))])
+                   (length (slide-elements s))))
+  (check-equal? (length (remove-duplicates counts)) 3 "each frame holds one more than the last")
+  (check-equal? counts (sort counts <) "and they grow in click order")
+  (check-equal? (- (third counts) (first counts)) 2 "by exactly the two shapes that appear")
+  ;; The frames say which of the slide they are, so the program reads as a
+  ;; build rather than as three slides that happen to look alike.
+  (check-regexp-match #rx"1 of 3" (slide-name (first (deck-slides built))))
+  (check-regexp-match #rx"3 of 3" (slide-name (third (deck-slides built)))))
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

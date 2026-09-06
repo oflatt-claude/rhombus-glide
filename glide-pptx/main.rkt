@@ -45,10 +45,15 @@
               exported))
      exported]))
 
+;; A deck read from the command line, with its builds split out: a slide the
+;; presenter advances through is several slides here, because a still slide is
+;; all a program can hold and all a deck of stills can show. Nothing else is
+;; lost by it -- a slide with no build comes back as itself.
 (define (with-deck given out proc)
   (define pptx (as-pptx given out))
   (define warnings (box '()))
-  (define d (parameterize ([current-warnings warnings])
+  (define d (parameterize ([current-warnings warnings]
+                           [current-build-frames? #t])
               (pptx->deck pptx #:workdir (build-path (default-workdir out)
                                                      (deck-stem pptx)))))
   (begin0 (parameterize ([runtime-warnings warnings]) (proc d warnings))
@@ -362,9 +367,9 @@
                            'left 0 0.0 0.0 '(percent . 1.0) 0.0 0.0 no-bullet 'all))
                'top #f #t 'none default-insets 0.0 'all))
   (define (rect id name x y w h fill)
-    (shape id name (box x y w h) (preset-geom "rect" '()) (solid-fill fill) #f #f))
+    (shape id name (box x y w h) (preset-geom "rect" '()) (solid-fill fill) #f #f #f))
   (define (label id name x y w h text size bold?)
-    (shape id name (box x y w h) (preset-geom "rect" '()) #f #f (words text size bold?)))
+    (shape id name (box x y w h) (preset-geom "rect" '()) #f #f (words text size bold?) #f))
   (deck
    960.0 540.0
    (list (slide 1 "" 960.0 540.0 (solid-fill (rgba 255 255 255 1.0)) '()

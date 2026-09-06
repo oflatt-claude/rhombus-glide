@@ -7,7 +7,8 @@
 (require racket/list racket/string racket/file racket/path
          "xml-util.rkt" "units.rkt" "ir.rkt" "opc.rkt" "theme.rkt"
          "drawing.rkt" "text.rkt" "shapes.rkt")
-(provide pptx->deck current-warnings current-allow-unsupported?)
+(provide pptx->deck current-warnings current-allow-unsupported? build-steps
+         current-build-frames?)
 
 ;; Collected diagnostics for things we render approximately.
 (define current-warnings (make-parameter #f))
@@ -42,9 +43,16 @@
   (define table-styles
     (let ([n (single-rel pkg pres-name TYPE/TABLE-STYLES)])
       (and n (part-xexpr pkg n))))
+  ;; A slide that is built in clicks comes back as several, so the numbering is
+  ;; done after the fact.
   (define slides
-    (for/list ([name (in-list (filter values slide-names))] [i (in-naturals 1)])
-      (parse-slide pkg name i width height default-text-style table-styles)))
+    (for/list ([s (in-list (append*
+                            (for/list ([name (in-list (filter values slide-names))]
+                                       [i (in-naturals 1)])
+                              (parse-slide pkg name i width height default-text-style
+                                           table-styles))))]
+               [i (in-naturals 1)])
+      (struct-copy slide s [index i])))
   (deck width height slides workdir (path->string (simplify-path pptx-path))))
 
 ;; The package root's relationships name the main document part; for a
@@ -58,6 +66,70 @@
 (define (single-rel pkg from suffix)
   (define ts (rel-targets-by-type pkg from suffix))
   (and (pair? ts) (first ts)))
+
+;; The clicks a slide is built in.
+;;
+;; PowerPoint and Keynote both record a build as a timeline: a main sequence of
+;; nodes, each with a `nodeType` saying what starts it, and each naming the
+;; shapes it acts on. A `clickEffect` starts a new step -- the presenter
+;; advances -- and `withEffect` and `afterEffect` belong to the step before
+;; them. What comes back is one list of shape ids per click, in click order.
+;;
+;; Only entrance effects matter for splitting a slide into the frames a reader
+;; sees: something that appears was not there before. An emphasis or an exit is
+;; ignored, which leaves the shape on every frame -- less wrong than dropping it.
+(define ENTRANCE-KINDS '("entr"))
+
+(define (build-steps slide-x)
+  (define timing (and slide-x (child slide-x 'timing)))
+  (cond
+    [(not timing) '()]
+    [else
+     (define steps
+       (for/fold ([steps '()]) ([node (in-list (find-descendants timing 'cTn))])
+         (define kind (attr node 'nodeType))
+         (define targets
+           (remove-duplicates
+            (filter values
+                    (for/list ([tgt (in-list (find-descendants node 'spTgt))])
+                      (attr-num tgt 'spid)))))
+         (cond
+           ;; A step of its own, whether or not it turns out to name anything.
+           [(equal? "clickEffect" kind) (cons targets steps)]
+           [(and (member kind '("withEffect" "afterEffect")) (pair? steps))
+            (cons (append (first steps) targets) (rest steps))]
+           [else steps])))
+     ;; Only the shapes that were not there before: a `set` to visible, or an
+     ;; entrance animation.
+     (define entering (entering-ids timing))
+     (define kept
+       (for/list ([step (in-list (reverse steps))])
+         (filter (lambda (id) (memv id entering)) step)))
+     ;; Trailing clicks that reveal nothing add no frame.
+     (let loop ([ss (reverse kept)])
+       (cond [(and (pair? ss) (null? (first ss))) (loop (rest ss))]
+             [else (reverse ss)]))]))
+
+;; The shapes some effect brings in. An entrance animation says `presetClass`
+;; "entr"; a plain appear is a `set` of `style.visibility` to `visible`.
+(define (entering-ids timing)
+  (remove-duplicates
+   (filter
+    values
+    (append
+     (for*/list ([node (in-list (find-descendants timing 'animEffect))]
+                 [tgt (in-list (find-descendants node 'spTgt))])
+       (attr-num tgt 'spid))
+     (for*/list ([node (in-list (find-descendants timing 'par))]
+                 #:when (member (attr (or (child node 'cTn) node) 'presetClass)
+                                ENTRANCE-KINDS)
+                 [tgt (in-list (find-descendants node 'spTgt))])
+       (attr-num tgt 'spid))
+     (for*/list ([node (in-list (find-descendants timing 'set))]
+                 #:when (let ([a (find-descendant node 'attrName)])
+                          (and a (equal? "style.visibility" (all-text a))))
+                 [tgt (in-list (find-descendants node 'spTgt))])
+       (attr-num tgt 'spid))))))
 
 (define (parse-slide pkg slide-name index width height default-text-style table-styles)
   (define slide-x (part-xexpr pkg slide-name))
@@ -119,7 +191,8 @@
               (list (cons slide-x (media-for slide-name))
                     (cons layout-x (and layout-name (media-for layout-name)))
                     (cons master-x (and master-name (media-for master-name))))))
-  (slide index
+  (build-frames
+   (slide index
          (or (slide-display-name slide-x) (format "Slide ~a" index))
          width height bg
          background-elements
@@ -134,7 +207,36 @@
          (uniquify-names elements (hash-keys tag-names))
          ;; `show="0"` is a slide the editor was told to skip. Absent means
          ;; shown, which is all but a handful of slides.
-         (equal? "0" (attr slide-x 'show))))
+         (equal? "0" (attr slide-x 'show)))
+   (if (current-build-frames?) (build-steps slide-x) '())))
+
+;; A slide built in clicks is several slides: one for what is there before the
+;; first click, and one after each of them. That is what a deck of still slides
+;; can say about a build, and it is what the room sees.
+;;
+;; Only the shapes some effect brings in are held back. Everything else is on
+;; every frame, which is what a slide with no build looks like.
+(define (build-frames s steps)
+  (cond
+    [(null? steps) (list s)]
+    [else
+     (define entering (append* steps))
+     (define frames (add1 (length steps)))
+     (for/list ([k (in-range frames)])
+       (define revealed (append* (take steps k)))
+       (struct-copy slide s
+                    [name (format "~a (~a of ~a)" (slide-name s) (add1 k) frames)]
+                    [elements
+                     (for/list ([e (in-list (slide-elements s))]
+                                #:unless (and (memv (element-id e) entering)
+                                              (not (memv (element-id e) revealed))))
+                       e)]))]))
+
+;; Whether a slide built in clicks becomes one slide per click. The command line
+;; turns it on: a deck of still slides has no other way to say what a build
+;; says. Off by default so that everything measuring one slide against one
+;; slide -- every fidelity test here -- keeps doing that.
+(define current-build-frames? (make-parameter #f))
 
 (define (uniquify-names elements [exempt '()])
   (define seen (make-hash))
