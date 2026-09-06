@@ -8,16 +8,15 @@
 //
 // What it adds to slideshow's `slide`:
 //
-//   * a slide number, drawn small in the corner, which is the number `--skip`
-//     wants -- the one thing a talk needs when it is being rehearsed from the
-//     middle;
+//   * `set_slide_numbers`, which draws the number `--skip` wants in the corner
+//     -- off by default, since it is ink the deck did not ask for, and the one
+//     thing you want when rehearsing from the middle;
 //   * `set_start_from`, so the numbering stays honest when slides are skipped;
-//   * a reveal: every slide comes up from blank by fading in its own first
-//     frame, which costs one advance and is spliced away on a slide whose first
-//     beat is already still;
+//   * `set_reveal`, which fades each slide up from blank -- off by default,
+//     because a deck cuts;
 //   * `~transition:`, how the next slide arrives -- `#'up`, `#'down`, `#'left`
-//     and `#'right` pan the old page off that edge, and `#'none` leaves a slide
-//     that animates itself out alone;
+//     and `#'right` pan the old page off that edge, and `#'none` cuts to it,
+//     which is the default and what a deck does;
 //   * `dead_beats`, which reads the frames back and says which advances change
 //     nothing, because a press of the clicker that does no work is invisible in
 //     the source and obvious from the audience.
@@ -45,16 +44,24 @@ export:
 def _slide_no = Array(0)
 def _start_from = Array(1)
 def _current = Array(0)   // logical number of the slide currently being assembled
-def _transitions = Array(#true)
+// How the next slide arrives when a slide does not say. A cut, which is what a
+// deck does: PowerPoint advances to the next slide and there it is. A talk that
+// wants the pages to move says so -- `set_transitions(#true)` for the downward
+// pan, or `set_transitions(#'left)` for a particular direction.
+def _default_transition = Array(#'none)
 def _emitted = Array(#false)   // has any slide been emitted yet?
 
 // The number to start counting from, which is what was passed to `--skip` plus
 // one: skipping does not renumber the slides that are left.
 fun set_start_from(n :: Int): _start_from[0] := n
 
-// Global on/off for the end-of-slide transition, so it can be A/B'd without
-// touching every slide.
-fun set_transitions(on): _transitions[0] := on
+// The transition every slide gets unless it names its own: #f or `#'none` for
+// a cut, #t for the downward pan, or a direction. A slide's own `~transition:`
+// always wins over this.
+fun set_transitions(on):
+  _default_transition[0] := (if on is_a Symbol
+                             | on
+                             | (if on | #'down | #'none))
 
 // Print each slide's epoch count (= advances it costs) as it is built.
 def _debug_epochs = Array(#false)
@@ -138,9 +145,13 @@ fun dead_beats(p) :: List:
 
 fun force(make): if make is_a Function | make() | make
 
-// Every slide comes up from blank: one epoch fading in a snapshot of the
-// slide's first frame, then the content. Costs one advance per slide.
-def _reveal = Array(#true)
+// Fading each slide up from blank: one epoch drawing a snapshot of the slide's
+// own first frame at rising alpha, then the content. It costs an advance per
+// slide, and -- because that first frame is drawn over nothing -- it means
+// leaving a slide blanks the screen before the next one appears. That is a
+// choice a talk makes, not the way a deck behaves, so it is off unless asked
+// for: a converted deck cuts from slide to slide the way it did in PowerPoint.
+def _reveal = Array(#false)
 def _reveal_extent = Array(0.4)
 fun set_reveal(on): _reveal[0] := on
 fun set_reveal_extent(e :: Real): _reveal_extent[0] := e
@@ -184,8 +195,11 @@ fun pan_transition(dir):
                   .refocus(frame))
     values(switch(lead, next).time_pad(~before: -1), #true)
 
-// Draw each slide's logical number (the --skip value) big in the bottom-right.
-def _numbers = Array(#true)
+// The slide's logical number -- the one `--skip` wants -- drawn small in the
+// bottom-right. Off unless asked for: it is ink on a deck that did not ask for
+// it, and a deck is meant to look the way it looked. Rehearsing is what it is
+// for, and rehearsing is when you turn it on.
+def _numbers = Array(#false)
 def _installed = Array(#false)
 fun set_slide_numbers(on): _numbers[0] := on
 
@@ -218,10 +232,12 @@ fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
   when _slide_no[0] >= _start_from[0]
   | _current[0] := _slide_no[0]
     def content = force(make)
-    // skipped for the first slide: a transition needs a previous page.
-    // `#'none` suits a predecessor that already animates itself out.
-    when _transitions[0] && _emitted[0] && (tr || #'down) != #'none
-    | slide_transition(pan_transition(tr || #'down))
+    // What this slide asked for, or what the talk asked for. Skipped on the
+    // first slide, because a transition needs a previous page, and on `#'none`,
+    // which is a cut -- and suits a predecessor that animates itself out.
+    def arrival = tr || _default_transition[0]
+    when _emitted[0] && arrival != #'none
+    | slide_transition(pan_transition(arrival))
     _emitted[0] := #true
     def shown:
       if _reveal[0] && rv && !(content is_a List)
