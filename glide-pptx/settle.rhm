@@ -1,0 +1,27 @@
+#lang rhombus
+// The frames a slide comes to rest on.
+//
+// A slide that has been given stages is an animated `Pict` -- a value from
+// rhombus/pict, not a pict this runtime can read. A frame of it is a pict
+// again, and the canvases it was built from are still inside that: the tag an
+// element carries rides on the pict as a field, so every combinator between
+// here and there has kept it.
+//
+// Which frame, though? Not simply the last: an epoch that fades something out
+// ends on a picture with less in it than the one before, and a talk whose last
+// beat is a fade-out would come back missing what it faded. So this offers
+// every frame the slide settles on -- the start and the end of each epoch --
+// and leaves the choice to the caller, which picks the one that shows the most.
+//
+// This is in Rhombus because `snapshot` is a Rhombus method; everything else
+// that reads a slide is Racket, and calls this.
+import: pict as pc
+
+export: settle_frames
+
+fun settle_frames(s):
+  if s is_a pc.Pict
+  | List.append(
+      & (for List (i in 0 .. math.max(1, s.duration)):
+           [s.snapshot(i, 1.0).handle, s.snapshot(i, 0.0).handle]))
+  | [s]

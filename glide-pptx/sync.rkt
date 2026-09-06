@@ -64,6 +64,40 @@
 ;; The namespace the last program was loaded into. See `load-program-picts`.
 (define previous-program-namespace (box #f))
 
+;; The frames a slide settles on, asked for in the program's own namespace.
+;;
+;; It has to be that namespace: a `Pict` is a struct type, and a rhombus/pict
+;; instantiated separately here would have a different one -- so the test for
+;; "is this an animated slide" would answer no about every slide, silently, and
+;; nothing would be settled at all. Loaded on demand, because a deck that does
+;; not animate should not pay for rhombus/pict.
+(define (settle-frames v)
+  (define f (dynamic-require '(lib "glide-pptx/settle.rhm") 'settle_frames))
+  (define l (f v))
+  (if (list? l) l (treelist->list l)))
+
+;; The frame of an animated slide that shows the most of it. A slide's stages
+;; each add something, so that is usually the last; a slide whose last beat
+;; fades something out settles on an earlier one, and this finds it rather than
+;; assuming. Ties go to the earliest, which is where a build starts from.
+(define (settle v)
+  (define frames (filter pict? (settle-frames v)))
+  (cond
+    [(null? frames) v]
+    [(null? (cdr frames)) (car frames)]
+    [else (argmax (lambda (p) (length (canvas-tags p))) frames)]))
+
+;; A slide may be written as a function of no arguments, so that a talk which
+;; starts part way through never builds the slides it skipped. Everything but
+;; the show wants the picture, so this is where they are called.
+;;
+;; And a slide that has been given stages is an animated `Pict` rather than a
+;; pict: settling it gives back a pict, with the canvases it was built from
+;; still inside. See `settle.rhm`.
+(define (force-slide s)
+  (define v (if (and (procedure? s) (procedure-arity-includes? s 0)) (s) s))
+  (if (pict? v) v (settle v)))
+
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
   (define ns (make-base-empty-namespace))
@@ -99,17 +133,17 @@
                    ;; to load the program it was given. The arguments are this
                    ;; command's, not the program's.
                    [current-command-line-arguments (vector)])
-      (for/or ([name (in-list names)])
-        (dynamic-require `(file ,(path->string full)) name (lambda () #f)))))
-  ;; A slide may be written as a function of no arguments, so that a talk which
-  ;; starts part way through never builds the slides it skipped. Everything but
-  ;; the show wants the picture, so this is where they are called.
-  (define (force-slide s) (if (and (procedure? s) (procedure-arity-includes? s 0)) (s) s))
+      (define v (for/or ([name (in-list names)])
+                  (dynamic-require `(file ,(path->string full)) name (lambda () #f))))
+      ;; Settled here, inside the program's namespace, for the reason
+      ;; `settle-frames` gives.
+      (cond
+        [(list? v) (map force-slide v)]
+        [(treelist? v) (map force-slide (treelist->list v))]
+        [else (force-slide v)])))
   (cond
-    [(list? found) (map force-slide found)]
-    [(treelist? found) (map force-slide (treelist->list found))]
+    [(list? found) found]
     [(pict? found) (list found)]
-    [(and (procedure? found) (procedure-arity-includes? found 0)) (list (found))]
     [else
      (error 'glide
             (string-append "~a provides no list of slide picts.\n"
@@ -757,15 +791,6 @@
       (define ps (for/first ([s (in-list prog)]
                              #:when (= index (slide-state-index s))) s))
       (cond
-        ;; A slide the program does not hold as a canvas: nothing here can be
-        ;; written, so nothing here is compared. Said once, rather than once per
-        ;; shape on it.
-        [(and canvases ps (not (set-member? canvases index)))
-         (list (sync-action 'noted (format "slide ~a" index) index
-                            (list (list 'slide-not-a-canvas
-                                        "is built rather than laid out"
-                                        "so what is on it is not merged"))
-                            #f))]
         [ps
          (define as (merge-slide index (slide-state-elements bs) (slide-state-elements ps)
                                  (slide-state-elements ds)
@@ -2147,6 +2172,47 @@
   ;; after it -- as a separate `at` form, because a still slide is all a program
   ;; can hold. Moving it on one frame and not the others is not something anyone
   ;; means: the build would jump as it played.
+  ;; Where each layer begins and ends: a `slide_canvas(...)` or a
+  ;; `group_pict(...)`. A slide that reveals in stages holds a canvas for the
+  ;; base and usually a group per stage, and which layer an `at` form sits in
+  ;; is what says whether two forms under one tag are one shape drawn again or
+  ;; two shapes.
+  (define canvas-extents
+    (filter values
+            (for/list ([m (in-list (regexp-match-positions*
+                                    #rx"slide_canvas|group_pict" source-text))])
+              (define open (next-open source-text (cdr m)))
+              (define shut (and open (rhombus-close source-text open)))
+              (and shut (cons (car m) (add1 shut))))))
+
+  (define (layer-holding st)
+    (define pos (rng-start (at-site-whole st)))
+    (for/fold ([best #f]) ([r (in-list canvas-extents)])
+      (if (and (<= (car r) pos) (< pos (cdr r))
+               (or (not best) (> (car r) (car best))))
+          r
+          best)))
+
+  ;; The same tag, on the same slide, on an `at` form in another canvas: a stage
+  ;; that redraws what the base already put there names it again, and they are
+  ;; the same shape -- moving one and not the other is not something anyone
+  ;; means, and it is the rule a build already follows.
+  ;;
+  ;; Two forms under one tag in the *same* canvas are two shapes, and an edit
+  ;; naming that tag could be either. Those are refused, as they were.
+  (define (twins-of a primary)
+    (define scope (scope-of a))
+    (define tag (sync-action-tag a))
+    (define home (and primary (layer-holding primary)))
+    (if (not scope)
+        '()
+        (for/list ([st (in-list all-sites)]
+                   #:when (and (equal? scope (at-site-scope st))
+                               (equal? tag (at-site-tag st))
+                               (not (eq? st primary))
+                               (not (equal? home (layer-holding st)))))
+          st)))
+
   (define (frames-for a primary)
     (define home (slide-site-for a))
     (define build (and home (slide-site-build home)))
@@ -2162,8 +2228,9 @@
                           #:when (and (equal? (slide-site-scope ss) (at-site-scope st))
                                       (equal? tag (at-site-tag st))))
                 st)))
+    (define kin (append (twins-of a primary) others))
     (when (pair? others) (set-box! spread? #t))
-    (cons primary others))
+    (cons primary kin))
 
   ;; The frames of this build that come after the one an action names. A shape
   ;; added to a build appears from the click it was added on and stays for the
@@ -2256,7 +2323,21 @@
       ;; This slide's own tags do not tell its elements apart, so an edit to one
       ;; of them cannot be placed. Only this slide's edits: the rest of the save
       ;; is not its business, and neither is a reorder, which names no element.
-      [(and ambiguity (not (memq (sync-action-kind a) '(noted reordered))))
+      ;; A drag or a resize is written to every `at` under that tag elsewhere on
+      ;; the slide, so a tag repeated across a slide's canvases is no longer in
+      ;; the way of those -- but one repeated *within* a canvas still is, since
+      ;; then the deck has two elements and the edit names one of them. The
+      ;; other kinds are refused either way: rewriting one shape's text and not
+      ;; its twin's would leave the two saying different things.
+      [(and ambiguity
+            (or (not (memq (sync-action-kind a) '(noted reordered moved resized)))
+                (let ([primary (site-for a)])
+                  (and primary
+                       (for/or ([st (in-list all-sites)])
+                         (and (not (eq? st primary))
+                              (equal? (at-site-scope st) (at-site-scope primary))
+                              (equal? (at-site-tag st) (at-site-tag primary))
+                              (equal? (layer-holding st) (layer-holding primary))))))))
        (set! skipped (cons (cons a (string-append ambiguity ". " TAG-HINT)) skipped))]
       [else
     (case (sync-action-kind a)
@@ -3413,9 +3494,7 @@
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
   (define deck-ir (pptx->deck pptx-path #:workdir dir))
   (define deck (deck->slide-states deck-ir))
-  ;; Slides the program does not lay out are taken as the deck has them, so that
-  ;; they neither look edited nor stop the slides being matched.
-  (define prog (as-deck-says prog0 deck (canvas-slide-indexes program-path)))
+  (define prog prog0)
   (define (done! v)
     (when (and (not given-dir) (not (current-keep-work?)))
       (delete-directory/files dir #:must-exist? #f))
@@ -3445,11 +3524,7 @@
           [else
            ;; The new base is the program as it now reads, so the next pass
            ;; compares against something both sides agree on.
-           ;; Read again after the patch, and with the same slides taken as the
-           ;; deck has them, so the base says what the next merge will read.
-           (define after (as-deck-says (program-slide-states program-path)
-                                       (deck->slide-states (pptx->deck pptx-path #:workdir dir))
-                                       (canvas-slide-indexes program-path)))
+           (define after (program-slide-states program-path))
            (write-sync-base base-file after
                             #:program (path->string (path->complete-path program-path))
                             #:deck (path->string (path->complete-path pptx-path)))
