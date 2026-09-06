@@ -24,7 +24,18 @@
 ;; single element.
 (struct slide-state (index width height elements background hidden?) #:prefab)
 
-(define GEOM-EPSILON 0.05)
+;; How far a number may move without anyone having moved anything.
+;;
+;; PowerPoint rounds to EMU, which is nothing. LibreOffice keeps its geometry in
+;; hundredths of a millimetre -- 0.0283pt -- so every coordinate shifts by up to
+;; that much each way when it saves a deck it did not write: measured on one
+;; deck, 242.3 became 242.2488 and 312.373 became 312.321. At 0.05 those slipped
+;; past and a deck nobody had touched came back with 119 edits in it.
+;;
+;; A tenth of a point is a five-hundredth of an inch. Nothing anyone does in an
+;; editor is that small: the arrow keys move a shape by a millimetre, which is
+;; twenty-eight times this.
+(define GEOM-EPSILON 0.15)
 
 (define (el-geometry e)
   (list (el-state-x e) (el-state-y e) (el-state-w e) (el-state-h e) (el-state-rot e)
