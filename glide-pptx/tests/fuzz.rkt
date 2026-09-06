@@ -139,7 +139,13 @@
 (define (a-shape rng id w h)
   (shape id (format "Shape ~a" id) (a-bbox rng w h)
          (if (chance rng 0.25) (a-custom-geom rng) (a-geom rng))
-         (a-fill rng) (a-line rng) (a-body rng)))
+         (a-fill rng) (a-line rng) (a-body rng) (a-shadow rng)))
+
+;; A shadow now and then, so one goes round the trip.
+(define (a-shadow rng)
+  (and (chance rng 0.2)
+       (shadow (real-in rng 0.0 20.0) (real-in rng 0.0 12.0)
+               (real-in rng 0.0 360.0) (a-color rng))))
 
 (define (an-element rng id w h [depth 0])
   (cond

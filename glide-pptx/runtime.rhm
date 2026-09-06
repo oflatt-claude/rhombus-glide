@@ -28,6 +28,7 @@ export:
   image_fill
   pattern_fill
   make_stroke
+  make_shadow
   line_end
   rgba
   rgb
@@ -84,12 +85,17 @@ fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
 
 // --------------------------------------------------------------------- leaves
 
+fun make_shadow(color, ~blur: blur = 0.0, ~distance: dist = 0.0,
+                ~direction: dir = 0.0):
+  rt.#{make-shadow}(color, ~blur: blur, ~distance: dist, ~direction: dir)
+
 fun shape_pict(~width: w, ~height: h,
                ~shape: shape = #false, ~geom: geom = #false,
                ~fill: fill = #false, ~line: line = #false, ~body: body = #false,
+               ~shadow: shadow = #false,
                ~flip_h: fh = #false, ~flip_v: fv = #false):
   rt.#{shape-pict}(~width: w, ~height: h, ~shape: shape, ~geom: geom,
-                   ~fill: fill, ~line: line, ~body: body,
+                   ~fill: fill, ~line: line, ~body: body, ~shadow: shadow,
                    ~#{flip-h?}: fh, ~#{flip-v?}: fv)
 
 fun textbox(~width: w, ~height: h,
@@ -104,9 +110,10 @@ fun textbox(~width: w, ~height: h,
 fun image_pict(src, w, h,
                ~crop: crop = #false, ~line: line = #false,
                ~flip_h: fh = #false, ~flip_v: fv = #false,
-               ~opacity: opacity = 1.0):
+               ~opacity: opacity = 1.0, ~shadow: shadow = #false):
   rt.#{image-pict}(src, w, h, ~crop: to_rkt_list(crop), ~line: line,
-                   ~#{flip-h?}: fh, ~#{flip-v?}: fv, ~opacity: opacity)
+                   ~#{flip-h?}: fh, ~#{flip-v?}: fv, ~opacity: opacity,
+                   ~shadow: shadow)
 
 fun group_pict(~width: w, ~height: h,
                ~child_x: cx = 0.0, ~child_y: cy = 0.0,
