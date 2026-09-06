@@ -105,10 +105,14 @@
   (line out 0 "def ~a = slide_canvas(" name)
   (define elements (append (slide-inherited s) (slide-elements s)))
   (line out 2 "~~width: ~a, ~~height: ~a," width-expr height-expr)
-  (line out 2 "~~background: ~a~a~a"
+  (line out 2 "~~background: ~a~a~a~a"
         (render (slide-background-value s) rhombus-flavor)
         ;; A slide the editor was told to skip says so, and keeps saying it.
         (if (slide-hidden? s) ", ~hidden: #true" "")
+        ;; And a frame of a build says which build, so that moving a shape on
+        ;; one frame moves it on the others: they are the same shape, drawn
+        ;; again because a still slide is all a program can hold.
+        (if (slide-build s) (format ", ~~build: ~s" (slide-build s)) "")
         (if (null? elements) "" ","))
   (define n (length (slide-inherited s)))
   (for ([e (in-list elements)] [i (in-naturals)])

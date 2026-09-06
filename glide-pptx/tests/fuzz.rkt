@@ -169,7 +169,8 @@
                  (solid-fill (a-color rng)) '()
                  (for/list ([j (in-range k)]) (an-element rng (+ 100 (* 10 i) j) w h))
                  ;; A slide the show skips, now and then.
-                 (chance rng 0.15)))
+                 (chance rng 0.15)
+                 #f))
         #f "fuzz"))
 
 ;; What a round trip may not change: everything the merge can see, compared the

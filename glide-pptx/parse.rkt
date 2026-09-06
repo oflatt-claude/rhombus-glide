@@ -207,7 +207,8 @@
          (uniquify-names elements (hash-keys tag-names))
          ;; `show="0"` is a slide the editor was told to skip. Absent means
          ;; shown, which is all but a handful of slides.
-         (equal? "0" (attr slide-x 'show)))
+         (equal? "0" (attr slide-x 'show))
+         #f)
    (if (current-build-frames?) (build-steps slide-x) '())))
 
 ;; A slide built in clicks is several slides: one for what is there before the
@@ -226,6 +227,7 @@
        (define revealed (append* (take steps k)))
        (struct-copy slide s
                     [name (format "~a (~a of ~a)" (slide-name s) (add1 k) frames)]
+                    [build (slide-name s)]
                     [elements
                      (for/list ([e (in-list (slide-elements s))]
                                 #:unless (and (memv (element-id e) entering)

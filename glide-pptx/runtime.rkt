@@ -833,8 +833,13 @@
 ;; stays in the deck and is passed over in the show. It is written to the file
 ;; and read back from it, so hiding a slide in the editor is an edit like any
 ;; other rather than something the next regeneration undoes.
+;; `build` names the slide this one is a frame of, when a built slide was split
+;; into one slide per click. Nothing here draws differently for it -- it is
+;; there so that an edit to a shape on one frame can be written to the same
+;; shape on the others.
 (define (slide-canvas #:width w #:height h #:background [bg (solid-fill white)]
                       #:hidden? [hidden? #f]
+                      #:build [build #f]
                       . args)
   ;; A list argument is spliced, so a slide can be built with `for List` or
   ;; `for/list` without an `apply`. Generated code never does this; hand-written

@@ -46,7 +46,7 @@
 ;; not assertions: an editor that states nothing leaves the format's defaults
 ;; standing, and those are not edits. They belong in the report and must not
 ;; stop a save, which is why they are neither applied nor skipped.
-(struct sync-report (actions applied skipped notes base-written?) #:transparent)
+(struct sync-report (actions applied skipped notes base-written? deck-behind?) #:transparent)
 
 ;; ------------------------------------------------------- reading both sides
 
@@ -761,7 +761,8 @@
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
 ;; shape in the editor puts it on top, which is where the last argument draws.
-(struct slide-site (scope insert-at indent def-start def-end background width height hidden)
+(struct slide-site (scope insert-at indent def-start def-end background width height hidden
+                   build)
   #:transparent)
 (struct rng (start end) #:transparent)
 
@@ -1089,7 +1090,10 @@
                                     (canvas-paint-site (sixth l))
                                     (canvas-size-site (sixth l) '#:width 'slide-width)
                                     (canvas-size-site (sixth l) '#:height 'slide-height)
-                                    (canvas-flag-site (sixth l) '#:hidden 'hidden))))))))
+                                    (canvas-flag-site (sixth l) '#:hidden 'hidden)
+                                    ;; Which build this slide is a frame of, if
+                                    ;; it is one.
+                                    (canvas-string (sixth l) '#:build))))))))
 
 ;; Where the canvas states its background, which is always somewhere: the
 ;; emitter writes one whether the slide had a background of its own or not.
@@ -1113,6 +1117,13 @@
 
 ;; Whether the canvas says the slide is skipped. Stated, it is rewritten; not
 ;; stated, it is added -- the same rule as any other argument.
+;; A string a canvas states, or #f.
+(define (canvas-string parens kw)
+  (define stx (parens-kw-group parens kw))
+  (define t (and stx (single-term stx)))
+  (define v (and t (syntax-e t)))
+  (and (string? v) v))
+
 (define (canvas-flag-site parens kw property)
   (define stx (parens-kw-group parens kw))
   (if stx
@@ -1926,6 +1937,10 @@
   ;; The source text, for the sites that describe a value rather than carry it:
   ;; whether a `~rotate:` says zero, whether a `~flip_h:` says true.
   (define source-text (file->string program-path))
+  ;; Set when an edit was carried to frames of a build other than the one it
+  ;; names. The deck still holds the old value on those frames, and only the
+  ;; caller can put that right, by writing the deck again from the program.
+  (define spread? (box #f))
   (check-site-tags all-sites scopes program-path)
   ;; Keyed by the slide's definition, so "Title 1" on slide 3 finds slide 3's
   ;; `at`. When the slide list is computed there is no definition to key on, and
@@ -1975,6 +1990,53 @@
   ;; An edit with no range writes nothing, so it must not be counted as applied:
   ;; a merge that reports success and changes nothing is the one failure the user
   ;; cannot see. Every caller checks the result.
+  ;; Every place an edit has to land: the `at` form the action names, and the
+  ;; same shape on the other frames of the same build.
+  ;;
+  ;; A build was one slide the presenter advanced through, split into a slide
+  ;; per click, so a shape that appears on frame three appears on every frame
+  ;; after it -- as a separate `at` form, because a still slide is all a program
+  ;; can hold. Moving it on one frame and not the others is not something anyone
+  ;; means: the build would jump as it played.
+  (define (frames-for a primary)
+    (define home (slide-site-for a))
+    (define build (and home (slide-site-build home)))
+    (define tag (sync-action-tag a))
+    (define others
+          (if (not build)
+              '()
+              (for*/list ([ss (in-list slide-sites)]
+                          #:when (and (not (equal? (slide-site-scope ss)
+                                                   (slide-site-scope home)))
+                                      (equal? build (slide-site-build ss)))
+                          [st (in-list all-sites)]
+                          #:when (and (equal? (slide-site-scope ss) (at-site-scope st))
+                                      (equal? tag (at-site-tag st))))
+                st)))
+    (when (pair? others) (set-box! spread? #t))
+    (cons primary others))
+
+  ;; The frames of this build that come after the one an action names. A shape
+  ;; added to a build appears from the click it was added on and stays for the
+  ;; rest of them, so a new one goes on this frame and every later frame.
+  (define (later-frames a)
+    (define home (slide-site-for a))
+    (define build (and home (slide-site-build home)))
+    (cond
+      [(not build) '()]
+      [else
+       (define after? (box #f))
+       (define later
+         (for/list ([ss (in-list slide-sites)]
+                    #:when (cond
+                             [(equal? (slide-site-scope ss) (slide-site-scope home))
+                              (set-box! after? #t)
+                              #f]
+                             [else (and (unbox after?) (equal? build (slide-site-build ss)))]))
+           ss))
+       (when (pair? later) (set-box! spread? #t))
+       later]))
+
   (define (edit! r text)
     (and r (begin (set! edits (cons (list r text) edits)) #t)))
   ;; Names this save has already given out, per slide. The sites were read
@@ -2074,8 +2136,10 @@
                  (set! skipped (cons (cons a "its existing correction has no source extent")
                                      skipped)))])]
          [else
-          (edit! (at-site-x site) (num->source x))
-          (edit! (at-site-y site) (num->source y))
+          ;; On every frame of the build, not only the one that was dragged.
+          (for ([st (in-list (frames-for a site))])
+            (edit! (at-site-x st) (num->source x))
+            (edit! (at-site-y st) (num->source y)))
           ;; A rotation and a mirror are edits like any other, and both used to
           ;; be dropped in silence: a rotate was counted as applied while
           ;; nothing was written, and a flip -- what dragging a line's endpoint
@@ -2086,8 +2150,9 @@
             [(eq? 'resized (sync-action-kind a))
              (cond
                [(and (at-site-width site) (at-site-height site))
-                (edit! (at-site-width site) (num->source w))
-                (edit! (at-site-height site) (num->source h))
+                (for ([st (in-list (frames-for a site))])
+                  (edit! (at-site-width st) (num->source w))
+                  (edit! (at-site-height st) (num->source h)))
                 (set! applied (cons a applied))]
                [else
                 (set! skipped (cons (cons a "its size is computed, not a literal") skipped))])]
@@ -2194,6 +2259,10 @@
             [else
              (edit! (rng (slide-site-insert-at ss) (slide-site-insert-at ss))
                     (string-append ",\n" src-text))])
+          ;; And on every frame after this one, since a build only ever adds.
+          (for ([ss2 (in-list (later-frames a))])
+            (edit! (rng (slide-site-insert-at ss2) (slide-site-insert-at ss2))
+                   (string-append ",\n" src-text)))
           (set! applied (cons a applied))])]
       ;; Deleted in the editor: the `at` form goes, and nothing else.
       [(removed)
@@ -2563,10 +2632,11 @@
       (set! edits before-edits)))
   (cond
     ;; All of it, or none of it.
-    [(and atomic? (pair? skipped)) (values '() (reverse skipped) (reverse notes))]
+    [(and atomic? (pair? skipped)) (values '() (reverse skipped) (reverse notes) #f)]
     [else
      (when (pair? edits) (splice-file! program-path edits))
-     (values (reverse applied) (reverse skipped) (reverse notes))]))
+     (values (reverse applied) (reverse skipped) (reverse notes)
+             (and (pair? applied) (unbox spread?)))]))
 
 ;; Whether the deck's rotation or mirroring differs from what the source says.
 ;; The source's own value is what it was exported with, so the base is not
@@ -3191,20 +3261,20 @@
        (write-sync-base base-file prog
                         #:program (path->string (path->complete-path program-path))
                         #:deck (path->string (path->complete-path pptx-path))))
-     (done! (sync-report '() '() '() '() (not dry-run?)))]
+     (done! (sync-report '() '() '() '() (not dry-run?) #f))]
     [else
      (define actions
        (parameterize ([inherited-font fallback-font])
          (merge-states base prog deck program-path #:deck-ir deck-ir)))
      (cond
-       [dry-run? (done! (sync-report actions '() '() '() #f))]
+       [dry-run? (done! (sync-report actions '() '() '() #f #f))]
        [else
-        (define-values (applied skipped notes)
+        (define-values (applied skipped notes behind?)
           (apply-actions! program-path actions #:deck deck-ir #:atomic? atomic?))
         (cond
           ;; Nothing was written, so there is nothing new for the base to
           ;; record: leaving it alone is what makes the next save try again.
-          [(and atomic? (pair? skipped)) (done! (sync-report actions '() skipped notes #f))]
+          [(and atomic? (pair? skipped)) (done! (sync-report actions '() skipped notes #f #f))]
           [else
            ;; The new base is the program as it now reads, so the next pass
            ;; compares against something both sides agree on.
@@ -3212,7 +3282,7 @@
            (write-sync-base base-file after
                             #:program (path->string (path->complete-path program-path))
                             #:deck (path->string (path->complete-path pptx-path)))
-           (done! (sync-report actions applied skipped notes #t))])])]))
+           (done! (sync-report actions applied skipped notes #t behind?))])])]))
 
 (define (format-sync-report r)
   (define o (open-output-string))

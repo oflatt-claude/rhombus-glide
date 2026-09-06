@@ -55,7 +55,7 @@
                                      #:rot (bbox-rot bb)
                                      #:flip-h? (bbox-flip-h? bb)
                                      #:flip-v? (bbox-flip-v? bb)))))
-  (values (deck w h (list (slide 1 "one" w h #f '() (list moved) #f))
+  (values (deck w h (list (slide 1 "one" w h #f '() (list moved) #f #f))
                 (deck-media-dir src-deck) (deck-source src-deck))
           w h))
 
