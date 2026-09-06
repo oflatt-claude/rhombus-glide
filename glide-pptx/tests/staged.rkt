@@ -219,11 +219,15 @@
         o)))
    (define out (open-output-string))
    (define err (open-output-string))
+   ;; With arguments on the command line, because `raco glide talk.rhm --app none`
+   ;; has some -- and a program that imports slideshow reads them when it loads,
+   ;; and refuses anything that is not a single module file. They are this
+   ;; command's arguments, not the program's, and the program must not see them.
    (define ok?
      (parameterize ([current-output-port out] [current-error-port err])
        (if xvfb
-           (system* xvfb "-a" racket-exe (path->string driver))
-           (system* racket-exe (path->string driver)))))
+           (system* xvfb "-a" racket-exe (path->string driver) "--app" "none")
+           (system* racket-exe (path->string driver) "--app" "none"))))
    (check-true ok? (format "the program loaded twice: ~a" (get-output-string err)))
    (check-regexp-match #rx"first 1" (get-output-string out) "the first load found the slide")
    (check-regexp-match #rx"second 1" (get-output-string out)
