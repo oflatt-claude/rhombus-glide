@@ -10,6 +10,8 @@ import:
   lib("glide-pptx/runtime.rkt") as rt
   lib("glide-pptx/export.rkt") as ex
   lib("pict/main.rkt") as pict_rkt
+  // Prefixed, not `open`: this module exports `blank` of its own.
+  pict as pc
 
 export:
   slide_canvas
@@ -45,6 +47,7 @@ export:
   pair
   deck_to_pdf
   shown_slides
+  transition_of
   picts_to_pptx
   pict_to_png
   media_lookup
@@ -77,9 +80,15 @@ fun shown_slides(slides):
   rt.#{shown-picts}(to_rkt_list(slides))
 
 fun slide_canvas(~width: w, ~height: h, ~background: bg = rt.#{white},
-                 ~hidden: hidden = #false, ~build: build = #false, & elems):
+                 ~hidden: hidden = #false, ~build: build = #false,
+                 ~transition: transition = #false, & elems):
   rt.#{slide-canvas}(~width: w, ~height: h, ~background: bg, ~#{hidden?}: hidden,
-                     ~build: build, & elems)
+                     ~build: build, ~transition: transition, & elems)
+
+// How the show moves to this slide, when the slide said. `staged.rhm` performs
+// it; nothing is drawn differently for it here.
+fun transition_of(s):
+  rt.#{canvas-transition}(s)
 
 fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
   rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~nudge: to_rkt_list(nudge))
@@ -203,8 +212,24 @@ fun pair(a, b): Pair(a, b)
 
 // --------------------------------------------------------------------- output
 
+// The pages one slide is worth. A slide that animates is many frames, and a
+// backup PDF holding only the first is not a backup -- so an advance is a page,
+// which is the slides the animation was made from and the count the deck had
+// before anyone gave it stages.
+fun slide_pages(s):
+  match s
+  | q :: pc.Pict:
+      for List (i in 0 .. math.max(1, q.duration)): q.snapshot(i, 1.0).handle
+  | ~else: [s]
+
+// `~hidden:` is checked here rather than left to the Racket side, because a
+// slide with stages reaches this as a `Pict` and a snapshot of one does not
+// carry what the canvas said.
 fun deck_to_pdf(picts, path, ~width: w = #false, ~height: h = #false):
-  rt.#{deck->pdf}(to_rkt_list(picts), path, ~width: w, ~height: h)
+  def pages:
+    List.append(& for List (s in picts):
+                    if rt.#{canvas-hidden?}(s) | [] | slide_pages(s))
+  rt.#{deck->pdf}(to_rkt_list(pages), path, ~width: w, ~height: h)
 
 fun pict_to_png(p, path, ~scale: s = 1.0): rt.#{pict->png}(p, path, ~scale: s)
 

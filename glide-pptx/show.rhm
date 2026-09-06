@@ -15,10 +15,22 @@ import:
   slideshow open
   lib("slideshow/main.rkt") as ss
   lib("glide-pptx/runtime.rhm") as glide
+  // Opened, not prefixed, so that `export` below can pass the knobs on:
+  // a program that shows its deck with `show_slides` sets them without
+  // having to know that `staged.rhm` is where they live.
+  lib("glide-pptx/staged.rhm") open
 
 export:
   show_slides
+  // The knobs a talk reaches for, so that a program which shows its deck with
+  // `show_slides` can set them without importing `staged.rhm` itself.
+  all_from(lib("glide-pptx/staged.rhm"))
 
+// A slide is shown through `staged_slide`: numbered, revealed, and arrived at.
+// See `staged.rhm`. A slide may be a canvas -- which is a pict handle -- or a
+// `Pict`, which is what a slide becomes once it animates: a converted deck is
+// meant to be rewritten by hand, and the first thing anyone does by hand is
+// give a slide stages.
 fun show_slides(slides, ~width: w :: Real, ~height: h :: Real):
   def page = blank_client()
   def m = ss.margin
@@ -29,4 +41,7 @@ fun show_slides(slides, ~width: w :: Real, ~height: h :: Real):
   // fits rather than being cropped.
   def zoom = math.min(page_w / w, page_h / h)
   for (s in glide.shown_slides(slides)):
-    slide(~layout: #'center, Pict.from_handle(s).scale(zoom).pad(-m))
+    def p :: Pict = if s is_a Pict | s | Pict.from_handle(s)
+    do_staged_slide(p.scale(zoom).pad(-m),
+                    ~transition: glide.transition_of(s),
+                    ~layout: #'center)
