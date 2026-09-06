@@ -25,7 +25,11 @@
         "02-text"         '(0.010 . 0.020)
         "03-shapes"       '(0.018 . 0.032)
         "04-pictures-groups" '(0.008 . 0.012)
-        "05-realistic"    '(0.018 . 0.025)))
+        "05-realistic"    '(0.018 . 0.025)
+        ;; What only exists in the drawing: scripts, a strike, letter spacing,
+        ;; line spacing. Text-heavy and small, so the page-level numbers are
+        ;; modest -- `elements.rkt` is where this deck is really asked about.
+        "06-drawn"        '(0.020 . 0.030)))
 
 (define decks
   (sort (for/list ([f (in-list (directory-list decks-dir))]

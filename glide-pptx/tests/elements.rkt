@@ -131,7 +131,9 @@
 
 (define all
   (append* (for/list ([name (in-list '("01-placeholders" "02-text" "03-shapes"
-                                       "04-pictures-groups" "05-realistic"))])
+                                       "04-pictures-groups" "05-realistic"
+                                       ;; What only exists in the drawing.
+                                       "06-drawn"))])
              (elements-of name))))
 
 (define compared (filter (lambda (r) (real? (second r))) all))
