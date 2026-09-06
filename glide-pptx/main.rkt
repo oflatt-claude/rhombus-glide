@@ -7,7 +7,7 @@
          "export.rkt" "sync.rkt" "watch.rkt"
          (only-in "semantic.rkt" current-flatten-opaque?)
          (only-in "parse.rkt" current-allow-unsupported?))
-(provide main starter-deck)
+(provide main starter-deck default-app)
 
 ;; A deck has to be unzipped to be read, and the images are read from there
 ;; while the slides draw -- so there is a scratch directory for the length of a
@@ -285,18 +285,29 @@
                              ".pptx"))))
 
 ;; Keynote on a Mac, since that is what there is to drive there.
-;; LibreOffice by default, wherever it is installed: it reads and writes .pptx
-;; itself, it is on every platform, and it costs nothing, which matters when
-;; the alternative is a subscription. PowerPoint is next where there is no
-;; LibreOffice and the machine is a Mac. Keynote is driven the same way but its
-;; export states less than it shows -- a shape's typeface and anchor and
-;; spacing can come back missing, and a merge can only go on what the deck says
-;; -- so it is asked for by name. `--app` overrides any of this.
+;; LibreOffice, and nothing else unless it is asked for. It reads and writes
+;; .pptx itself, it is on every platform, and it costs nothing -- and one
+;; editor that is known to work is worth more than a choice between three that
+;; might. On a Mac it lives inside the application bundle rather than on the
+;; PATH, which is where a search would otherwise give up.
+;;
+;; Without one, this says so and stops. Opening nothing and carrying on is how
+;; a session ends up reporting an AppleScript syntax error about a property,
+;; which says nothing about what is wrong.
+;;
+;; `--app` still names another: PowerPoint and Keynote are driven the same way,
+;; and `--app none` leaves the deck to be opened by hand.
 (define (default-app)
-  (cond
-    [(or (find-executable-path "soffice") (find-executable-path "libreoffice")) 'libreoffice]
-    [(eq? 'macosx (system-type 'os)) 'powerpoint]
-    [else 'none]))
+  (unless (soffice-exe)
+    (error 'glide
+           (string-append
+            "no LibreOffice to open the deck with.\n"
+            "  Install it from libreoffice.org -- it is looked for on the PATH,"
+            " and on a Mac\n"
+            "  inside /Applications/LibreOffice.app as well.\n"
+            "  Or pass --app none and open the deck yourself: the two are kept"
+            " in step either way.")))
+  'libreoffice)
 
 (define (cmd-edit args)
   (define out (box #f))
@@ -323,6 +334,15 @@
   (define pptx (or (unbox out) (scratch-deck program)))
   (make-directory* (path-only (path->complete-path pptx)))
   (define adapter (adapter-named (or (unbox app) (default-app))))
+  ;; Asked for by name, and not there. An editor that cannot be driven opens
+  ;; nothing and answers every reload with a syntax error from AppleScript
+  ;; about a property, which is a poor way to learn you have no PowerPoint.
+  (when (and (eq? 'powerpoint (app-adapter-name adapter)) (not (powerpoint-installed?)))
+    (error 'glide
+           (string-append "no Microsoft PowerPoint installed to drive.\n"
+                          "  Install LibreOffice, which glide will find and use,"
+                          " or pass --app none\n"
+                          "  and open the deck yourself: it is kept in step either way.")))
   (void
    (if (unbox once)
        (watch-once program pptx #:adapter adapter

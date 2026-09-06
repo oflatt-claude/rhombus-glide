@@ -14,6 +14,7 @@
          "export.rkt" "sync.rkt")
 (provide (struct-out app-adapter) adapters adapter-named scratch-dir-of
          watch-loop watch-once program-picts
+         soffice-exe powerpoint-installed?
          current-watch-log)
 
 (define current-watch-log (make-parameter (lambda (fmt . args)
@@ -174,14 +175,40 @@
 
 (define LIBREOFFICE-PORT 2143)
 
+;; On a Mac it is inside the application bundle rather than on the PATH, which
+;; is where a `raco glide` run would otherwise conclude there is no LibreOffice
+;; and reach for PowerPoint instead.
+(define MAC-SOFFICE "/Applications/LibreOffice.app/Contents/MacOS/soffice")
+
+;; Whether there is a PowerPoint to drive. Without one, `tell application
+;; "Microsoft PowerPoint"` cannot even be compiled -- AppleScript has no
+;; dictionary to read `full name` out of -- and every reload fails with a
+;; syntax error about a property, which says nothing about what is wrong.
+(define (powerpoint-installed?)
+  (and (eq? 'macosx (system-type 'os))
+       (directory-exists? "/Applications/Microsoft PowerPoint.app")))
+
 (define (soffice-exe)
-  (or (find-executable-path "soffice") (find-executable-path "libreoffice")))
+  (or (find-executable-path "soffice")
+      (find-executable-path "libreoffice")
+      (and (file-exists? MAC-SOFFICE) (string->path MAC-SOFFICE))))
+
+;; UNO comes from LibreOffice's own Python. A Mac's `python3` is the system's
+;; and knows nothing about it, and even on Linux the packaged one is surer than
+;; whatever `python3` happens to mean today.
+(define (libreoffice-python)
+  (define bundled
+    (list "/Applications/LibreOffice.app/Contents/MacOS/python"
+          "/Applications/LibreOffice.app/Contents/Resources/python"
+          "/usr/lib/libreoffice/program/python"))
+  (or (for/or ([p (in-list bundled)]) (and (file-exists? p) (string->path p)))
+      (find-executable-path "python3")))
 
 ;; The helper says what it managed: 0 did it, 3 could not connect, 4 the
 ;; document is not open. Anything else, including no python-uno to run it
 ;; with, is "cannot tell".
 (define (libreoffice-driver! what pptx)
-  (define py (find-executable-path "python3"))
+  (define py (libreoffice-python))
   (and py
        (let ([out (open-output-string)])
          (parameterize ([current-output-port out] [current-error-port out])
@@ -201,14 +228,15 @@
   ;; and there is nothing to ask: then the deck is still written, still opens,
   ;; and only the reload is lost -- which the loop says out loud rather than
   ;; leaving a stale deck on screen looking current.
+  ;; Argument by argument rather than as a command line: a talk kept in a
+  ;; folder with a space in its name is not an unusual thing to have.
   (and exe
        (begin
-         (process/ports
+         (process*/ports
           (open-output-nowhere) #f (open-output-nowhere)
-          (format "~a --norestore --accept=~s ~a"
-                  exe
-                  (format "socket,host=localhost,port=~a;urp;" LIBREOFFICE-PORT)
-                  (path->string (path->complete-path pptx))))
+          exe "--norestore"
+          (format "--accept=socket,host=localhost,port=~a;urp;" LIBREOFFICE-PORT)
+          (path->string (path->complete-path pptx)))
          #t)))
 
 (define libreoffice-adapter
