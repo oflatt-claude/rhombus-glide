@@ -95,11 +95,21 @@
   (let loop ([waited 0.0])
     (cond
       [(pred) #t]
-      [(>= waited limit) (fail (format "timed out waiting for ~a" what)) #f]
+      [(>= waited limit)
+       (eprintf "LOOP LOG:\n~a\n" (apply string-append (reverse log-lines)))
+       (fail (format "timed out waiting for ~a" what)) #f]
       [else (sleep 0.2) (loop (+ waited 0.2))])))
 
 ;; 1. The program is saved: the deck should be rewritten.
-(sleep 1.0)
+;;
+;; Waited for rather than slept through: the loop writes the deck once at
+;; startup, and on a cold compile that takes longer than any sleep worth
+;; writing. A program saved while it was still starting up was already in the
+;; hash it started watching from, so the change it was waiting for had already
+;; happened.
+(void (wait-for! "the loop to say it is watching"
+                 (lambda () (ormap (lambda (l) (regexp-match? #rx"watching for changes" l))
+                                   log-lines))))
 (define deck-before (file->bytes pptx))
 (void (write-program! "ED7D31"))
 (void (wait-for! "the deck to be regenerated"

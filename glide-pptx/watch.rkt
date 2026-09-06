@@ -435,6 +435,10 @@
   ;; Asking the editor whether it is still open costs a subprocess, so it is
   ;; asked on a timer rather than every tick.
   (define open-every (max 1 (inexact->exact (round (/ open-check (max interval 0.01))))))
+  ;; Said once the first deck is written and before the first hash is taken, so
+  ;; that "it is watching now" is something anyone can wait for rather than
+  ;; guess at. A cold start compiles the runtime and takes seconds.
+  (log! "watching for changes\n")
   (with-handlers ([exn:break? (lambda (_e)
                                 (newline)
                                 (finish! program pptx document adapter workdir
