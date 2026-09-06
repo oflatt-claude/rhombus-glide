@@ -13,7 +13,8 @@
 ;; Nothing here ever restructures the program. Every edit is one of two things:
 ;; replace a numeric or string literal, or wrap an expression in a known form.
 (require racket/list racket/string racket/format racket/file racket/path
-         racket/math racket/port racket/treelist pict
+         racket/math racket/port racket/treelist racket/promise pict
+         (only-in racket/draw get-face-list)
          (only-in shrubbery/parse parse-all)
          "ir.rkt" "draw-ir.rkt" "parse.rkt" "semantic.rkt" "sync-state.rkt"
          (only-in "runtime.rkt" current-media-base current-default-font)
@@ -206,19 +207,92 @@
         'insets '(7.2 3.6 7.2 3.6)))
 
 ;; (values edits notes): the changes to act on, and the ones only worth saying.
-(define (split-trusted changes)
+;; A typeface the machine does not have is one the editor could not keep. Open a
+;; deck on a machine without Helvetica Neue and LibreOffice draws it in
+;; something else -- and writes that something else back into the file, on every
+;; run that named it. Taken at face value that is the deck saying "the font is
+;; Arial now", and the program would be rewritten to say so: the author's font,
+;; gone, because it was opened on the wrong machine.
+;;
+;; So a font change is only believed when the font it moved away from is one
+;; this machine could have drawn. Otherwise it is noted, which says what the
+;; deck says and changes nothing.
+;; Both halves matter: the font it moved *away* from is one this machine could
+;; not have drawn, and the one it moved *to* is one it could. That is what a
+;; substitution looks like. A typeface someone actually changed usually moves
+;; between two fonts the machine has, and where it does not -- a machine with
+;; hardly any fonts, which is what a build box is -- nothing is assumed and the
+;; change is taken at its word.
+(define (font-substitution? ch)
+  (and (eq? 'font (property-head (first ch)))
+       (string? (second ch)) (string? (third ch))
+       (not (installed-face? (second ch)))
+       (installed-face? (third ch))))
+
+(define installed-faces (delay (get-face-list)))
+
+(define (installed-face? name)
+  (and (member name (force installed-faces)) #t))
+
+;; Whether the box shrinks its text to fit. In one of those, the size a file
+;; states is not the size anyone chose: it is the size the last renderer worked
+;; out, and every renderer works it out differently -- open a deck without the
+;; fonts it names and LibreOffice re-fits the text and writes a smaller size and
+;; a tighter line spacing back. Taken at face value that is the deck saying the
+;; author shrank the text, and the program would be rewritten to say so.
+(define (shrinks-to-fit? style)
+  (define p (assoc 'autofit style))
+  (and p (eq? 'shrink (cdr p))))
+
+(define (derived-by-fitting? ch)
+  (memq (property-head (first ch)) '(size line-spacing)))
+
+(define (split-trusted changes #:shrinks? [shrinks? #f])
   (for/fold ([edits '()] [notes '()] #:result (values (reverse edits) (reverse notes)))
             ([ch (in-list changes)])
     (define d (case (property-head (first ch))
                 [(font) (or (inherited-font) 'no-default)]
                 [else (hash-ref INHERITED-DEFAULTS (property-head (first ch)) 'no-default)]))
-    (if (and (not (eq? 'no-default d)) (equal? d (third ch)))
+    (if (or (and (not (eq? 'no-default d)) (equal? d (third ch)))
+            (font-substitution? ch)
+            (and shrinks? (derived-by-fitting? ch)))
         (values edits (cons ch notes))
         (values (cons ch edits) notes))))
 
 ;; What the two states disagree about, as (property was now). An outline the
 ;; editor added, or took away, is as much of a change as one it recoloured, so
 ;; a removable property missing from either side is reported with `ABSENT`.
+;; How close two values of a property have to be to count as the same.
+;;
+;; An editor writes numbers back in whatever it stores them as. LibreOffice
+;; keeps hundredths of a millimetre, so a deck it has merely opened and saved
+;; comes back with every length a little different: 45pt of space above a
+;; paragraph as 45.01, two points of letter spacing as 2.01, a 37% crop as
+;; 36.99%. Asked for equality, the merge reported an edit for each of them --
+;; 119 of them on one deck nobody had touched.
+;;
+;; A tenth of a point is finer than any editor's smallest step and coarser than
+;; any of this. The fractions -- a crop, a line spacing, an opacity -- get a
+;; five-hundredth, which is the same argument at their scale.
+;;
+;; Compared rather than rounded: rounding first turns a value sitting on a
+;; boundary into a difference of its own, which is a bug the fuzzer found in the
+;; first version of this.
+(define POINT-PROPERTIES '(size spacing space-before space-after margin-left indent insets))
+
+(define (property-epsilon k)
+  (if (memq k POINT-PROPERTIES) 0.15 0.005))
+
+(define (same-value? a b eps)
+  (cond
+    [(and (real? a) (real? b)) (< (abs (- a b)) eps)]
+    [(and (pair? a) (pair? b) (not (list? a)) (not (list? b)))
+     (and (same-value? (car a) (car b) eps) (same-value? (cdr a) (cdr b) eps))]
+    [(and (list? a) (list? b))
+     (and (= (length a) (length b))
+          (for/and ([x (in-list a)] [y (in-list b)]) (same-value? x y eps)))]
+    [else (equal? a b)]))
+
 (define (style-changes was now)
   (define (value l k) (let ([p (assoc k l)]) (if p (cdr p) ABSENT)))
   (define keys (remove-duplicates (append (map car was) (map car now))))
@@ -226,7 +300,7 @@
           (for/list ([k (in-list keys)])
             (define a (value was k))
             (define b (value now k))
-            (and (not (equal? a b))
+            (and (not (same-value? a b (property-epsilon (property-head k))))
                  (or (not (or (eq? ABSENT a) (eq? ABSENT b)))
                      (memq (property-head k) REMOVABLE))
                  (list k a b)))))
@@ -448,7 +522,8 @@
     ;; reported it must be: recolouring a shape in the editor used to disappear
     ;; without a word.
     (let-values ([(changes _noted)
-                  (split-trusted (style-changes (el-state-style b) (el-state-style d)))])
+                  (split-trusted (style-changes (el-state-style b) (el-state-style d))
+                                 #:shrinks? (shrinks-to-fit? (el-state-style b)))])
       (and (pair? changes) (sync-action 'restyle tag index changes #f)))
     ;; And what it says the shape looks like without ever having said so: the
     ;; defaults it left standing where it stated nothing. Those are noted, not
