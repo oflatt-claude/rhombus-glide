@@ -1104,7 +1104,7 @@
         (when l
           (define call (rhombus-call l))
           (when (and call (eq? 'at (car call)))
-            (define site (parse-rhombus-at (cdr call)))
+            (define site (parse-rhombus-at (cdr call) (local-leaf-defs g)))
             (when site
               (set! sites (cons (struct-copy at-site site
                                              [scope scope]
@@ -1200,22 +1200,60 @@
 ;; The second is what lets a talk skip ahead without paying for the slides it
 ;; skipped: `set_start_from` never calls the ones before it. Everything else
 ;; here reads the same either way, which is why both are allowed.
+;; How far a definition reaches. A group carries no source position of its own,
+;; so the extent is the furthest any term inside it reaches -- which is what a
+;; slide being deleted has to take with it, and what a slide being added has to
+;; be written after.
+(define (group-extent g)
+  (let walk ([e g] [end #f])
+    (cond
+      [(syntax? e)
+       (define r (range-of e))
+       (define here (if (and r (or (not end) (> (rng-end r) end))) (rng-end r) end))
+       (walk (syntax-e e) here)]
+      [(pair? e) (walk (cdr e) (walk (car e) end))]
+      [else end])))
+
+;; The `slide_canvas` a group is built on, and the parens holding its
+;; arguments. Three shapes, and the third is why a talk could not have a shape
+;; added to two thirds of its slides: a slide with stages writes its canvas as a
+;; `def` inside the function and then stages it, so the canvas is neither the
+;; whole definition nor the one thing the function returns.
 (define (rhombus-canvas-parts l)
+  (cond
+    [(and (= 5 (length l)) (eq? 'fun (syntax-e* (second l)))
+          (rhombus-head? (fourth l) 'parens))
+     (canvas-in-block (fifth l))]
+    [else (canvas-in-group l)]))
+
+;; `slide_canvas(...)` written as one group: as a `def`'s value, on a `def`'s
+;; own block, or on its own.
+(define (canvas-in-group l)
   (cond
     [(and (= 6 (length l)) (eq? 'slide_canvas (syntax-e* (fifth l))))
      (values (fifth l) (sixth l))]
-    [(and (= 5 (length l)) (eq? 'fun (syntax-e* (second l)))
-          (rhombus-head? (fourth l) 'parens))
-     (define blk (let ([e (syntax-e (fifth l))]) (and (list? e) e)))
-     (define grp (and blk (eq? 'block (syntax-e* (first blk))) (= 2 (length blk))
-                      (let ([e (syntax-e (second blk))]) (and (list? e) e))))
-     (cond
-       [(and grp (= 3 (length grp)) (eq? 'group (syntax-e* (first grp)))
-             (eq? 'slide_canvas (syntax-e* (second grp)))
-             (rhombus-head? (third grp) 'parens))
-        (values (second grp) (third grp))]
-       [else (values #f #f)])]
+    [(and (= 3 (length l)) (eq? 'slide_canvas (syntax-e* (second l)))
+          (rhombus-head? (third l) 'parens))
+     (values (second l) (third l))]
+    [(and (= 4 (length l)) (rhombus-head? (fourth l) 'block))
+     (canvas-in-block (fourth l))]
     [else (values #f #f)]))
+
+;; The first `slide_canvas` among a block's groups. The first, because a slide
+;; with stages holds the one it is built on before the ones laid over it, and a
+;; shape added in the editor belongs on the slide rather than on a stage of it.
+(define (canvas-in-block blk-stx)
+  (define blk (let ([e (syntax-e blk-stx)]) (and (list? e) e)))
+  (cond
+    [(not (and blk (eq? 'block (syntax-e* (first blk))))) (values #f #f)]
+    [else
+     (let loop ([gs (cdr blk)])
+       (cond
+         [(null? gs) (values #f #f)]
+         [else
+          (define g (let ([e (syntax-e (car gs))]) (and (list? e) e)))
+          (define-values (name parens) (if g (canvas-in-group g) (values #f #f)))
+          (if name (values name parens) (loop (cdr gs)))]))]))
 
 (define (rhombus-slide-sites groups text)
   (filter values
@@ -1232,7 +1270,7 @@
                    (and ins shut
                         (slide-site scope (first ins) 2
                                     (let ([d (range-of (second l))]) (and d (rng-start d)))
-                                    (add1 shut)
+                                    (or (group-extent g) (add1 shut))
                                     (canvas-paint-site canvas-parens)
                                     (canvas-size-site canvas-parens '#:width 'slide-width)
                                     (canvas-size-site canvas-parens '#:height 'slide-height)
@@ -1407,7 +1445,55 @@
        (keyword? (syntax-e* (second e)))
        (syntax-e* (second e))))
 
-(define (parse-rhombus-at args)
+;; The leaves a scope defines and places by name. A talk that draws nine nodes
+;; writes `def n_update = shape_pict(~width: 135.0, ...)` once and places it
+;; with `at(338.516, 704.223, ~tag: "update", n_update)`, so the size the editor
+;; would drag is stated at the `def` and not at the `at`. Sixty-three of one
+;; talk's four hundred elements, and no corner of any of them could be dragged.
+;;
+;; Only a name exactly one `at` places: two would mean an edit to one of them
+;; silently resizing the other, which is not what the corner was dragged for.
+;; Memoized per scope, since every `at` in it asks the same question.
+(define local-leaf-cache (make-weak-hasheq))
+
+(define (local-leaf-defs g)
+  (hash-ref! local-leaf-cache g (lambda () (compute-local-leaf-defs g))))
+
+(define (compute-local-leaf-defs g)
+  (define defs (make-hash))
+  (define placed (make-hash))
+  (let walk ([s g])
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (when l
+      ;; `def name = <call>` or `def name: <block holding one call>`.
+      (when (and (>= (length l) 3) (eq? 'group (syntax-e* (first l)))
+                 (eq? 'def (syntax-e* (second l))) (symbol? (syntax-e* (third l))))
+        (define name (syntax-e* (third l)))
+        (define value
+          (cond
+            [(and (= 6 (length l)) (rhombus-head? (sixth l) 'parens))
+             ;; `def name = call(...)`: the group from the call onward.
+             (datum->syntax #f (list (first l) (fifth l) (sixth l)) (fifth l))]
+            [(and (= 4 (length l)) (rhombus-head? (fourth l) 'block))
+             (let* ([b (let ([e (syntax-e (fourth l))]) (and (list? e) e))]
+                    [inner (and b (= 2 (length b)) (second b))])
+               inner)]
+            [else #f]))
+        (when value (hash-set! defs name value)))
+      ;; And which names an `at` places, so a name used twice is left alone.
+      (define call (rhombus-call l))
+      (when (and call (eq? 'at (car call)))
+        (define positional (filter (lambda (x) (not (rhombus-kw-name x))) (cdr call)))
+        (when (pair? positional)
+          (define child (rhombus-group-value (last positional)))
+          (when (and child (symbol? (syntax-e* child)))
+            (hash-update! placed (syntax-e* child) add1 0))))
+      (for-each walk l)))
+  (for/hash ([(name value) (in-hash defs)]
+             #:when (= 1 (hash-ref placed name 0)))
+    (values name value)))
+
+(define (parse-rhombus-at args [leaf-defs (hash)])
   ;; A positional argument is any group that is not a keyword argument. Note it
   ;; can hold more than one term: the last one is a call, so its group is
   ;; `(group shape_pict (parens ...))`.
@@ -1417,13 +1503,17 @@
   (define tag-stx (hash-ref kws '#:tag #f))
   (define tag (and tag-stx (string? (syntax-e* tag-stx)) (syntax-e* tag-stx)))
   (and tag (>= (length positional) 3)
-       (let ([child (last positional)])
+       (let* ([written (last positional)]
+              [named (let ([v (rhombus-group-value written)])
+                       (and v (symbol? (syntax-e* v))
+                            (hash-ref leaf-defs (syntax-e* v) #f)))]
+              [child (or named written)])
          (at-site tag
                   (literal-range (rhombus-group-value (first positional)) real?)
                   (literal-range (rhombus-group-value (second positional)) real?)
                   (literal-range (hash-ref kws '#:rotate #f) real?)
-                  (rhombus-child-kw child '#:width)
-                  (rhombus-child-kw child '#:height)
+                  (rhombus-child-size child 'width)
+                  (rhombus-child-size child 'height)
                   (rhombus-child-paragraph-texts child)
                   (rhombus-nudge (hash-ref kws '#:nudge #f))
                   (let ([r (range-of tag-stx)]) (and r (rng-end r)))
@@ -1472,6 +1562,22 @@
 
 ;; The child of an `at` is a group holding one call, so its keyword arguments
 ;; are found the same way.
+;; Where a leaf states its size. Most of them say `~width:` and `~height:`; a
+;; picture says both positionally -- `image_pict(media("logo.png"), 115.0,
+;; 115.0)` -- and looking only for the keywords is why not one picture in a talk
+;; could be resized by dragging its corner. Ninety-one of that talk's four
+;; hundred elements, and every one of them a picture.
+(define (rhombus-child-size child which)
+  (or (rhombus-child-kw child (if (eq? 'width which) '#:width '#:height))
+      (let* ([l (and (syntax? child) (let ([e (syntax-e child)]) (and (list? e) e)))]
+             [call (and l (rhombus-call l))])
+        (and call (eq? 'image_pict (car call))
+             (let ([pos (filter (lambda (g) (not (rhombus-kw-name g))) (cdr call))])
+               (and (>= (length pos) 3)
+                    (literal-range (rhombus-group-value
+                                    (if (eq? 'width which) (second pos) (third pos)))
+                                   real?)))))))
+
 (define (rhombus-child-kw child kw)
   (define l (and (syntax? child) (syntax-e child)))
   (define parens (and (list? l) (findf (lambda (x) (rhombus-head? x 'parens)) l)))
@@ -1987,13 +2093,20 @@
        (cond
          [(null? dups) h]
          [else
+          ;; The message, and the tags it is about. Only those tags are in the
+          ;; way: an edit to an element whose tag names one form is placed
+          ;; exactly, whatever else on the slide is doubled up. Refusing the
+          ;; whole slide meant one repeated tag made every element on it
+          ;; uneditable -- three of them, in one real talk, and forty-odd
+          ;; elements on that slide that nobody could touch.
           (hash-set h scope
-                    (format "~a uses one tag for more than one element, so this cannot be told apart: ~a"
-                            (or scope "the slide")
-                            (string-join
-                             (for/list ([d (in-list dups)])
-                               (format "~s appears ~a times" (car d) (cdr d)))
-                             ", ")))]))]))
+                    (cons (format "~a uses one tag for more than one element, so this cannot be told apart: ~a"
+                                  (or scope "the slide")
+                                  (string-join
+                                   (for/list ([d (in-list dups)])
+                                     (format "~s appears ~a times" (car d) (cdr d)))
+                                   ", "))
+                          (map car dups)))]))]))
 
 ;; An element added in the editor has to be written as source, which is the same
 ;; job the translator does -- so it is the same code, for one element, at the
@@ -2164,7 +2277,7 @@
   (define ambiguity-notes
     (for/list ([(scope why) (in-hash ambiguous)])
       (cons (sync-action 'noted (format "~a" scope) 0 '() #f)
-            (string-append why ". " TAG-HINT))))
+            (string-append (car why) ". " TAG-HINT))))
   ;; Keyed by the slide's definition, so "Title 1" on slide 3 finds slide 3's
   ;; `at`. When the slide list is computed there is no definition to key on, and
   ;; `check-site-tags` has already established that tags are unique file-wide.
@@ -2379,6 +2492,10 @@
       ;; other kinds are refused either way: rewriting one shape's text and not
       ;; its twin's would leave the two saying different things.
       [(and ambiguity
+            ;; This action's own tag is one of the doubled-up ones. Anything
+            ;; else on the slide is named exactly and is not this slide's
+            ;; problem to answer for.
+            (member (sync-action-tag a) (cdr ambiguity))
             (or (not (memq (sync-action-kind a) '(noted reordered moved resized)))
                 (let ([primary (site-for a)])
                   (and primary
@@ -2387,7 +2504,7 @@
                               (equal? (at-site-scope st) (at-site-scope primary))
                               (equal? (at-site-tag st) (at-site-tag primary))
                               (equal? (layer-holding st) (layer-holding primary))))))))
-       (set! skipped (cons (cons a (string-append ambiguity ". " TAG-HINT)) skipped))]
+       (set! skipped (cons (cons a (string-append (car ambiguity) ". " TAG-HINT)) skipped))]
       [else
     (case (sync-action-kind a)
       [(moved resized)
@@ -2524,6 +2641,10 @@
          [(not ss)
           (set! skipped (cons (cons a "no `slide-canvas` call to add it to") skipped))]
          [(not e)
+          ;; A kind the translator has no source for -- a group, a chart. There
+          ;; is nothing the program could be made to say, so it is reported and
+          ;; the rest of the save still lands.
+          (mark-unwritable! a)
           (set! skipped (cons (cons a "it is not a shape this can write as source") skipped))]
          [(and (pair? srcs) (not media?))
           ;; The image would need a `media` lookup the program does not have,
@@ -3616,16 +3737,41 @@
      (cond
        [dry-run? (done! (sync-report actions '() '() '() #f #f))]
        [else
+        (define before-text (file->string program-path))
         (define-values (applied skipped notes behind? refused?)
           (apply-actions! program-path actions #:deck deck-ir #:atomic? atomic?))
+        ;; The new base is the program as it now reads, so the next pass
+        ;; compares against something both sides agree on. Reading it is also
+        ;; the only way to find out whether what was written still runs.
+        ;;
+        ;; It may not. An element another part of the program refers to -- an
+        ;; arrow drawn between two nodes it finds by name -- can be deleted in
+        ;; the editor, and the deletion is a perfectly good edit until the
+        ;; program is next loaded and the arrow cannot find what it points at.
+        ;; Nothing can know that in advance, so it is found out afterwards and
+        ;; put back: the file is the source, there is one copy of it, and a
+        ;; save that leaves it unloadable is worse than a save refused.
+        (define failed (box #f))
+        (define after
+          (and (not refused?)
+               (with-handlers ([exn:fail? (lambda (e)
+                                            (set-box! failed (exn-message e))
+                                            #f)])
+                 (program-slide-states program-path))))
         (cond
           ;; Nothing was written, so there is nothing new for the base to
           ;; record: leaving it alone is what makes the next save try again.
           [refused? (done! (sync-report actions '() skipped notes #f #f))]
+          [(unbox failed)
+           (write-atomically program-path (lambda (o) (write-string before-text o)))
+           (done! (sync-report
+                   actions '()
+                   (append (for/list ([a (in-list applied)])
+                             (cons a (format "the program does not run with this written: ~a"
+                                             (first (string-split (unbox failed) "\n")))))
+                           skipped)
+                   notes #f #f))]
           [else
-           ;; The new base is the program as it now reads, so the next pass
-           ;; compares against something both sides agree on.
-           (define after (program-slide-states program-path))
            (write-sync-base base-file after
                             #:program (path->string (path->complete-path program-path))
                             #:deck (path->string (path->complete-path pptx-path)))

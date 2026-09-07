@@ -8,6 +8,11 @@
 (require rackunit/log
          "unit.rkt" "fuzz.rkt" "structural.rkt" "flatten.rkt"
          "sync.rkt" "actions.rkt" "sessions.rkt" "scenarios.rkt" "watch.rkt"
+         ;; Random combinations of edits, over decks it discovers targets in
+         ;; rather than a catalogue written for one fixture.
+         "action-fuzz.rkt"
+         ;; And what could be edited at all, which needs no deck to answer.
+         "editable.rkt"
          ;; These skip themselves where there is no LibreOffice to drive.
          ;; `lo-roundtrip` needs only `--convert-to`, not UNO or a display.
          "libreoffice.rkt" "libreoffice-edits.rkt" "lo-roundtrip.rkt")
