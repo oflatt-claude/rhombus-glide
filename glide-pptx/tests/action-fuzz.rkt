@@ -28,13 +28,12 @@
 ;; instead of the fixtures.
 (require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/format
-         glide-pptx/sync glide-pptx/sync-state glide-pptx/export glide-pptx/parse
-         glide-pptx/emit-rhombus glide-pptx/ir racket/runtime-path
-         "deck-edit.rkt" "ir-diff.rkt")
+         glide-pptx/sync glide-pptx/export glide-pptx/parse
+         glide-pptx/emit-rhombus racket/runtime-path
+         "deck-edit.rkt")
 
 (define-runtime-path decks-dir "decks")
 (define-runtime-path corpus-dir "corpus")
-
 
 (define ROUNDS (string->number (or (getenv "GLIDE_FUZZ_ROUNDS") "4")))
 (define EDITS (string->number (or (getenv "GLIDE_FUZZ_EDITS") "3")))

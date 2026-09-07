@@ -348,19 +348,19 @@
 (define (run-style r i)
   (append
    (only-stated
-   (list (cons (nth-property 'font i) (trun-family r))
-         ;; Hundredths, which is what `sz` keeps: rounding to tenths made a
-         ;; value land on either side of a boundary depending on which way it
-         ;; had been through the writer.
-         (cons (nth-property 'size i) (round-to (trun-size r) 100.0))
-         (cons (nth-property 'bold i) (and (trun-bold? r) #t))
-         (cons (nth-property 'italic i) (and (trun-italic? r) #t))
-         (cons (nth-property 'underline i) (and (trun-underline? r) #t))
-         (cons (nth-property 'strike i) (and (trun-strike? r) #t))
-         (cons (nth-property 'spacing i) (round-to (trun-spacing r) 100.0))
-         (cons (nth-property 'caps i) (trun-caps r))
-         (cons (nth-property 'baseline i) (round-to (trun-baseline r) 1000.0)))
-   (trun-stated r))
+    (list (cons (nth-property 'font i) (trun-family r))
+          ;; Hundredths, which is what `sz` keeps: rounding to tenths made a
+          ;; value land on either side of a boundary depending on which way it
+          ;; had been through the writer.
+          (cons (nth-property 'size i) (round-to (trun-size r) 100.0))
+          (cons (nth-property 'bold i) (and (trun-bold? r) #t))
+          (cons (nth-property 'italic i) (and (trun-italic? r) #t))
+          (cons (nth-property 'underline i) (and (trun-underline? r) #t))
+          (cons (nth-property 'strike i) (and (trun-strike? r) #t))
+          (cons (nth-property 'spacing i) (round-to (trun-spacing r) 100.0))
+          (cons (nth-property 'caps i) (trun-caps r))
+          (cons (nth-property 'baseline i) (round-to (trun-baseline r) 1000.0)))
+    (trun-stated r))
    ;; A run of no glyphs shows no colour. An empty run and a run holding only a
    ;; line break both draw nothing, and neither side can be held to what it
    ;; happens to say about the colour of nothing: a `<a:br/>` carries none, so a

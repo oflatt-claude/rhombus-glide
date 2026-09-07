@@ -62,8 +62,9 @@
 ;; runtime and `pict` are attached rather than re-instantiated, so the picts that
 ;; come back are the same struct types this module knows, and the media base is
 ;; the same parameter.
-;; The namespace the last program was loaded into. See `load-program-picts`.
-(define previous-program-namespace (box #f))
+;; The one namespace every read takes its modules from: the first program's,
+;; kept only if that program started a GUI. See `load-program-picts`.
+(define gui-program-namespace (box #f))
 
 ;; The frames a slide settles on, asked for in the program's own namespace.
 ;;
@@ -115,23 +116,28 @@
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
   (define ns (make-base-empty-namespace))
-  ;; Everything comes from one registry: the namespace the last program was read
-  ;; into, when there has been one, and this thread's otherwise.
+  ;; Everything comes from one registry, and it is the same one every time.
   ;;
   ;; A program whose helpers import slideshow pulls in racket/gui, and that
   ;; cannot be instantiated twice in one process -- while the watch loop reads
-  ;; the program again on every save. The first read instantiates it in its own
-  ;; namespace, so that is where the second must take it from. Taking the picts
+  ;; the program again on every save. So once a program has started a GUI, that
+  ;; is the namespace every later read takes its modules from. Taking the picts
   ;; from here and the GUI from there does not work: the two registries
   ;; disagree about the modules underneath them, and the attach fails rather
   ;; than mixing them -- which left the GUI to be started a second time.
-  (define from (or (unbox previous-program-namespace) (current-namespace)))
+  ;;
+  ;; One fixed namespace rather than the last one read into. Attaching chains
+  ;; the registries together, so reading from the last one kept every namespace
+  ;; before it alive: a talk with two helper modules of its own leaked ten
+  ;; megabytes of compiled code per save, which a long afternoon of dragging
+  ;; things around turns into gigabytes.
+  (define from (or (unbox gui-program-namespace) (current-namespace)))
   (for ([m (in-list '(pict glide-pptx/runtime glide-pptx/tagged glide-pptx/ir))])
     (namespace-attach-module from m ns))
   ;; And the GUI itself, once some program has started one. Nothing is attached
   ;; when none has, which is the usual case and has to stay that way:
   ;; translating a deck should never start a GUI.
-  (when (unbox previous-program-namespace)
+  (when (unbox gui-program-namespace)
     (for ([m (in-list '(racket/draw racket/gui/base))])
       (with-handlers ([exn:fail? void]) (namespace-attach-module from m ns))))
   (define names (if named (list (string->symbol named)) '(all_slides all-slides)))
@@ -142,8 +148,11 @@
   (set-slide-numbers! #f)
   ;; Recorded before the program runs, not after: a program that fails part way
   ;; through may already have started a GUI, and the next read has to take that
-  ;; one rather than start a second.
-  (set-box! previous-program-namespace ns)
+  ;; one rather than start a second. Only the first one is kept -- a namespace
+  ;; that turns out to have started no GUI is dropped again below, so that the
+  ;; usual case keeps nothing.
+  (define first-read? (not (unbox gui-program-namespace)))
+  (when first-read? (set-box! gui-program-namespace ns))
   (define found
     (parameterize ([current-media-base (path-only full)] [current-namespace ns]
                    ;; A program that imports slideshow reads the command line
@@ -168,6 +177,14 @@
         ;; is -- so this branch is the one a hand-written talk takes.
         [(treelist? v) (numbered (map force-slide (treelist->list v)))]
         [else (force-slide v)])))
+  ;; A program that started no GUI is not one anything has to be taken from, so
+  ;; its namespace is let go: the usual case -- translating, exporting, syncing
+  ;; -- keeps nothing between reads, and only a program that opened a window
+  ;; leaves a registry behind for the next read to share.
+  (when (and first-read?
+             (not (parameterize ([current-namespace ns])
+                    (module-declared? 'racket/gui/base #f))))
+    (set-box! gui-program-namespace #f))
   (cond
     [(list? found) found]
     [(pict? found) (list found)]

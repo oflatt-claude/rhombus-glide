@@ -1001,9 +1001,14 @@
 
 ;; Whether a canvas said `~hidden:`. Answers #f for anything that is not a
 ;; canvas, which includes a slide that has been given stages.
+;; Anything that is not a pict is not a canvas, so it is not a hidden one: a
+;; slide may reach here as a Rhombus `Pict` or as a thunk, and asking either of
+;; those what it says about itself is asking the wrong question rather than an
+;; error.
 (define (canvas-hidden? p)
-  (define d (pict-desc p))
-  (and (slide-desc? d) (slide-desc-hidden? d) #t))
+  (and (pict? p)
+       (let ([d (pict-desc p)])
+         (and (slide-desc? d) (slide-desc-hidden? d) #t))))
 
 ;; Whether a slide is numbered in its own corner. Off by default: it is ink the
 ;; deck did not ask for. A talk turns it on at the top level rather than inside

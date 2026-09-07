@@ -17,13 +17,20 @@
 ;; and never touches the program -- and without it every later pass reports
 ;; nothing whatever the deck holds, which is a test that cannot fail.
 ;;
+;; Swept in slices, each in its own process. Reading a Rhombus program costs
+;; about ten megabytes that is never given back -- any module outside the four
+;; the loader attaches is instantiated afresh and something global keeps it --
+;; so five hundred of them in one process reaches ten gigabytes and thrashes.
+;; A slice per process bounds that, and the slices are what the driver below
+;; runs and adds up.
+;;
 ;; The decks are not committed -- they belong to LibreOffice and POI. Run
 ;; `tools/fetch-corpus.sh` to get them; with no corpus present this says so and
 ;; passes. `GLIDE_AGREE_N` and `GLIDE_AGREE_SKIP` cut it down to a slice while
-;; working on one.
+;; working on one, and `GLIDE_AGREE_SLICE` is how the driver asks for one.
 (require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/format
-         racket/runtime-path
+         racket/runtime-path racket/system racket/port
          glide-pptx/ir glide-pptx/parse glide-pptx/export glide-pptx/sync
          glide-pptx/emit-rhombus)
 
@@ -44,6 +51,43 @@
 (define decks (take (drop all (min SKIP (length all)))
                     (min N (max 0 (- (length all) SKIP)))))
 
+;; How many decks one process takes before it is asked to stop. Forty is under
+;; a gigabyte of the leak above and about four minutes.
+(define SLICE 40)
+(define slice? (and (getenv "GLIDE_AGREE_SLICE") #t))
+
+;; `exec-file` is however racket was invoked, which is a bare name when it came
+;; off the PATH -- and `system*` cannot exec one of those.
+(define racket-exe
+  (let ([e (find-system-path 'exec-file)])
+    (if (absolute-path? e) e (or (find-executable-path e) e))))
+
+(define-runtime-path here "agreement.rkt")
+
+;; One slice, in its own process. Its own output is passed through, so a deck it
+;; disagrees about is named where it happened; its last line is the tally, which
+;; is read back and added up.
+(define (run-slice! skip n)
+  (define out (open-output-string))
+  (define ok?
+    (parameterize ([current-output-port out] [current-error-port out]
+                   [current-environment-variables
+                    (environment-variables-copy (current-environment-variables))])
+      (putenv "GLIDE_AGREE_SLICE" "1")
+      (putenv "GLIDE_AGREE_SKIP" (number->string skip))
+      (putenv "GLIDE_AGREE_N" (number->string n))
+      (system* racket-exe (path->string here))))
+  (define text (get-output-string out))
+  (for ([l (in-list (string-split text "\n"))]
+        #:unless (regexp-match? #px"^agreement over" l))
+    (printf "~a\n" l))
+  (flush-output)
+  (define m (regexp-match #px"agreement over ([0-9]+) decks: ([0-9]+) agreed, ([0-9]+) disagreed, ([0-9]+) refused, ([0-9]+) needed a font" text))
+  (cond
+    [m (map string->number (cdr m))]
+    [else (check-true #f (format "a slice from ~a said nothing it could be added up from" skip))
+          (list n 0 0 0 0)]))
+
 ;; What still disagrees, named so it stays visible rather than tolerated. Each
 ;; is a bug; they are listed so the sweep can guard the other five hundred in
 ;; the meantime.
@@ -56,6 +100,16 @@
 (cond
   [(null? decks)
    (printf "no corpus present; run tools/fetch-corpus.sh to fetch one\n")]
+  ;; The driver: slices, each in its own process, added up.
+  [(and (not slice?) (> (length decks) SLICE))
+   (define totals
+     (for/fold ([acc (list 0 0 0 0 0)])
+               ([start (in-range 0 (length decks) SLICE)])
+       (define got (run-slice! (+ SKIP start) (min SLICE (- (length decks) start))))
+       (map + acc got)))
+   (printf "agreement over ~a decks: ~a agreed, ~a disagreed, ~a refused, ~a needed a font\n"
+           (first totals) (second totals) (third totals) (fourth totals) (fifth totals))
+   (check-equal? (third totals) 0 "every deck that can be measured agrees with its own export")]
   [else
    (current-allow-unsupported? #t)
    (delete-directory/files work #:must-exist? #f)

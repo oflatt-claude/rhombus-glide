@@ -8,9 +8,11 @@
 //
 // What it adds to slideshow's `slide`:
 //
-//   * `set_slide_numbers`, which draws the number `--skip` wants in the corner
-//     -- off by default, since it is ink the deck did not ask for, and the one
-//     thing you want when rehearsing from the middle;
+//   * `set_slide_numbers`, the number `--skip` wants in the corner -- off by
+//     default, since it is ink the deck did not ask for, and the one thing you
+//     want when rehearsing from the middle. The switch is the runtime's and the
+//     number is composed onto the slide rather than added while the slide is
+//     assembled, so the deck the exporter writes carries it too;
 //   * `set_start_from`, so the numbering stays honest when slides are skipped;
 //   * `set_reveal`, which fades each slide up from blank -- off by default,
 //     because a deck cuts;
@@ -25,7 +27,9 @@
 //
 // Two changes from the talk's copy, both because this one is a library: the
 // slide assembler is installed on first use rather than on import, and a slide
-// may arrive as a pict handle, which is what `slide_canvas` hands back.
+// may arrive as a pict handle, which is what `slide_canvas` hands back. The
+// assembler is left only to keep slideshow from drawing a title over a deck
+// that carries its own.
 import:
   slideshow open
   draw

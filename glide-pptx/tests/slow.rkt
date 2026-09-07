@@ -1,7 +1,11 @@
 #lang racket/base
 ;; The rest: everything that renders through LibreOffice to compare against, and
-;; everything that sweeps the corpus. Four minutes or so, and it needs both of
-;; those present.
+;; everything that sweeps the corpus. It needs both of those present.
+;;
+;; Most of an hour, nearly all of it `agreement.rkt`: that one reads a whole
+;; Rhombus program for each of five hundred decks, and compiling one of those
+;; costs more than everything else here put together. `GLIDE_AGREE_N` cuts it
+;; down to a slice while working on one deck.
 ;;
 ;; `tools/fetch-corpus.sh` downloads the decks; without them the corpus and
 ;; coverage modules say so and pass.
