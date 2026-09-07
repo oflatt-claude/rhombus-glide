@@ -2144,6 +2144,19 @@
   ;; names. The deck still holds the old value on those frames, and only the
   ;; caller can put that right, by writing the deck again from the program.
   (define spread? (box #f))
+  ;; The actions the source has no place for at all: an element it does not
+  ;; draw with an `at` form, a property it does not hold as a literal. They are
+  ;; reported like any other refusal, but they do not refuse the save.
+  ;;
+  ;; A save lands whole or not at all so that an edit which cannot be written
+  ;; is not thrown away by the rewrite that follows one that could. That holds
+  ;; only while the refusal is something a person can clear. These cannot be
+  ;; cleared: the report says "fix what it names", and there is nothing to fix
+  ;; -- the shape is drawn by a helper and has no `at` form to give a tag to.
+  ;; Refusing on them meant a real drag made in the same session was refused
+  ;; too, on every pass, for as long as the slide stayed as it was.
+  (define unwritable (make-hasheq))
+  (define (mark-unwritable! a) (hash-set! unwritable a #t))
   (define ambiguous (ambiguous-scopes all-sites scopes program-path))
   ;; Said once per slide, whether or not anything was edited on it: a program
   ;; whose tags do not tell its elements apart cannot be edited there, and the
@@ -2381,7 +2394,8 @@
        (define g (sync-action-detail a))
        (define-values (x y w h rot fh fv) (apply values g))
        (cond
-         [(not site) (set! skipped (cons (cons a "no tagged `at` form in the source") skipped))]
+         [(not site) (begin (mark-unwritable! a)
+                 (set! skipped (cons (cons a NO-AT-FORM) skipped)))]
          ;; A computed position has no number to rewrite, so the drag is
          ;; recorded as a correction on `at` instead. Because it is one
          ;; argument rather than a wrapper, a second drag updates these two
@@ -2414,10 +2428,33 @@
                  (set! skipped (cons (cons a "its existing correction has no source extent")
                                      skipped)))])]
          [else
+          ;; By how much it moved, not where it ended up.
+          ;;
+          ;; A literal `at` and the box the deck holds are not always the same
+          ;; number. A group is written with the box that contains what it
+          ;; holds, which is above where its `at` put it when a child hangs out
+          ;; the top -- so writing the deck's own number into the literal moved
+          ;; the group by the overflow. A delta also leaves the frames of a
+          ;; build whatever differences they had, where one absolute written to
+          ;; every frame flattened them onto each other.
+          ;;
+          ;; The program's own geometry is the reference, so this says exactly
+          ;; what the drag did. Without one there is nothing to take a delta
+          ;; from and the deck's number is the best there is.
+          (define prior (sync-action-prior a))
           ;; On every frame of the build, not only the one that was dragged.
           (for ([st (in-list (frames-for a site))])
-            (edit! (at-site-x st) (num->source x))
-            (edit! (at-site-y st) (num->source y)))
+            (cond
+              [prior
+               (edit! (at-site-x st)
+                      (num->source (+ (- x (first prior))
+                                      (at-site-number st at-site-x source-text))))
+               (edit! (at-site-y st)
+                      (num->source (+ (- y (second prior))
+                                      (at-site-number st at-site-y source-text))))]
+              [else
+               (edit! (at-site-x st) (num->source x))
+               (edit! (at-site-y st) (num->source y))]))
           ;; A rotation and a mirror are edits like any other, and both used to
           ;; be dropped in silence: a rotate was counted as applied while
           ;; nothing was written, and a flip -- what dragging a line's endpoint
@@ -2428,9 +2465,21 @@
             [(eq? 'resized (sync-action-kind a))
              (cond
                [(and (at-site-width site) (at-site-height site))
+                ;; A delta, for the same reason the position is one: a group's
+                ;; written box is as big as what it holds, which is not the size
+                ;; its `group_pict` declares.
                 (for ([st (in-list (frames-for a site))])
-                  (edit! (at-site-width st) (num->source w))
-                  (edit! (at-site-height st) (num->source h)))
+                  (cond
+                    [prior
+                     (edit! (at-site-width st)
+                            (num->source (+ (- w (third prior))
+                                            (at-site-number st at-site-width source-text))))
+                     (edit! (at-site-height st)
+                            (num->source (+ (- h (fourth prior))
+                                            (at-site-number st at-site-height source-text))))]
+                    [else
+                     (edit! (at-site-width st) (num->source w))
+                     (edit! (at-site-height st) (num->source h))]))
                 (set! applied (cons a applied))]
                [else
                 (set! skipped (cons (cons a "its size is computed, not a literal") skipped))])]
@@ -2452,7 +2501,8 @@
        (define want (sync-action-detail a))
        (define hit (and paras (retyped-run paras want source-text)))
        (cond
-         [(not site) (set! skipped (cons (cons a "no tagged `at` form in the source") skipped))]
+         [(not site) (begin (mark-unwritable! a)
+                 (set! skipped (cons (cons a NO-AT-FORM) skipped)))]
          [(or (not paras) (null? paras))
           (set! skipped (cons (cons a "its text is not written as literals here") skipped))]
          [(eq? 'crosses hit)
@@ -2546,7 +2596,8 @@
       [(removed)
        (define whole (and site (at-site-whole site)))
        (cond
-         [(not site) (set! skipped (cons (cons a "no tagged `at` form in the source") skipped))]
+         [(not site) (begin (mark-unwritable! a)
+                 (set! skipped (cons (cons a NO-AT-FORM) skipped)))]
          [(not whole)
           (set! skipped (cons (cons a "its `at` form has no source extent") skipped))]
          [else (edit! (deletion-range (file->string program-path) whole) "")
@@ -2683,6 +2734,12 @@
        (cond
          [(null? left) (set! applied (cons a applied))]
          [else
+          ;; Nothing written, and every property it names is one the source
+          ;; does not hold as a literal: there is nowhere for this to go.
+          (when (and (null? done)
+                     (for/and ([why (in-list left)])
+                       (regexp-match? #rx"is not a literal here$" why)))
+            (mark-unwritable! a))
           (set! skipped
                 (cons (cons a (string-append
                                (if (null? done) "" (format "~a written; " (reverse done)))
@@ -2909,15 +2966,23 @@
       ])
     (unless (or (memq a applied) (eq? 'noted (sync-action-kind a)))
       (set! edits before-edits)))
+  ;; What is left to refuse on: the refusals a person can clear.
+  (define blocking
+    (for/list ([sk (in-list skipped)] #:unless (hash-ref unwritable (car sk) #f)) sk))
   (cond
     ;; All of it, or none of it.
-    [(and atomic? (pair? skipped))
-     (values '() (reverse skipped) (append ambiguity-notes (reverse notes)) #f)]
+    [(and atomic? (pair? blocking))
+     (values '() (reverse skipped) (append ambiguity-notes (reverse notes)) #f #t)]
     [else
      (when (pair? edits) (splice-file! program-path edits))
      (values (reverse applied) (reverse skipped)
              (append ambiguity-notes (reverse notes))
-             (and (pair? applied) (unbox spread?)))]))
+             (and (pair? applied) (unbox spread?))
+             #f)]))
+
+;; Said in one place because it is also read back: a skip under this reason is
+;; one the source has no place for.
+(define NO-AT-FORM "no tagged `at` form in the source")
 
 ;; Whether the deck's rotation or mirroring differs from what the source says.
 ;; The source's own value is what it was exported with, so the base is not
@@ -3551,12 +3616,12 @@
      (cond
        [dry-run? (done! (sync-report actions '() '() '() #f #f))]
        [else
-        (define-values (applied skipped notes behind?)
+        (define-values (applied skipped notes behind? refused?)
           (apply-actions! program-path actions #:deck deck-ir #:atomic? atomic?))
         (cond
           ;; Nothing was written, so there is nothing new for the base to
           ;; record: leaving it alone is what makes the next save try again.
-          [(and atomic? (pair? skipped)) (done! (sync-report actions '() skipped notes #f #f))]
+          [refused? (done! (sync-report actions '() skipped notes #f #f))]
           [else
            ;; The new base is the program as it now reads, so the next pass
            ;; compares against something both sides agree on.

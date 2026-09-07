@@ -8,8 +8,9 @@
 (require rackunit/log
          "unit.rkt" "fuzz.rkt" "structural.rkt" "flatten.rkt"
          "sync.rkt" "actions.rkt" "sessions.rkt" "scenarios.rkt" "watch.rkt"
-         ;; Both skip themselves where there is no LibreOffice to drive.
-         "libreoffice.rkt" "libreoffice-edits.rkt")
+         ;; These skip themselves where there is no LibreOffice to drive.
+         ;; `lo-roundtrip` needs only `--convert-to`, not UNO or a display.
+         "libreoffice.rkt" "libreoffice-edits.rkt" "lo-roundtrip.rkt")
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

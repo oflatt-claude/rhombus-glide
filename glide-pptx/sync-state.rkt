@@ -123,6 +123,40 @@
   (define o (assq 'fill-opacity style))
   (and c (if (and o (< (cdr o) 0.999)) (list (cdr c) (cdr o)) (cdr c))))
 
+;; A group is described by what it holds, not by the box it states.
+;;
+;; A pict may place a child outside its group's own bounds -- a label hanging
+;; above the box it labels -- and it may declare more room than it fills. Every
+;; editor states a group as the box around its contents instead: LibreOffice
+;; rewrites it on save, and the merge then read its own deck back as nine groups
+;; resized by a hand that never touched them. Eight of those were drawn by a
+;; helper with no `at` form to write to, so the save was refused whole and a
+;; real drag made in the same session went with it.
+;;
+;; Only the description changes; the group keeps its stated box in the IR, so a
+;; translated deck still exports the box it came with. The children are in the
+;; slide's own coordinates on both sides and they move with the group, so a
+;; group that was really dragged still says so.
+;;
+;; A rotated or mirrored group keeps its stated box: the children's boxes are
+;; not turned with it, so their union is not the shape on screen.
+(define (contents-box stated boxes rot flip-h? flip-v?)
+  (cond
+    [(or (null? boxes) (not (zero? rot)) flip-h? flip-v?) stated]
+    ;; A group with no real extent of its own states a child space nobody can
+    ;; map through: both sides clamp the divisor, and a hair of rounding at that
+    ;; size moves the children a long way. There is nothing for an editor to
+    ;; normalize either, so the stated box is the better description.
+    [(or (< (third stated) 1.0) (< (fourth stated) 1.0)) stated]
+    [else
+     (define x0 (apply min (map first boxes)))
+     (define y0 (apply min (map second boxes)))
+     (define x1 (apply max (for/list ([b (in-list boxes)])
+                             (+ (first b) (max 0.0 (third b))))))
+     (define y1 (apply max (for/list ([b (in-list boxes)])
+                             (+ (second b) (max 0.0 (fourth b))))))
+     (list x0 y0 (- x1 x0) (- y1 y0))]))
+
 (define (item->el-state i z)
   (cond
     [(it:preset? i)
@@ -156,8 +190,12 @@
                "" "flattened" '() z)]
     ;; A group is one element to drag, whatever it holds.
     [(it:group? i)
-     (el-state (it:group-tag i) 'group (it:group-x i) (it:group-y i)
-               (it:group-w i) (it:group-h i) (it:group-rot i)
+     (define box
+       (contents-box (list (it:group-x i) (it:group-y i) (it:group-w i) (it:group-h i))
+                     (map item-box (it:group-items i))
+                     (it:group-rot i) (it:group-flip-h? i) (it:group-flip-v? i)))
+     (el-state (it:group-tag i) 'group
+               (first box) (second box) (third box) (fourth box) (it:group-rot i)
                (it:group-flip-h? i) (it:group-flip-v? i) "" "group" '() z)]
     [(it:shape-path? i)
      (define-values (x y w h) (apply values (it:shape-path-box i)))
@@ -324,17 +362,26 @@
          (cons (nth-property 'level i) (inexact->exact (round (para-level p))))
          (cons (nth-property 'margin-left i) (round-to (para-margin-left p) 10.0))
          (cons (nth-property 'indent i) (round-to (para-indent p) 10.0))
-         (cons (nth-property 'bullet i) (bullet-style (para-bullet p))))
+         (cons (nth-property 'bullet i)
+               (bullet-style (para-bullet p)
+                             (let ([r (and (pair? (para-runs p)) (first (para-runs p)))])
+                               (and r (trun-color r))))))
    (para-stated p)))
 
 ;; A bullet as the five things that describe it, so a list turned from dots to
 ;; numbers is a difference the merge can see.
-(define (bullet-style b)
+;;
+;; A bullet that states no colour of its own is drawn in the colour of the text
+;; it hangs off, so that is the colour reported for it. Saying nothing instead
+;; made an editor that writes the colour out -- LibreOffice writes black where
+;; we wrote nothing -- look like an editor that had recoloured every bullet on
+;; the slide.
+(define (bullet-style b [text-color #f])
   (and (bullet? b)
        (not (eq? 'none (bullet-kind b)))
        (list (bullet-kind b) (bullet-char b) (bullet-font b)
              (and (bullet-size-frac b) (round-to (bullet-size-frac b) 1000.0))
-             (and (bullet-color b) (hex-of (bullet-color b))))))
+             (let ([c (or (bullet-color b) text-color)]) (and c (hex-of c))))))
 
 (define (body-style body)
   (define paras (and body (text-body-paras body)))
@@ -406,6 +453,22 @@
 ;; the editor drags -- and the two sides have to agree, or a slide's tags do not
 ;; overlap and the merge reads it as a different slide. A structural comparison
 ;; wants the children, since that is where a lost field would hide.
+;; A group's children in the slide's own coordinates. They are written in the
+;; group's child space, which `child-bbox` states and which a group may scale
+;; onto its own box, so they are mapped the way the renderer maps them before
+;; anything is measured against a program's.
+(define (group-children-boxes e)
+  (define b (element-bbox e))
+  (define cb (group-child-bbox e))
+  (define sx (/ (bbox-w b) (max 1.0 (bbox-w cb))))
+  (define sy (/ (bbox-h b) (max 1.0 (bbox-h cb))))
+  (for/list ([c (in-list (group-children e))])
+    (define k (element-bbox c))
+    (list (+ (bbox-x b) (* sx (- (bbox-x k) (bbox-x cb))))
+          (+ (bbox-y b) (* sy (- (bbox-y k) (bbox-y cb))))
+          (* sx (bbox-w k))
+          (* sy (bbox-h k)))))
+
 (define (deck->slide-states d #:include-inherited? [include-inherited? #f]
                             #:descend-groups? [descend-groups? #f])
   (for/list ([s (in-list (deck-slides d))])
@@ -418,6 +481,15 @@
           [else
            (define b (element-bbox e))
            (define tag (let ([n (element-name e)]) (and (not (string=? "" n)) n)))
+           ;; A group by what it holds, for the reason `contents-box` gives. Its
+           ;; children carry the slide's own coordinates, so their union is the
+           ;; box in the same terms the group's own is.
+           (define gb
+             (if (group? e)
+                 (contents-box (list (bbox-x b) (bbox-y b) (bbox-w b) (bbox-h b))
+                               (group-children-boxes e)
+                               (bbox-rot b) (bbox-flip-h? b) (bbox-flip-v? b))
+                 (list (bbox-x b) (bbox-y b) (bbox-w b) (bbox-h b))))
            (set! acc
                  (cons (el-state tag
                                  (cond [(group? e) 'group]
@@ -428,7 +500,7 @@
                                                             (not (shape-line e)))
                                                        'text 'shape)]
                                        [else 'other])
-                                 (bbox-x b) (bbox-y b) (bbox-w b) (bbox-h b) (bbox-rot b)
+                                 (first gb) (second gb) (third gb) (fourth gb) (bbox-rot b)
                                  (bbox-flip-h? b) (bbox-flip-v? b)
                                  (if (shape? e) (body-text (shape-body e)) "")
                                  (if (shape? e) (ir-fill-digest (shape-fill e)) "")

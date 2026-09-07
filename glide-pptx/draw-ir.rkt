@@ -133,6 +133,17 @@
     [(it:text? i) (list (it:text-x i) (it:text-y i) (it:text-w i) (it:text-h i))]
     [(it:image? i) (list (it:image-x i) (it:image-y i) (it:image-w i) (it:image-h i))]
     [(it:path? i) (segs-bounds (it:path-segs i))]
+    ;; The items a slide is built from, not only the ones a drawing is read
+    ;; back as. A box of zeroes for one of these is a box at the slide's corner,
+    ;; which is a corner nothing is at.
+    [(it:preset? i) (list (it:preset-x i) (it:preset-y i) (it:preset-w i) (it:preset-h i))]
+    [(it:textbox? i) (list (it:textbox-x i) (it:textbox-y i)
+                           (it:textbox-w i) (it:textbox-h i))]
+    [(it:picture? i) (list (it:picture-x i) (it:picture-y i)
+                           (it:picture-w i) (it:picture-h i))]
+    [(it:group? i) (list (it:group-x i) (it:group-y i) (it:group-w i) (it:group-h i))]
+    [(it:table? i) (list (it:table-x i) (it:table-y i) (it:table-w i) (it:table-h i))]
+    [(it:shape-path? i) (it:shape-path-box i)]
     [else (list 0.0 0.0 0.0 0.0)]))
 
 (define (segs-bounds segs)
