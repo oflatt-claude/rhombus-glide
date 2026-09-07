@@ -156,8 +156,14 @@
    (check-regexp-match #rx"stills 2" out "a hidden slide is not shown, and a still slide is one slide")
    (check-regexp-match #px"panned ([3-9]|[0-9][0-9]+)" out
                        "and a slide that asks to be panned to is played into")
-   (check-regexp-match #px"stages ([2-9]|[0-9][0-9]+)" out
-                       "a slide with stages is played out rather than shown once")
+   ;; An animated epoch is played as several pages, so this counts pages and not
+   ;; presses. The number is exact because the hold is what is being checked:
+   ;; the last epoch of an animated slide plays as the transition off it, so the
+   ;; show sustains the final frame rather than letting the move-on eat it, and
+   ;; that is one page more than the same slide shown without it -- 24 here,
+   ;; where it would be 23. A still slide is not held, which is `stills 2`.
+   (check-regexp-match #rx"stages 24" out
+                       "a slide with stages is played out, with its last frame held")
    (check-regexp-match #px"revealed ([3-9]|[0-9][0-9]+)" out
                        "and with the reveal on, a still slide is faded up rather than cut to")
 
