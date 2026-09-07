@@ -384,6 +384,95 @@
   (check-regexp-match #rx"fun slide_1[(][)]: slide_canvas" (file->string program)
                       "and the program still reads as it was written"))
 
+;; A program and the deck it writes agree, with nothing to merge.
+;;
+;; This is the round trip's strongest statement: translate a deck, export the
+;; program that came out of it, and the merge should have nothing to say -- not
+;; a move, not a restyle, not an addition. Anything it does say is a difference
+;; between what the program means and what the deck holds, which is either a
+;; wrong export or a wrong reading, and the next real edit will be merged on top
+;; of that difference.
+;;
+;; It is checked twice: once against the deck the base was recorded from, and
+;; once against a deck exported again afterwards, which is what the watch loop
+;; does on every save. A talk with stages is checked the same way, because that
+;; is where this last went wrong: a staged slide reported every shape on it as
+;; newly drawn, nine hundred of them, and no fixture noticed.
+(define (agrees-with-its-own-deck name program out workdir)
+  (picts->pptx (load-program-picts program) out)
+  (define first-pass (sync-once program out #:workdir workdir))
+  (check-true (sync-report-base-written? first-pass)
+              (format "~a: the first pass records a base" name))
+  (define at-rest (sync-once program out #:workdir workdir))
+  (check-equal? (sync-report-actions at-rest) '()
+                (format "~a: nothing to merge at rest" name))
+  ;; Exported again, as the loop does after every save.
+  (picts->pptx (load-program-picts program) out)
+  (define again (sync-once program out #:workdir workdir))
+  (check-equal? (sync-report-actions again) '()
+                (format "~a: nothing to merge after a fresh export" name)))
+
+(for ([name (in-list decks)])
+  (define dir (build-path work (string-append name "-agrees")))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define out (build-path dir "out.pptx"))
+  (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
+                        #:workdir (build-path dir "u")))
+  (write-rhombus-deck d program #:source-name (string-append name ".pptx"))
+  (agrees-with-its-own-deck name program out (build-path dir "w")))
+
+;; The same, for a talk that gives a slide stages and draws a divider from bare
+;; picts -- the two shapes a hand-written deck takes that a translated one does
+;; not.
+(let ()
+  (define dir (build-path work "staged-agrees"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (call-with-output-file program #:exists 'replace
+    (lambda (o)
+      (write-string
+       (string-join
+        (list "#lang rhombus/and_meta"
+              "import:"
+              "  lib(\"glide-pptx/runtime.rhm\") open"
+              "  pict as pc"
+              ""
+              "export: slide_width slide_height all_slides"
+              ""
+              "def slide_width = 480.0"
+              "def slide_height = 270.0"
+              ""
+              "fun staged_slide():"
+              "  def base_canvas:"
+              "    slide_canvas(~width: slide_width, ~height: slide_height,"
+              "                 at(40.0, 60.0, ~tag: \"Base\","
+              "                    shape_pict(~width: 80.0, ~height: 40.0, ~fill: hex(\"4472C4\"))))"
+              "  def stage_1:"
+              "    group_pict(~width: slide_width, ~height: slide_height,"
+              "               at(240.0, 60.0, ~tag: \"Revealed\","
+              "                  shape_pict(~width: 80.0, ~height: 40.0, ~fill: hex(\"ED7D31\"))))"
+              "  def b = pc.Pict.from_handle(base_canvas)"
+              "  def s = pc.Pict.from_handle(stage_1)"
+              "  def settled = b.snapshot(math.max(0, b.duration - 1), 1.0)"
+              "  pc.switch(b, pc.animate(fun (t):"
+              "                            pc.overlay(~horiz: #'left, ~vert: #'top,"
+              "                                       settled, s.alpha(t))))"
+              ""
+              "// A divider: what it draws is not placed by any `at`, so there is"
+              "// nothing on it to edit -- and it still has to survive the trip."
+              "fun divider():"
+              "  def page = slide_canvas(~width: slide_width, ~height: slide_height)"
+              "  def bar = shape_pict(~width: 200.0, ~height: 60.0, ~fill: hex(\"70AD47\"))"
+              "  pc.overlay(~horiz: #'left, ~vert: #'top,"
+              "             pc.Pict.from_handle(page), pc.Pict.from_handle(bar))"
+              ""
+              "def all_slides = [staged_slide, divider]")
+        "\n")
+       o)))
+  (agrees-with-its-own-deck "a staged talk" program
+                            (build-path dir "out.pptx") (build-path dir "w")))
+
 ;; A slide built from stages is edited like any other.
 ;;
 ;; A talk gives a slide stages: a base canvas, a group per reveal, and an

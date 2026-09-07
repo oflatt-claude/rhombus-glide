@@ -67,11 +67,54 @@
 (define (items->slide-state index width height items #:background [bg #f]
                             #:hidden? [hidden? #f])
   (slide-state index width height
-               (for/list ([i (in-list items)] [z (in-naturals)]
-                          #:when (semantic-item? i))
-                 (item->el-state i z))
+               (for/list ([i (in-list items)] [z (in-naturals)])
+                 (if (semantic-item? i) (item->el-state i z) (drawn->el-state i z)))
                (paint-name (fill-style bg))
                (and hidden? #t)))
+
+;; A piece of drawing that is not an element the program placed: a line, a
+;; glyph, a picture inside something a talk composed by hand. It is on the
+;; slide, so it is in the slide's state -- the deck holds it either way, and a
+;; state that leaves it out reads every one of them as newly drawn in the
+;; editor. It has no tag, so it is matched by where it is and what it looks
+;; like, and refused if anyone edits it: there is no `at` form to write to.
+(define (drawn->el-state i z)
+  (define box (item-box i))
+  ;; Named the same way the deck names it. The signature matcher will not pair
+  ;; two elements of different kinds at all, so a drawn rectangle called
+  ;; something the deck never calls anything reports as one shape added in the
+  ;; editor and one deleted from the program on every single sync.
+  (define fill
+    (cond [(it:rect? i) (it:rect-fill i)]
+          [(it:ellipse? i) (it:ellipse-fill i)]
+          [(it:path? i) (it:path-fill i)]
+          [else #f]))
+  (define pen
+    (cond [(it:rect? i) (it:rect-pen i)]
+          [(it:ellipse? i) (it:ellipse-pen i)]
+          [(it:path? i) (it:path-pen i)]
+          [else #f]))
+  ;; Described the same way too. A fill is one of the few properties a program
+  ;; can say it does not have, so a side that leaves it out is read as a fill
+  ;; the editor added rather than as a side that did not say -- and a rectangle
+  ;; drawn from a bare pict reported its own colour as an edit on every sync.
+  (el-state #f
+            (cond [(it:text? i) 'text]
+                  [(it:image? i) 'picture]
+                  [(or (it:rect? i) (it:ellipse? i) (it:path? i)) 'shape]
+                  [else 'other])
+            (first box) (second box)
+            (+ (third box) (if (it:text? i) TEXT-BOX-SLACK 0.0)) (fourth box)
+            0.0 #f #f
+            (if (it:text? i) (it:text-str i) "")
+            (fill-digest fill)
+            (cond
+              [(it:image? i)
+               ;; A picture the deck holds has a crop and an opacity, whether or
+               ;; not it uses them. Ours are neither cropped nor washed out.
+               (list (cons 'opacity 1.0) (cons 'crop #f))]
+              [else (append (fill-style fill) (pen-style pen))])
+            z))
 
 ;; A paint as one value: the colour it is, "gradient" for one, or #f for none.
 ;; Opacity rides along, since a background is written as one argument.
@@ -186,7 +229,12 @@
   (if (not p)
       '()
       (append (let ([h (hex-of (pen*-color p))]) (if h (list (cons 'line h)) '()))
-              (list (cons 'line-width (/ (round (* 100.0 (pen*-width p))) 100.0))
+              (list (cons 'line-width
+                          ;; As the writer will hold it: a pen of no width is a
+                          ;; hairline, and DrawingML has no such width.
+                          (let ([w (if (zero? (pen*-width p))
+                                       HAIRLINE-WIDTH (pen*-width p))])
+                            (/ (round (* 100.0 w)) 100.0)))
                     (cons 'dash (format "~a" (pen*-dash p)))
                     (cons 'cap (pen-cap-name (pen*-cap p)))
                     (cons 'head (end-style (pen*-head p)))
