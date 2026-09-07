@@ -25,7 +25,13 @@
 ;;
 ;; Seeded. `GLIDE_FUZZ_SEED`, `GLIDE_FUZZ_ROUNDS` and `GLIDE_FUZZ_EDITS` move
 ;; the sweep; `GLIDE_FUZZ_PROGRAM` points it at one program -- a talk, say --
-;; instead of the fixtures.
+;; instead of the fixtures, and `GLIDE_FUZZ_CORPUS` at a slice of the corpus.
+;;
+;; A talk is not in the repository, because it is not ours. Drop one in
+;; `tests/programs/local/`, which is not tracked, and it is fuzzed along with
+;; the fixtures: a talk that has been rewritten by hand for months is where the
+;; shapes the merge has never seen actually live, and it is the one program
+;; whose editability anybody is going to complain about.
 (require rackunit/log)
 (require rackunit racket/list racket/string racket/file racket/path racket/format
          glide-pptx/sync glide-pptx/export glide-pptx/parse
@@ -34,6 +40,7 @@
 
 (define-runtime-path decks-dir "decks")
 (define-runtime-path corpus-dir "corpus")
+(define-runtime-path local-dir "programs/local")
 
 (define ROUNDS (string->number (or (getenv "GLIDE_FUZZ_ROUNDS") "4")))
 (define EDITS (string->number (or (getenv "GLIDE_FUZZ_EDITS") "3")))
@@ -107,7 +114,11 @@
                                  (round (jitter rng 5.0 350.0)))))
    (edit-kind "retype" 'retext
               (lambda (t) (pair? (at-site-texts (target-site t))))
-              (lambda (t) #t)
+              ;; Only where the text is one run. Replacing the whole of a body
+              ;; written as several is a retyping that crosses them, and which
+              ;; run it belonged to is a guess -- the merge says so and refuses,
+              ;; and it is right to.
+              (lambda (t) (= 1 (length (at-site-texts (target-site t)))))
               (lambda (deck t rng)
                 (retext-in-deck! deck (target-slide t) (target-tag t)
                                  (format "fuzzed ~a" (random 1000 rng)))))
@@ -250,6 +261,27 @@
 (define refused 0)
 (define all-findings '())
 
+;; A talk of one's own, if there is one beside the tests. Its own folder is
+;; copied into the scratch first: a test does not edit somebody's talk.
+(define (local-programs)
+  (if (directory-exists? local-dir)
+      (sort (for/list ([f (in-list (directory-list local-dir #:build? #t))]
+                       #:when (regexp-match? #rx"[.]rhm$" (path->string f)))
+              f)
+            string<? #:key path->string)
+      '()))
+
+;; Everything beside the program comes with it: helper modules it imports,
+;; images it names, fonts it checks for.
+(define (copy-beside! program dir)
+  (define from (path-only (path->complete-path program)))
+  (for ([f (in-list (directory-list from))])
+    (define p (build-path from f))
+    (cond [(directory-exists? p)
+           (copy-directory/files p (build-path dir f) #:keep-modify-seconds? #t)]
+          [else (copy-file p (build-path dir f) #t)]))
+  (build-path dir (file-name-from-path program)))
+
 (define (run! label program dir seed)
   (define-values (a r fs) (fuzz-program! label program dir seed))
   (set! applied (+ applied a))
@@ -260,14 +292,8 @@
   [ONE-PROGRAM
    (define dir (build-path work "one"))
    (make-directory* dir)
-   ;; Worked on in the scratch, so a real talk is not edited by a test.
-   (define copy (build-path dir (file-name-from-path ONE-PROGRAM)))
-   (define from (path-only (path->complete-path ONE-PROGRAM)))
-   (for ([f (in-list (directory-list from))])
-     (define p (build-path from f))
-     (cond [(directory-exists? p) (copy-directory/files p (build-path dir f) #:keep-modify-seconds? #t)]
-           [else (copy-file p (build-path dir f) #t)]))
-   (run! (path->string (file-name-from-path ONE-PROGRAM)) copy dir BASE-SEED)]
+   (run! (path->string (file-name-from-path ONE-PROGRAM))
+         (copy-beside! ONE-PROGRAM dir) dir BASE-SEED)]
   [(positive? CORPUS)
    (define all
      (if (directory-exists? corpus-dir)
@@ -305,7 +331,16 @@
      (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
                            #:workdir (build-path dir "u")))
      (write-rhombus-deck d program #:source-name (string-append name ".pptx"))
-     (run! name program dir (+ BASE-SEED i)))])
+     (run! name program dir (+ BASE-SEED i)))
+   ;; And a talk of one's own, when there is one.
+   (define mine (local-programs))
+   (if (null? mine)
+       (printf "no talk in tests/programs/local; only the fixtures were fuzzed\n")
+       (for ([p (in-list mine)] [i (in-naturals)])
+         (define dir (build-path work (format "local~a" i)))
+         (make-directory* dir)
+         (run! (path->string (file-name-from-path p))
+               (copy-beside! p dir) dir (+ BASE-SEED 100 i))))])
 
 (unless (zero? (hash-count reasons))
   (printf "\nwhy saves were refused:\n")

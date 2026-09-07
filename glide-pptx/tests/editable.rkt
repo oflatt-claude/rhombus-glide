@@ -24,6 +24,7 @@
          glide-pptx/parse glide-pptx/emit-rhombus glide-pptx/sync glide-pptx/ir)
 
 (define-runtime-path decks-dir "decks")
+(define-runtime-path local-dir "programs/local")
 
 (define work (build-path (find-system-path 'temp-dir) "glide-pptx-editable"))
 (delete-directory/files work #:must-exist? #f)
@@ -131,11 +132,24 @@
   (display-to-file STAGED-TALK program #:exists 'replace)
   (editable! "a staged talk" program))
 
-(when (getenv "GLIDE_EDITABLE_PROGRAM")
-  ;; A slide laid over another slide has no canvas of its own, so not every
-  ;; slide of a hand-written talk can take a new shape.
-  (editable! (path->string (file-name-from-path (getenv "GLIDE_EDITABLE_PROGRAM")))
-             (getenv "GLIDE_EDITABLE_PROGRAM")
-             #:all-slides-addable? #f))
+;; A talk of one's own, named or dropped in `programs/local`. A slide laid over
+;; another slide has no canvas of its own, so not every slide of a hand-written
+;; talk can take a new shape -- which is why that one check is relaxed here and
+;; nowhere else.
+(define mine
+  (append (let ([named (getenv "GLIDE_EDITABLE_PROGRAM")])
+            (if named (list (string->path named)) '()))
+          (if (directory-exists? local-dir)
+              (sort (for/list ([f (in-list (directory-list local-dir #:build? #t))]
+                               #:when (regexp-match? #rx"[.]rhm$" (path->string f)))
+                      f)
+                    string<? #:key path->string)
+              '())))
+
+(if (null? mine)
+    (printf "  no talk of your own; drop one in tests/programs/local to have it measured\n")
+    (for ([p (in-list mine)])
+      (editable! (path->string (file-name-from-path p)) p
+                 #:all-slides-addable? #f)))
 
 (module+ main (void (test-log #:display? #t #:exit? #t)))
