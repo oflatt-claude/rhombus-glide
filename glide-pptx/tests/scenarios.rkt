@@ -261,6 +261,71 @@
             (check-true (move-element-to-slide! deck "Alone" 3 1)))
           #:applied #f #:refused 0)
 
+;; An element whose `at` is written in a helper the slide calls.
+;;
+;; A talk that draws a badge with `with_icon(...)` puts the `at` inside the
+;; helper, and the slide never mentions the tag at all. A tag was looked up
+;; under the slide's own definition, missed, and the drag came back as having
+;; "no tagged `at` form in the source" while the file held exactly one -- which
+;; is a real talk's own shape, and not any fixture's.
+;;
+;; Overlaid rather than placed, because that is what a stage is: a group placed
+;; by an `at` is one element to drag, and a group laid over the slide gives up
+;; its `at` forms as elements of their own.
+(let ()
+  (define dir (build-path work "at-in-a-helper"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define deck (build-path dir "deck.pptx"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          ""
+          "fun with_icon(label):"
+          "  group_pict(~width: 480.0, ~height: 270.0,"
+          "             at(300.0, 40.0, ~tag: \"Badge\","
+          "                textbox(~width: 120.0, ~height: 30.0, ~wrap: #false,"
+          "                        para(run(label, ~size: 12.0)))))"
+          ""
+          "fun a_slide():"
+          "  def base:"
+          "    slide_canvas(~width: 480.0, ~height: 270.0,"
+          "                 at(20.0, 20.0, ~tag: \"Title\","
+          "                    textbox(~width: 200.0, ~height: 30.0, ~wrap: #false,"
+          "                            para(run(\"hello\", ~size: 14.0)))))"
+          "  pc.overlay(~horiz: #'left, ~vert: #'top,"
+          "             pc.Pict.from_handle(base),"
+          "             pc.Pict.from_handle(with_icon(\"new\")))"
+          ""
+          "def all_slides = [a_slide]")
+    "\n")
+   program #:exists 'replace)
+  (define base (base-path-for program))
+  (when (file-exists? base) (delete-file base))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir (build-path dir "w")))
+  (check-true (and (drag-in-deck! deck 1 "Badge" 111.0 222.0) #t)
+              "the badge was dragged in the deck")
+  (define r (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (for/list ([sk (in-list (sync-report-skipped r))]) (cdr sk)) '()
+                "nothing was refused")
+  (check-equal? (length (sync-report-applied r)) 1 "and the drag was written")
+  ;; Into the helper's own form, which is the only one there is.
+  (check-true (regexp-match? #px"at\\(111[.]0, 222[.]0, ~tag: \"Badge\""
+                             (file->string program))
+              "the `at` inside the helper is where it landed")
+  ;; And it settles: written again, there is nothing more to say.
+  (picts->pptx (load-program-picts program) deck)
+  (define again (sync-once program deck #:workdir (build-path dir "w") #:dry-run? #t))
+  (check-equal? (for/list ([a (in-list (sync-report-actions again))])
+                  (format "~a ~s" (sync-action-kind a) (sync-action-tag a)))
+                '()
+                "and the program and the deck agree afterwards"))
+
 (printf "scenario tests done; artifacts under ~a\n" work)
 
 ;; A check that fails prints and carries on, which is what makes a whole run

@@ -16,25 +16,6 @@
 (require rackunit racket/file racket/path racket/system racket/port racket/string
          "../watch.rkt" "../export.rkt" "../parse.rkt")
 
-;; The bundled Python is asked once whether it can run, and never again.
-;;
-;; On a recent macOS it cannot: LibreOffice keeps its Python inside an app
-;; bundle of its own and the system kills it, unrun, with a code-signing
-;; "launch constraint violation". That is survivable -- the reload falls back to
-;; reopening the deck -- but the loop asks the editor whether it is still open
-;; every ten seconds, so it spawned a process macOS killed and filed a crash
-;; report for six times a minute, for as long as the session lasted.
-(let ()
-  (define asked (box 0))
-  (parameterize ([current-uno-probe (lambda (py) (set-box! asked (add1 (unbox asked))) #f)])
-    (forget-uno!)
-    (check-false (uno-python) "a Python that cannot run UNO is not used")
-    (check-false (uno-python) "nor on the next tick")
-    (check-false (uno-python) "nor the one after that")
-    (check-equal? (unbox asked) 1 "and it was asked exactly once"))
-  ;; Left as this machine finds it, for the tests below.
-  (forget-uno!))
-
 (define (have-uno?)
   (define py (find-executable-path "python3"))
   (and py (zero? (parameterize ([current-output-port (open-output-nowhere)]
@@ -75,7 +56,7 @@
           [(>= n tries) #f]
           [else (sleep 1) (loop (add1 n))])))
 
-;; Reloading with no UNO at all, which is what a recent macOS leaves us with.
+;; Reloading, which is done with a Basic macro and no Python at all.
 ;;
 ;; LibreOffice has no reload on its command line, but it will run a Basic macro
 ;; named there, and a second `soffice` hands that to the copy already running.
@@ -95,8 +76,7 @@
    (define deck (build-path dir "deck.pptx"))
    (define here (collection-file-path "tests" "glide-pptx"))
    (copy-file (build-path here "decks" "03-shapes.pptx") deck #t)
-   (parameterize ([current-uno-probe (lambda (py) #f)])
-     (forget-uno!)
+   (let ()
      ;; Installed before anything starts: LibreOffice reads its Basic libraries
      ;; once, when it starts.
      (check-true (and (glide-macro-files) #t) "the reload macro could be installed")
@@ -116,8 +96,11 @@
      ;; writes it, and only when it found a document at that URL to reload.
      (check-true (and (file-exists? proof)
                       (regexp-match? #rx"reloaded" (file->string proof)))
-                 "and it went through the macro, which found the deck open"))
-   (forget-uno!)
+                 "and it went through the macro, which found the deck open")
+     ;; And the same macro answers whether the deck is still open, which is how
+     ;; closing the editor ends a session.
+     (check-equal? (libreoffice-macro-open? deck) 'open
+                   "and it can say the deck is open"))
    (printf "libreoffice macro reload done\n")])
 
 (cond

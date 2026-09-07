@@ -13,8 +13,8 @@
          racket/system racket/port file/sha1 racket/runtime-path
          "export.rkt" "sync.rkt")
 (provide (struct-out app-adapter) adapters adapter-named scratch-dir-of
-         current-uno-probe forget-uno! uno-python
-         libreoffice-macro-reload! libreoffice-user-dir glide-macro-files
+         libreoffice-macro-reload! libreoffice-macro-open?
+         libreoffice-user-dir glide-macro-files
          watch-loop watch-once program-picts
          soffice-exe powerpoint-installed?
          current-watch-log)
@@ -198,85 +198,6 @@
 ;; UNO comes from LibreOffice's own Python. A Mac's `python3` is the system's
 ;; and knows nothing about it, and even on Linux the packaged one is surer than
 ;; whatever `python3` happens to mean today.
-;; Several of them, because on a Mac only some can be run. The wrapper in
-;; `Resources` execs the framework's `Python.app`, and macOS kills that when
-;; anything but LibreOffice launches it -- a code-signing launch constraint,
-;; before it runs a line. The binaries further in are the same interpreter
-;; without an app bundle around them, so they are worth trying too: whichever
-;; can `import uno` is the one to use.
-(define (libreoffice-pythons)
-  (define mac "/Applications/LibreOffice.app/Contents")
-  (define framework
-    (let ([dir (build-path mac "Frameworks" "LibreOfficePython.framework" "Versions")])
-      (if (directory-exists? dir)
-          (append*
-           (for/list ([v (in-list (directory-list dir))])
-             (for/list ([leaf (in-list '("bin/python3" "Python"))])
-               (build-path dir v leaf))))
-          '())))
-  (define candidates
-    (append (list (build-path mac "MacOS" "python"))
-            framework
-            (list (build-path mac "Resources" "python")
-                  (string->path "/usr/lib/libreoffice/program/python")
-                  (string->path "/opt/libreoffice/program/python"))))
-  (append (for/list ([p (in-list candidates)] #:when (file-exists? p)) p)
-          (let ([p (find-executable-path "python3")]) (if p (list p) '()))))
-
-;; Whether the bundled Python can be run at all, asked once.
-;;
-;; On a recent macOS it cannot: LibreOffice's Python lives inside an app bundle
-;; of its own and the system refuses to launch it from anywhere else, killing it
-;; with a code-signing "launch constraint violation" before it runs a line. That
-;; is survivable -- the reload falls back to opening the deck, which works --
-;; but the loop asked the editor whether it was still open every ten seconds, so
-;; it spawned a process macOS killed and filed a crash report for, six times a
-;; minute, all session.
-;;
-;; So it is tried once. `#f` means it cannot be run here, and after that nothing
-;; asks it anything.
-(define uno-usable (box 'unknown))
-
-;; The probe itself, as a parameter so a test can count how often it is run:
-;; running it once is the whole point.
-(define current-uno-probe
-  (make-parameter
-   (lambda (py)
-     (and py
-          (let ([out (open-output-string)])
-            (parameterize ([current-output-port out] [current-error-port out])
-              (with-handlers ([exn:fail? (lambda (_e) #f)])
-                (eqv? 0 (system*/exit-code py "-c" "import uno, unohelper")))))))))
-
-;; For a test that wants to ask again.
-(define (forget-uno!) (set-box! uno-usable 'unknown))
-
-(define (uno-python)
-  (cond
-    [(eq? 'unknown (unbox uno-usable))
-     ;; The first of them that can be run and knows what UNO is.
-     (define found
-       (for/or ([py (in-list (libreoffice-pythons))])
-         (and ((current-uno-probe) py) py)))
-     (set-box! uno-usable found)
-     ;; Nothing is said here. Whether this matters depends on whether the other
-     ;; way of asking works, and only `note-reload-way!` knows both answers.
-     (unbox uno-usable)]
-    [else (unbox uno-usable)]))
-
-;; The helper says what it managed: 0 did it, 3 could not connect, 4 the
-;; document is not open. Anything else, including no python-uno to run it
-;; with, is "cannot tell".
-(define (libreoffice-driver! what pptx)
-  (define py (uno-python))
-  (and py
-       (let ([out (open-output-string)])
-         (parameterize ([current-output-port out] [current-error-port out])
-           (with-handlers ([exn:fail? (lambda (_e) #f)])
-             (system*/exit-code py (path->string libreoffice-driver) what
-                                (number->string LIBREOFFICE-PORT)
-                                (path->string (path->complete-path pptx))))))))
-
 ;; --------------------------- reloading LibreOffice without a Python at all
 
 ;; LibreOffice has no reload on its command line, and the UNO bridge that would
@@ -356,8 +277,41 @@ Sub Run
   Print #iFile, sFound
   Close #iFile
 End Sub
+
+' Whether the deck glide named is still open. Closing the editor is how a
+' session ends, and this is how that is noticed without a Python either.
+Sub Ask
+  Dim sUrl As String
+  Dim sFound As String
+  Dim iFile As Integer
+  Dim iIn As Integer
+  Dim oEnum
+  Dim oComp
+
+  sFound = "not open"
+
+  iIn = FreeFile
+  Open "~a" For Input As #iIn
+  Line Input #iIn, sUrl
+  Close #iIn
+
+  oEnum = StarDesktop.Components.createEnumeration()
+  Do While oEnum.hasMoreElements()
+    oComp = oEnum.nextElement()
+    If HasUnoInterfaces(oComp, "com.sun.star.frame.XModel") Then
+      If InStr(oComp.getURL(), sUrl) > 0 Then
+        sFound = "open"
+      End If
+    End If
+  Loop
+
+  iFile = FreeFile
+  Open "~a" For Output As #iFile
+  Print #iFile, sFound
+  Close #iFile
+End Sub
 BASIC
-          target-file proof-file))
+          target-file proof-file target-file proof-file))
 
 ;; Written every time, because they are ours; the index of libraries is only
 ;; added to, because it is not.
@@ -451,12 +405,13 @@ BASIC
                               [current-error-port (open-output-nowhere)])
                  (system*/exit-code pgrep "-x" name))))]))
 
-;; 'reloaded, 'not-open, or #f for could not tell.
-(define (libreoffice-macro-reload! pptx)
+;; Runs one of the macro's subs about one deck and hands back what it said, or
+;; #f when it could not be asked at all.
+(define (libreoffice-macro! sub pptx)
   (define exe (soffice-exe))
   (define files (glide-macro-files))
   (cond
-    [(not (and exe files)) #f]
+    [(not (and exe files (soffice-running?))) #f]
     [else
      (define target (car files))
      (define proof (cdr files))
@@ -464,20 +419,18 @@ BASIC
        (display-to-file (string-append (path->url-string (path->complete-path pptx)) "\n")
                         target #:exists 'replace)
        (when (file-exists? proof) (delete-file proof))
-       (soffice-bounded exe (list "macro:///Glide.Reload.Run") 12)
+       (soffice-bounded exe (list (format "macro:///Glide.Reload.~a" sub)) 12)
        (wait-for-file proof 10)
-       (cond
-         [(not (file-exists? proof)) #f]
-         [(regexp-match? #rx"reloaded" (file->string proof))
-          ;; Said the first time it works, so that a session where the usual way
-          ;; is unavailable still shows the other way working.
-          (unless (unbox macro-reload-said)
-            (set-box! macro-reload-said #t)
-            (log! "  reloaded the deck in LibreOffice through the macro\n"))
-          'reloaded]
-         [else 'not-open]))]))
+       (and (file-exists? proof)
+            (let ([said (file->string proof)])
+              (cond
+                [(regexp-match? #rx"reloaded" said) 'reloaded]
+                [(regexp-match? #rx"not open" said) 'not-open]
+                [(regexp-match? #rx"open" said) 'open]
+                [else #f]))))]))
 
-(define macro-reload-said (box #f))
+(define (libreoffice-macro-reload! pptx) (libreoffice-macro! "Run" pptx))
+(define (libreoffice-macro-open? pptx) (libreoffice-macro! "Ask" pptx))
 
 ;; LibreOffice matches documents by URL, and its own are `file://` with the
 ;; awkward characters escaped.
@@ -498,26 +451,12 @@ BASIC
 (define (note-reload-way!)
   (unless (unbox reload-way-said)
     (set-box! reload-way-said #t)
-    (cond
-      ;; The usual way. Nothing to say about it.
-      [(uno-python) (void)]
-      [(glide-macro-files)
-       => (lambda (_files)
-            (log! (string-append
-                   "  LibreOffice's own python will not run here, so the deck is\n"
-                   "  reloaded through a Basic macro instead, installed in\n"
-                   "  ~a.\n"
-                   "  Quit LibreOffice once if it was already open: it reads its\n"
-                   "  macros when it starts.\n")
-                  (path->string (build-path (libreoffice-user-dir) "basic" "Glide"))))]
-      [else
-       (log! (string-append
-              "  nothing here can tell LibreOffice to reload -- no UNO, and no\n"
-              "  profile to install a macro in -- so it may keep showing an older\n"
-              "  deck than the program. File > Reload refreshes it by hand.\n"
-              "  Pythons tried: ~a\n")
-             (let ([ps (libreoffice-pythons)])
-               (if (null? ps) "none found" (string-join (map path->string ps) ", "))))])))
+    ;; Nothing to say when it works: the deck reloading is the whole report.
+    (unless (glide-macro-files)
+      (log! (string-append
+             "  no LibreOffice profile here to install the reload macro in, so\n"
+             "  the deck may keep showing an older version than the program.\n"
+             "  File > Reload refreshes it by hand.\n")))))
 
 (define (libreoffice-launch! pptx)
   (define exe (soffice-exe))
@@ -549,21 +488,17 @@ BASIC
    (lambda (pptx) pptx)
    (lambda (doc pptx) #t)
    (lambda (pptx)
-     ;; Reload what is open; open it if it is not. A driver that cannot say
-     ;; either way falls back to the launch, which at least shows something.
-     (case (libreoffice-driver! "reload" pptx)
-       [(0) #t]
-       ;; No UNO, or UNO could not say: ask over a Basic macro instead, which
-       ;; needs no Python. A deck that is not open is one to open.
-       [else (case (and (soffice-running?) (libreoffice-macro-reload! pptx))
-               [(reloaded) #t]
-               [else (libreoffice-launch! pptx)])]))
-   ;; Only the driver can say; without it the session runs until it is
-   ;; interrupted, which is what every other adapter that cannot tell does.
+     ;; Reload what is open; open it if it is not.
+     (case (libreoffice-macro-reload! pptx)
+       [(reloaded) #t]
+       [else (libreoffice-launch! pptx)]))
+   ;; Closing the editor ends the session. A macro that could not be asked says
+   ;; nothing rather than "closed": ending a session because an answer did not
+   ;; arrive would throw away the work it was in the middle of.
    (lambda ()
      (define deck (current-libreoffice-deck))
-     (case (and deck (libreoffice-driver! "open" deck))
-       [(4) #f]
+     (case (and deck (libreoffice-macro-open? deck))
+       [(not-open) #f]
        [else #t]))))
 
 ;; Which deck `open?` should ask about. The adapter's own `open?` takes no
