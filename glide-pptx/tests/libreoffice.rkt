@@ -101,11 +101,22 @@
      ;; once, when it starts.
      (check-true (and (glide-macro-files) #t) "the reload macro could be installed")
      (define lo (adapter-named 'libreoffice))
+     ;; Nothing is open, so this launches -- and the launch is what has to
+     ;; install the macro, since LibreOffice reads its macros as it starts.
      (check-true (and ((app-adapter-reload! lo) deck) #t) "LibreOffice was started")
      (sleep 20)
+     ;; And now the deck is regenerated underneath it, which is what a saved
+     ;; program does. Through the adapter, so what is tested is the way the
+     ;; loop asks rather than the macro on its own.
      (copy-file (build-path here "decks" "05-realistic.pptx") deck #t)
-     (check-equal? (libreoffice-macro-reload! deck) 'reloaded
-                   "and the macro found the open deck and reloaded it"))
+     (define proof (build-path (libreoffice-user-dir) "glide-reloaded.txt"))
+     (when (file-exists? proof) (delete-file proof))
+     (check-true (and ((app-adapter-reload! lo) deck) #t) "the adapter was asked again")
+     ;; The proof is what tells a reload from a second launch: only the macro
+     ;; writes it, and only when it found a document at that URL to reload.
+     (check-true (and (file-exists? proof)
+                      (regexp-match? #rx"reloaded" (file->string proof)))
+                 "and it went through the macro, which found the deck open"))
    (forget-uno!)
    (printf "libreoffice macro reload done\n")])
 

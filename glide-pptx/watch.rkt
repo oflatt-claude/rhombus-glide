@@ -259,15 +259,8 @@
        (for/or ([py (in-list (libreoffice-pythons))])
          (and ((current-uno-probe) py) py)))
      (set-box! uno-usable found)
-     (unless found
-       (log! (string-append
-              "  no python here can import UNO, so the deck is reopened rather than\n"
-              "  reloaded -- which means it may keep showing an older deck than the\n"
-              "  program. Tried: ~a\n")
-             (let ([ps (libreoffice-pythons)])
-               (if (null? ps)
-                   "nothing"
-                   (string-join (map path->string ps) ", ")))))
+     ;; Nothing is said here. Whether this matters depends on whether the other
+     ;; way of asking works, and only `note-reload-way!` knows both answers.
      (unbox uno-usable)]
     [else (unbox uno-usable)]))
 
@@ -415,10 +408,6 @@ BASIC
      (and user
           (with-handlers ([exn:fail? (lambda (_e) #f)])
             (define-values (target proof) (install-glide-macro! user))
-            (log! (string-append
-                   "  installed a reload macro in LibreOffice's own profile\n"
-                   "  (~a), since there is no UNO here to ask over\n")
-                  (path->string (build-path user "basic" "Glide")))
             (cons target proof)))))
   (unbox glide-macro))
 
@@ -479,8 +468,16 @@ BASIC
        (wait-for-file proof 10)
        (cond
          [(not (file-exists? proof)) #f]
-         [(regexp-match? #rx"reloaded" (file->string proof)) 'reloaded]
+         [(regexp-match? #rx"reloaded" (file->string proof))
+          ;; Said the first time it works, so that a session where the usual way
+          ;; is unavailable still shows the other way working.
+          (unless (unbox macro-reload-said)
+            (set-box! macro-reload-said #t)
+            (log! "  reloaded the deck in LibreOffice through the macro\n"))
+          'reloaded]
          [else 'not-open]))]))
+
+(define macro-reload-said (box #f))
 
 ;; LibreOffice matches documents by URL, and its own are `file://` with the
 ;; awkward characters escaped.
@@ -492,13 +489,39 @@ BASIC
                                     (case (string-ref m 0)
                                       [(#\space) "%20"] [(#\?) "%3F"] [else "%23"])))))
 
+;; How this deck is going to be reloaded, said once and only when it is not the
+;; usual way. The macro has to be installed before LibreOffice starts, because
+;; LibreOffice reads its Basic libraries once, when it starts -- so this is
+;; called on the way to the launch rather than on the way to a reload.
+(define reload-way-said (box #f))
+
+(define (note-reload-way!)
+  (unless (unbox reload-way-said)
+    (set-box! reload-way-said #t)
+    (cond
+      ;; The usual way. Nothing to say about it.
+      [(uno-python) (void)]
+      [(glide-macro-files)
+       => (lambda (_files)
+            (log! (string-append
+                   "  LibreOffice's own python will not run here, so the deck is\n"
+                   "  reloaded through a Basic macro instead, installed in\n"
+                   "  ~a.\n"
+                   "  Quit LibreOffice once if it was already open: it reads its\n"
+                   "  macros when it starts.\n")
+                  (path->string (build-path (libreoffice-user-dir) "basic" "Glide"))))]
+      [else
+       (log! (string-append
+              "  nothing here can tell LibreOffice to reload -- no UNO, and no\n"
+              "  profile to install a macro in -- so it may keep showing an older\n"
+              "  deck than the program. File > Reload refreshes it by hand.\n"
+              "  Pythons tried: ~a\n")
+             (let ([ps (libreoffice-pythons)])
+               (if (null? ps) "none found" (string-join (map path->string ps) ", "))))])))
+
 (define (libreoffice-launch! pptx)
   (define exe (soffice-exe))
-  ;; Before it starts, because LibreOffice reads its Basic libraries once when
-  ;; it starts: a macro installed afterwards is a macro the running copy has
-  ;; never heard of. Only when there is no UNO, which is the only case that
-  ;; needs it.
-  (unless (uno-python) (void (glide-macro-files)))
+  (note-reload-way!)
   ;; Started on the person's own LibreOffice, with their settings and none of
   ;; the dialogs a fresh profile puts up -- and a fresh profile puts up a
   ;; welcome wizard, which is modal, which means nothing can be asked of the
