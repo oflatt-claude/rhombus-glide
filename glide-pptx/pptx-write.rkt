@@ -544,9 +544,13 @@
           (let ([o (it:picture-opacity i)])
             (if (< o 0.999) (format "<a:alphaModFix amt=\"~a\"/>" (pct o)) ""))
           (let ([c (it:picture-crop i)])
+            ;; Signed, because a crop edge is: a negative one extends the source
+            ;; rectangle rather than eating into it, and clamping it to zero
+            ;; wrote the picture back uncropped on that edge.
             (if (and c (ormap (lambda (v) (> (abs v) 1e-9)) c))
                 (format "<a:srcRect l=\"~a\" t=\"~a\" r=\"~a\" b=\"~a\"/>"
-                        (pct (first c)) (pct (second c)) (pct (third c)) (pct (fourth c)))
+                        (pct* (first c)) (pct* (second c))
+                        (pct* (third c)) (pct* (fourth c)))
                 ""))
           (xfrm-xml (it:picture-x i) (it:picture-y i) (it:picture-w i) (it:picture-h i)
                     (it:picture-rot i) (it:picture-flip-h? i) (it:picture-flip-v? i))

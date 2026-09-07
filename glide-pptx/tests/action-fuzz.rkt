@@ -33,6 +33,7 @@
          "deck-edit.rkt" "ir-diff.rkt")
 
 (define-runtime-path decks-dir "decks")
+(define-runtime-path corpus-dir "corpus")
 
 
 (define ROUNDS (string->number (or (getenv "GLIDE_FUZZ_ROUNDS") "4")))
@@ -226,10 +227,18 @@
                 (set! findings
                       (cons (format "~a: ~a ~s refused -- ~a" label
                                     (edit-kind-name (cdr t)) (sync-action-tag a) (cdr sk))
-                            findings))))))))
-    (values applied-total refused-total (reverse findings))))
+                            findings)))))))))
+  ;; Outside the `when`: a deck with nothing the merge can act on has nothing
+  ;; to report, and still owes its caller three answers.
+  (values applied-total refused-total (reverse findings)))
 
 ;; --------------------------------------------------------------- what to run
+
+;; `GLIDE_FUZZ_CORPUS` runs it over the corpus instead -- five hundred real
+;; decks rather than six fixtures, which is where the shapes the merge has never
+;; seen live. `GLIDE_FUZZ_CORPUS_SKIP` moves the slice along.
+(define CORPUS (string->number (or (getenv "GLIDE_FUZZ_CORPUS") "0")))
+(define CORPUS-SKIP (string->number (or (getenv "GLIDE_FUZZ_CORPUS_SKIP") "0")))
 
 ;; The fixture decks, translated: real files, and the only ones committed here.
 (define fixtures
@@ -260,6 +269,35 @@
      (cond [(directory-exists? p) (copy-directory/files p (build-path dir f) #:keep-modify-seconds? #t)]
            [else (copy-file p (build-path dir f) #t)]))
    (run! (path->string (file-name-from-path ONE-PROGRAM)) copy dir BASE-SEED)]
+  [(positive? CORPUS)
+   (define all
+     (if (directory-exists? corpus-dir)
+         (sort (for/list ([f (in-list (directory-list corpus-dir))]
+                          #:when (regexp-match? #rx"[.]pptx$" (path->string f)))
+                 (path->string f))
+               string<?)
+         '()))
+   (cond
+     [(null? all) (printf "no corpus present; run tools/fetch-corpus.sh to fetch one\n")]
+     [else
+      (current-allow-unsupported? #t)
+      (for ([name (in-list (take (drop all (min CORPUS-SKIP (length all)))
+                                 (min CORPUS (max 0 (- (length all) CORPUS-SKIP)))))]
+            [i (in-naturals)])
+        (define dir (build-path work (format "c~a" i)))
+        (with-handlers
+            ([(lambda (_e) #t)
+              (lambda (e)
+                (define msg (first (string-split (exn-message e) "\n")))
+                ;; A deck we refuse in our own words, or one whose fonts are not
+                ;; here, is not a finding about the merge.
+                (unless (regexp-match? #rx"^glide[-a-z]*:" msg)
+                  (fail (format "~a: ~a" name msg))))])
+          (make-directory* dir)
+          (define program (build-path dir "p.rhm"))
+          (define d (pptx->deck (build-path corpus-dir name) #:workdir (build-path dir "u")))
+          (write-rhombus-deck d program #:source-name name)
+          (run! name program dir (+ BASE-SEED i))))])]
   [else
    (for ([name (in-list fixtures)] [i (in-naturals)])
      (define dir (build-path work name))

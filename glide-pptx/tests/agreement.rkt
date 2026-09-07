@@ -47,9 +47,11 @@
 ;; What still disagrees, named so it stays visible rather than tolerated. Each
 ;; is a bug; they are listed so the sweep can guard the other five hundred in
 ;; the meantime.
-(define known
-  (hash "poi-customGeo.pptx"
-        "the second run of a placeholder title comes back white where the program says black"))
+;; Nothing, at present: every deck in the corpus that can be measured agrees
+;; with the deck it writes. A deck listed here would be a bug being guarded
+;; against rather than tolerated, so the sweep can keep watch over the other
+;; four hundred in the meantime.
+(define known (hash))
 
 (cond
   [(null? decks)

@@ -346,7 +346,8 @@
 ;; spacing, capitals and a raised baseline were each in the representation and
 ;; each dropped by the merge.
 (define (run-style r i)
-  (only-stated
+  (append
+   (only-stated
    (list (cons (nth-property 'font i) (trun-family r))
          ;; Hundredths, which is what `sz` keeps: rounding to tenths made a
          ;; value land on either side of a boundary depending on which way it
@@ -358,9 +359,18 @@
          (cons (nth-property 'strike i) (and (trun-strike? r) #t))
          (cons (nth-property 'spacing i) (round-to (trun-spacing r) 100.0))
          (cons (nth-property 'caps i) (trun-caps r))
-         (cons (nth-property 'baseline i) (round-to (trun-baseline r) 1000.0))
-         (cons (nth-property 'text-color i) (or (hex-of (trun-color r)) "")))
-   (trun-stated r)))
+         (cons (nth-property 'baseline i) (round-to (trun-baseline r) 1000.0)))
+   (trun-stated r))
+   ;; A run of no glyphs shows no colour. An empty run and a run holding only a
+   ;; line break both draw nothing, and neither side can be held to what it
+   ;; happens to say about the colour of nothing: a `<a:br/>` carries none, so a
+   ;; program that had defaulted one to black disagreed with a deck that
+   ;; resolved it to the white of the placeholder it sat in.
+   (if (regexp-match? #rx"^\n*$" (trun-text r))
+       '()
+       (only-stated
+        (list (cons (nth-property 'text-color i) (or (hex-of (trun-color r)) "")))
+        (trun-stated r)))))
 
 ;; And everything the paragraph panel can do: its level in a list, the indents
 ;; that hang its bullet, and the bullet itself.
