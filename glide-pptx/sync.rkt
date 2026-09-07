@@ -1113,7 +1113,8 @@
           (for-each walk l))
         (void))))
   (parameterize ([current-range-offset after-lang])
-    (values (reverse sites) (rhombus-slide-scopes groups)
+    (values (reverse sites)
+            (rhombus-slide-scopes groups (map at-site-scope (reverse sites)))
             (with-indents (rhombus-slide-sites groups text) (reverse sites) text)
             (program-layout (rhombus-name-list groups text)
                             (rhombus-export-block groups text)
@@ -1320,19 +1321,54 @@
       [else h])))
 
 ;; `def all_slides = [slide_1, slide_2]` -> '(slide_1 slide_2).
-(define (rhombus-slide-scopes groups)
+;; Which slide each entry of `all_slides` comes from, in order.
+;;
+;; A generated program lists the names plainly -- `[slide_1, slide_2]` -- and
+;; that is the easy case. A talk wraps them: `held(in_section(0, slide_2))`
+;; holds the slide inside a couple of calls, and `held(divider(0))` names no
+;; slide at all because a divider is drawn rather than laid out. So an entry is
+;; read for the one name in it that some `at` form calls home; an entry with
+;; none is a slide with nothing to edit, and says so with #f.
+;;
+;; Getting this right is what keeps a tag's meaning local to its slide. Without
+;; it every tag has to be unique across the whole file, which no deck's tags
+;; are -- "Group" and "Rectangle (2)" are on half the slides -- and every merge
+;; is refused.
+(define (rhombus-slide-scopes groups site-scopes)
+  (define known (for/hash ([s (in-list site-scopes)] #:when s) (values s #t)))
+  (define (scope-in stx)
+    (let walk ([e stx])
+      (cond
+        [(syntax? e) (walk (syntax-e e))]
+        [(symbol? e) (and (hash-ref known e #f) e)]
+        [(pair? e) (or (walk (car e)) (walk (cdr e)))]
+        [else #f])))
+  (define (entries-of b)
+    (and b (eq? 'brackets (syntax-e* (car b)))
+         (let ([names (map scope-in (cdr b))])
+           (and (pair? names) names))))
   (for/or ([g (in-list groups)])
     (define l (let ([e (syntax-e g)]) (and (list? e) e)))
-    (and l (= 5 (length l)) (eq? 'group (syntax-e* (first l)))
+    (and l (>= (length l) 4) (eq? 'group (syntax-e* (first l)))
          (eq? 'def (syntax-e* (second l)))
          (memq (syntax-e* (third l)) '(all_slides all-slides))
-         (let ([b (let ([e (syntax-e (fifth l))]) (and (list? e) e))])
-           (and b (eq? 'brackets (syntax-e* (car b)))
-                (let ([names (map (lambda (grp)
-                                    (let ([v (rhombus-group-value grp)])
-                                      (and v (symbol? (syntax-e* v)) (syntax-e* v))))
-                                  (cdr b))])
-                  (and (pair? names) (andmap values names) names)))))))
+         ;; `def all_slides = [...]`, or `def all_slides:` with the list in the
+         ;; block that follows.
+         (let* ([tail (list-tail l 3)]
+                [brackets
+                 (for/or ([piece (in-list tail)])
+                   (define e (let ([v (syntax-e piece)]) (and (list? v) v)))
+                   (cond
+                     [(not e) #f]
+                     [(eq? 'brackets (syntax-e* (car e))) e]
+                     [(eq? 'block (syntax-e* (car e)))
+                      (for/or ([grp (in-list (cdr e))])
+                        (define ge (let ([v (syntax-e grp)]) (and (list? v) v)))
+                        (and ge (>= (length ge) 2)
+                             (let ([inner (let ([v (syntax-e (second ge))]) (and (list? v) v))])
+                               (and inner (eq? 'brackets (syntax-e* (car inner))) inner))))]
+                     [else #f]))])
+           (entries-of brackets)))))
 
 ;; (cons name arg-groups) when `l` is a call, else #f.
 (define (rhombus-call l)
