@@ -3894,8 +3894,12 @@
          (fprintf o "    ~a\n" why))
        (when (> (length kinds) 3)
          (fprintf o "    and ~a more like it\n" (- (length kinds) 3))))
+     ;; The notes are their own actions rather than a subset of these, so they
+     ;; are counted and not subtracted -- doing both reported "-1 reported" on a
+     ;; pass that applied one edit and noted one thing.
+     (define acted (filter (lambda (a) (not (eq? 'noted (sync-action-kind a)))) as))
      (fprintf o "  ~a applied, ~a reported~a\n"
               (length (sync-report-applied r))
-              (- (length as) (length (sync-report-applied r)) (length notes))
+              (max 0 (- (length acted) (length (sync-report-applied r))))
               (if (null? notes) "" (format ", ~a noted" (length notes))))])
   (get-output-string o))

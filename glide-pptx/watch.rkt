@@ -663,10 +663,19 @@ BASIC
       (when (or (= pass 1) (pair? (sync-report-actions r)))
         (for ([l (in-list (string-split (format-sync-report r) "\n"))]) (log! "~a\n" l)))
       (define left (sync-report-skipped r))
+      ;; Whether the save landed. Not whether anything was refused: a difference
+      ;; the source has no place for -- an element it does not draw with an `at`,
+      ;; a property it does not hold as a literal -- is reported and the save
+      ;; still lands, because there is nothing a person could go and fix. Read
+      ;; as a refusal it stopped every save on the slide, for ever.
+      (define landed? (sync-report-base-written? r))
       (cond
-        [(pair? left)
+        [(not landed?)
          (log! "  ! nothing was merged: ~a of these could not be written\n" (length left))
          #f]
+        [(pair? left)
+         (log! "  ~a of these could not be written; the rest was merged\n" (length left))
+         #t]
         ;; A pass that carried an edit onto the other frames of a build has
         ;; left the deck behind on purpose: those frames still hold the old
         ;; value, and looking again would read that as an edit undoing the one
