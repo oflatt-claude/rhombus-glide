@@ -9,6 +9,7 @@
          "ir.rkt" "geometry.rkt" "tagged.rkt")
 (provide shown-picts canvas-transition canvas-hidden?
          set-slide-numbers! slide-numbers? slide-numbers-on? number-on
+         forget-bitmaps!
          ;; composition
          (struct-out placed) at slide-canvas pin-placed placed-position
          ;; structure carried on the pict, for export
@@ -123,7 +124,16 @@
 
 ;; ------------------------------------------------------------------ bitmaps
 
+;; Every image a program draws, read once. Kept for the watch loop, which reads
+;; the same program on every save and would otherwise read its pictures again
+;; each time.
+;;
+;; Emptied when the program changes, because then none of them will be asked for
+;; again: a sweep over five hundred decks kept every image from every one of
+;; them, which is eighty megabytes a deck and the reason the sweep looked like a
+;; hang.
 (define bitmap-cache (make-hash))
+(define (forget-bitmaps!) (hash-clear! bitmap-cache))
 (define (load-bitmap path)
   (cond
     [(not path) (warn! "a picture has no image to draw") #f]

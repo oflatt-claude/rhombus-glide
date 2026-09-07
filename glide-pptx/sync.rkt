@@ -18,7 +18,7 @@
          (only-in shrubbery/parse parse-all)
          "ir.rkt" "draw-ir.rkt" "parse.rkt" "semantic.rkt" "sync-state.rkt"
          (only-in "runtime.rkt" current-media-base current-default-font
-                  number-on slide-numbers? set-slide-numbers!)
+                  number-on slide-numbers? set-slide-numbers! forget-bitmaps!)
          (only-in "emit-common.rkt" media-names-for dominant-font)
          (only-in "emit-rhombus.rkt" rhombus-element-source rhombus-slide-source))
 (provide (struct-out sync-action) (struct-out sync-report)
@@ -62,6 +62,10 @@
 ;; runtime and `pict` are attached rather than re-instantiated, so the picts that
 ;; come back are the same struct types this module knows, and the media base is
 ;; the same parameter.
+;; Which program was read last, so a read of a different one can let go of the
+;; pictures the last one drew.
+(define last-program-read (box #f))
+
 ;; The one namespace every read takes its modules from: the first program's,
 ;; kept only if that program started a GUI. See `load-program-picts`.
 (define gui-program-namespace (box #f))
@@ -137,8 +141,17 @@
   ;; And the GUI itself, once some program has started one. Nothing is attached
   ;; when none has, which is the usual case and has to stay that way:
   ;; translating a deck should never start a GUI.
+  ;;
+  ;; `slideshow` is in the list for a reason worth stating. It cannot be
+  ;; attached from here, because instantiating it reads the command line and
+  ;; brings up the GUI machinery, which translating a deck must never do. But
+  ;; once a program has instantiated it, it must be attached from there: it is
+  ;; pinned by the `racket/gui` it registers with, and `racket/gui` is shared,
+  ;; so a fresh copy per read is a copy that is never released. That was ten
+  ;; megabytes a read -- a save, in the watch loop -- and a long afternoon of
+  ;; dragging things around turns that into gigabytes.
   (when (unbox gui-program-namespace)
-    (for ([m (in-list '(racket/draw racket/gui/base))])
+    (for ([m (in-list '(racket/draw racket/gui/base slideshow slideshow/base))])
       (with-handlers ([exn:fail? void]) (namespace-attach-module from m ns))))
   (define names (if named (list (string->symbol named)) '(all_slides all-slides)))
   ;; Whatever the last program asked for is not what this one asks for. The
@@ -146,6 +159,12 @@
   ;; is shared with everything that has already read a program in this process
   ;; -- so it starts off, and a program that wants numbers says so again.
   (set-slide-numbers! #f)
+  ;; A different program draws different pictures, and the ones the last program
+  ;; drew will not be asked for again. The same program keeps its own: that is
+  ;; the watch loop, reading on every save.
+  (unless (equal? (unbox last-program-read) (path->string full))
+    (forget-bitmaps!)
+    (set-box! last-program-read (path->string full)))
   ;; Recorded before the program runs, not after: a program that fails part way
   ;; through may already have started a GUI, and the next read has to take that
   ;; one rather than start a second. Only the first one is kept -- a namespace
