@@ -2350,6 +2350,15 @@
     (let ([dups (map car (duplicate-tags (map at-site-tag all-sites)))])
       (for/hash ([s (in-list all-sites)] #:unless (member (at-site-tag s) dups))
         (values (at-site-tag s) s))))
+  ;; How many elements in the whole deck answer to a tag. A tag that names one
+  ;; thing can be followed wherever its `at` is written; one that names several
+  ;; cannot, because they would all move together.
+  (define tag-count
+    (if d
+        (for*/fold ([h (hash)]) ([s (in-list (deck-slides d))]
+                                 [e (in-list (slide-elements s))])
+          (hash-update h (element-name e) add1 0))
+        (hash)))
   (define (site-for a) (site-for-tag a (sync-action-tag a)))
   ;; The same, for a tag other than the action's own: a grouping names the
   ;; group, and what it moves are the elements inside it.
@@ -2357,9 +2366,27 @@
     (define scope (and scopes
                        (<= 1 (sync-action-slide a) (length scopes))
                        (list-ref scopes (sub1 (sync-action-slide a)))))
-    (if scope
-        (hash-ref by-scope (cons scope tag) #f)
-        (hash-ref by-tag tag #f)))
+    (cond
+      ;; No definition to key on: tags are unique file-wide, which
+      ;; `check-site-tags` has already insisted on.
+      [(not scope) (hash-ref by-tag tag #f)]
+      [(hash-ref by-scope (cons scope tag) #f)]
+      ;; Not in the slide's own definition, so it is written somewhere the slide
+      ;; calls: a talk that draws a badge with `with_icon(...)` puts the `at`
+      ;; inside the helper, and the slide never mentions the tag at all.
+      ;;
+      ;; One `at` drawing several elements is not the trouble -- that is what a
+      ;; helper is, and writing that one form moves everything it draws, which
+      ;; is what sharing code means. The trouble is two `at` forms under one
+      ;; tag, and `by-tag` leaves those out.
+      ;;
+      ;; A deletion is the exception. Removing one badge should not delete the
+      ;; code that draws every badge, so it is only followed when nothing else
+      ;; in the deck answers to the tag -- which is to say that form drew this
+      ;; and nothing more.
+      [(eq? 'removed (sync-action-kind a))
+       (and (zero? (hash-ref tag-count tag 0)) (hash-ref by-tag tag #f))]
+      [else (hash-ref by-tag tag #f)]))
   ;; Where a new element goes, for the slide an action names.
   (define (slide-site-for a)
     (define scope (and scopes
