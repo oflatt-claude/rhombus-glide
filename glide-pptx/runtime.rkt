@@ -8,6 +8,7 @@
          racket/draw pict
          "ir.rkt" "geometry.rkt" "tagged.rkt")
 (provide shown-picts canvas-transition canvas-hidden?
+         set-slide-numbers! slide-numbers? slide-numbers-on? number-on
          ;; composition
          (struct-out placed) at slide-canvas pin-placed placed-position
          ;; structure carried on the pict, for export
@@ -1004,9 +1005,43 @@
   (define d (pict-desc p))
   (and (slide-desc? d) (slide-desc-hidden? d) #t))
 
+;; Whether a slide is numbered in its own corner. Off by default: it is ink the
+;; deck did not ask for. A talk turns it on at the top level rather than inside
+;; `module main`, so that the deck the exporter writes carries the same number
+;; the show draws -- the number used to be drawn by the slide assembler, which
+;; is downstream of everything but the show, so the deck came out with the
+;; corner empty.
+(define slide-numbers? (box #f))
+(define (set-slide-numbers! [on? #t]) (set-box! slide-numbers? (and on? #t)))
+(define (slide-numbers-on?) (unbox slide-numbers?))
+
+;; The number in the corner, at the slide's own scale. Sized and inset as a
+;; fraction of the slide, so it lands in the same place whether the slide is
+;; 720 points wide or 1920, and so the show and the deck agree once the show has
+;; scaled the slide to fit its window.
+(define (number-on p n)
+  (define h (pict-height p))
+  (define size (max 8.0 (* 0.032 h)))
+  (define body
+    (text-body (list (para (list (trun (number->string n) (current-default-font) size
+                                       #t #f #f #f (rgba 0 0 0 1.0) 0.0 'none 0.0 'all))
+                           'right 0 0.0 0.0 '(percent . 1.0) 0.0 0.0 no-bullet 'all))
+               'bottom #f #f 'none (insets 0.0 0.0 0.0 0.0) 0.0 'all))
+  (define-values (tw th) (body-natural-size body (* 0.12 (pict-width p)) size))
+  (define tag (text-pict body (max 1.0 tw) (max 1.0 th)))
+  (pin-over p
+            (- (pict-width p) (pict-width tag) (* 0.006 (pict-width p)))
+            (- h (pict-height tag) (* 0.006 h))
+            tag))
+
 ;; A slide written as a function of no arguments is not built yet, and asking
 ;; whether it is hidden would build it -- which is the one thing being lazy is
 ;; for. It is kept; a lazy deck leaves out what it does not want shown.
+;;
+;; The number is put on here, where every reader of a slide list passes: the
+;; show, the exporter and the backup PDF. A slide that is still a thunk stays
+;; one -- it is wrapped, not built -- because building it early is the one thing
+;; being lazy is for.
 (define (shown-picts picts)
   (for/list ([p (in-list picts)]
              #:unless (and (not (procedure? p))

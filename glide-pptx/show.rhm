@@ -54,10 +54,27 @@ fun show_slides(slides, ~width: w :: Real, ~height: h :: Real):
   // fits rather than being cropped.
   def zoom = math.min(page_w / w, page_h / h)
   fun lazy_slide(s): s is_a Function.of_arity(0)
-  fun fit(v) :~ Pict:
+  // The number in the corner, the one `--skip` counts by, composed onto the
+  // slide rather than added while the slide is assembled -- so the deck the
+  // exporter writes carries the same number, drawn to the same proportions.
+  // Before the scale, so it scales with the slide, and with `overlay` rather
+  // than a Racket `pin-over`, which would flatten a slide that animates.
+  fun numbered(p :~ Pict, n) :~ Pict:
+    def plain :~ Pict = bold("" +& n).colorize("black")
+    def wanted = math.max(8.0, 0.032 * p.height)
+    def tag :~ Pict = plain.scale(wanted / math.max(1.0, plain.height))
+    overlay(~horiz: #'right, ~vert: #'bottom,
+            p, tag.pad(~right: 0.006 * p.width, ~bottom: 0.006 * p.height))
+  fun fit(v, n) :~ Pict:
     def p :: Pict = if v is_a Pict | v | Pict.from_handle(v)
-    p.scale(zoom).pad(-m)
+    def shown = if glide.slide_numbers() | numbered(p, n) | p
+    shown.scale(zoom).pad(-m)
+  // Numbered by position in the whole list, which is what the exporter counts
+  // by: a hidden slide is written to the deck and skipped by the show, and a
+  // number that counted differently would be a number that disagreed.
+  def numbers = for Map (s in slides, n in 1..): values(s, n)
   for (s in glide.shown_slides(slides)):
+    def n = numbers[s]
     if lazy_slide(s)
-    | do_staged_slide(fun (): fit(s()), ~layout: #'center)
-    | do_staged_slide(fit(s), ~transition: glide.transition_of(s), ~layout: #'center)
+    | do_staged_slide(fun (): fit(s(), n), ~layout: #'center)
+    | do_staged_slide(fit(s, n), ~transition: glide.transition_of(s), ~layout: #'center)

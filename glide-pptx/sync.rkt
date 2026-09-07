@@ -17,7 +17,8 @@
          (only-in racket/draw get-face-list)
          (only-in shrubbery/parse parse-all)
          "ir.rkt" "draw-ir.rkt" "parse.rkt" "semantic.rkt" "sync-state.rkt"
-         (only-in "runtime.rkt" current-media-base current-default-font)
+         (only-in "runtime.rkt" current-media-base current-default-font
+                  number-on slide-numbers? set-slide-numbers!)
          (only-in "emit-common.rkt" media-names-for dominant-font)
          (only-in "emit-rhombus.rkt" rhombus-element-source rhombus-slide-source))
 (provide (struct-out sync-action) (struct-out sync-report)
@@ -98,6 +99,19 @@
   (define v (if (and (procedure? s) (procedure-arity-includes? s 0)) (s) s))
   (if (pict? v) v (settle v)))
 
+;; The number in each slide's corner, when the program asked for one. Put on
+;; after forcing and settling, because it is drawn as an ordinary pict and
+;; composing one onto a slide that still animates would flatten it -- the show
+;; composes its own with Rhombus's `overlay`, which does not.
+;;
+;; By position in the whole list, including the slides a canvas says to skip:
+;; those are exported, with `show="0"`, and the show counts them too, so a
+;; number that skipped them would differ on the two sides.
+(define (numbered ps)
+  (if (unbox slide-numbers?)
+      (for/list ([p (in-list ps)] [n (in-naturals 1)]) (number-on p n))
+      ps))
+
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
   (define ns (make-base-empty-namespace))
@@ -121,6 +135,11 @@
     (for ([m (in-list '(racket/draw racket/gui/base))])
       (with-handlers ([exn:fail? void]) (namespace-attach-module from m ns))))
   (define names (if named (list (string->symbol named)) '(all_slides all-slides)))
+  ;; Whatever the last program asked for is not what this one asks for. The
+  ;; numbering is a switch the program throws as it loads, and the box it throws
+  ;; is shared with everything that has already read a program in this process
+  ;; -- so it starts off, and a program that wants numbers says so again.
+  (set-slide-numbers! #f)
   ;; Recorded before the program runs, not after: a program that fails part way
   ;; through may already have started a GUI, and the next read has to take that
   ;; one rather than start a second.
@@ -138,8 +157,16 @@
       ;; Settled here, inside the program's namespace, for the reason
       ;; `settle-frames` gives.
       (cond
-        [(list? v) (map force-slide v)]
-        [(treelist? v) (map force-slide (treelist->list v))]
+        ;; Numbered here, so the deck carries the number the show draws. After
+        ;; forcing and settling, because the number is drawn as an ordinary pict
+        ;; and composing one onto a slide that still animates would flatten it.
+        ;; By position in the whole list, including the slides a canvas says to
+        ;; skip: those are exported, with `show="0"`, and the show counts them
+        ;; too, so a number that skipped them would differ on the two sides.
+        [(list? v) (numbered (map force-slide v))]
+        ;; A Rhombus `[...]` is a treelist, which is what a talk's `all_slides`
+        ;; is -- so this branch is the one a hand-written talk takes.
+        [(treelist? v) (numbered (map force-slide (treelist->list v)))]
         [else (force-slide v)])))
   (cond
     [(list? found) found]

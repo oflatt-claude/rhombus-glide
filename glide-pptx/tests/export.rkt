@@ -9,11 +9,12 @@
 ;; test is about the *export* path, so the reference is our own render rather
 ;; than LibreOffice's reading of the original deck.
 (require rackunit/log)
-(require rackunit racket/list racket/file racket/path racket/format
+(require rackunit racket/list racket/file racket/path racket/format racket/string
          racket/runtime-path pict
          glide-pptx/ir glide-pptx/parse glide-pptx/render glide-pptx/runtime
          glide-pptx/export glide-pptx/draw-ir glide-pptx/record-adapt glide-pptx/verify
          glide-pptx/emit-rhombus (only-in glide-pptx/sync load-program-picts)
+         (only-in "deck-edit.rkt" deck-part)
          (only-in file/unzip read-zip-directory zip-directory-entries unzip
                   make-filesystem-entry-reader))
 
@@ -105,6 +106,38 @@
   (check-true (it:rect? (first items)) "a filled-rectangle stays a rectangle")
   (check-true (it:ellipse? (second items)) "a filled-ellipse stays an ellipse")
   (check-false (ormap it:image? items) "nothing was rasterized"))
+
+;; A slide asked to carry its number carries it into the deck.
+;;
+;; The number used to be drawn by the slide assembler, which nothing but the
+;; show goes through -- so a talk that rehearsed with numbers on exported a deck
+;; with the corner empty. It is composed onto the slide now, which is a place
+;; the exporter, the backup PDF and the show all read.
+(let ()
+  (define dir (build-path work "numbered"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import: lib(\"glide-pptx/runtime.rhm\") open"
+          "export: all_slides"
+          "set_slide_numbers(#true)"
+          "def one = slide_canvas(~width: 480.0, ~height: 270.0)"
+          "def two = slide_canvas(~width: 480.0, ~height: 270.0)"
+          "def all_slides = [one, two]")
+    "\n")
+   program #:exists 'replace)
+  (define out (build-path dir "out.pptx"))
+  (picts->pptx (load-program-picts program) out)
+  (define (digits-on n)
+    (define xml (deck-part out (format "ppt/slides/slide~a.xml" n)))
+    (list (regexp-match* #px"<a:t>([0-9]+)</a:t>" xml #:match-select cadr)
+          (and (regexp-match? #rx"b=\"1\"" xml) #t)))
+  (check-equal? (digits-on 1) (list '("1") #t)
+                "the first slide is numbered, in bold")
+  (check-equal? (digits-on 2) (list '("2") #t)
+                "and so is the second, with its own number"))
 
 ;; A faded pict is faded in the deck too.
 ;;

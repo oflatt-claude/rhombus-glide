@@ -48,6 +48,8 @@ export:
   pair
   deck_to_pdf
   shown_slides
+  set_slide_numbers
+  slide_numbers
   transition_of
   register_fonts
   check_fonts
@@ -79,6 +81,14 @@ fun to_rkt_list_of_lists(v):
 
 // The slides a show actually shows: a slide the editor was told to skip stays
 // in the deck and is passed over here.
+// Whether each slide carries its own number in the corner. Set at the top level
+// of a talk rather than inside `module main`, because it is read on the way to
+// the deck as well as on the way to the screen: the number used to be drawn by
+// the slide assembler, which nothing but the show goes through, so the deck
+// came out with the corner empty.
+fun set_slide_numbers(on = #true): rt.#{set-slide-numbers!}(on)
+fun slide_numbers(): rt.#{slide-numbers-on?}()
+
 fun shown_slides(slides):
   rt.#{shown-picts}(to_rkt_list(slides))
 
