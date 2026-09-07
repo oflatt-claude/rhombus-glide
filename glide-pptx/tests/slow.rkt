@@ -8,6 +8,9 @@
 (require rackunit/log)
 (require "export.rkt" "roundtrip.rkt" "fidelity.rkt" "elements.rkt" "render.rkt" "roundtrip-look.rkt"
          "coverage.rkt" "corpus.rkt"
+         ;; The same corpus, asked whether each deck agrees with the deck it
+         ;; writes rather than only whether it survives being read.
+         "agreement.rkt"
          ;; Here rather than in the fast suite because it runs whole Rhombus
          ;; programs, and compiling one of those costs more than everything the
          ;; fast suite does.

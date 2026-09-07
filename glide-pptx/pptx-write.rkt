@@ -352,11 +352,19 @@
                         (format "<a:buFont typeface=\"~a\"/>" (xml-escape (ir:bullet-font b)))
                         "")
                     (xml-escape (or (ir:bullet-char b) "\u2022")))]
-    [(number) (format "~a~a<a:buAutoNum type=\"~a\"/>"
+    ;; A numbered bullet has a typeface like any other. It was written only for
+    ;; the `char` kind, so a numbered list came back saying nothing about its
+    ;; own font -- and a program that had stated one disagreed with its own deck
+    ;; about every paragraph in the list.
+    [(number) (format "~a~a~a<a:buAutoNum type=\"~a\"/>"
                       (if (ir:bullet-color b)
                           (format "<a:buClr>~a</a:buClr>"
                                   (clr (ir-rgba (ir:bullet-color b)))) "")
                       (bullet-size-xml b)
+                      (if (ir:bullet-font b)
+                          (format "<a:buFont typeface=\"~a\"/>"
+                                  (xml-escape (ir:bullet-font b)))
+                          "")
                       (xml-escape (or (ir:bullet-char b) "arabicPeriod")))]
     [else "<a:buNone/>"]))
 

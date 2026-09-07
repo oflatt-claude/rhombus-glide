@@ -179,8 +179,13 @@
                "" (format "~a" (it:picture-src i))
                (append (pen-style (it:picture-pen i))
                        (list (cons 'opacity (round-to (it:picture-opacity i) 100.0))
-                             (cons 'crop (crop-style (it:picture-crop i)))
-                             (cons 'image (bytes-of (it:picture-src i)))))
+                             (cons 'crop (crop-style (it:picture-crop i))))
+                       ;; Only when there is a file to size. A deck whose picture
+                       ;; resolves to nothing is written as `media("missing.png")`,
+                       ;; and a program that says it has no bytes disagrees for
+                       ;; ever with a deck given a placeholder to hold the space.
+                       (let ([n (bytes-of (it:picture-src i))])
+                         (if n (list (cons 'image n)) '())))
                z)]
     ;; A flattened element is a picture on both sides of the sync, so it is
     ;; described as one here too and the signature matcher agrees.
@@ -207,6 +212,14 @@
                        (pen-style (it:shape-path-pen i))
                        (body-style (it:shape-path-body i)))
                z)]
+    ;; A table is one element to drag, like a group. Described the way a deck
+    ;; describes one -- no text, no paint, no style, because that is all a deck
+    ;; says about the frame rather than the cells -- so the two sides agree. It
+    ;; had no branch at all, and a program with a table in it could not be
+    ;; synced: the merge raised on the way to its first comparison.
+    [(it:table? i)
+     (el-state (it:table-tag i) 'table (it:table-x i) (it:table-y i)
+               (it:table-w i) (it:table-h i) (it:table-rot i) #f #f "" "" '() z)]
     ;; Not a fall-through: a new kind of semantic item should say so here rather
     ;; than be read as whatever the last branch happened to be. This branch used
     ;; to be the shape-path one, and a group -- which became a semantic item when
@@ -435,8 +448,16 @@
 ;; How much of a picture is cropped away, as four fractions or #f for none. A
 ;; crop is a value the editor sets with the crop tool and the program states as
 ;; a list, so both ends of it are comparable.
+;; A crop of nothing is no crop. A deck may say so out loud -- an `<a:srcRect>`
+;; with every edge at zero -- and the writer leaves it out, because a picture
+;; cropped by nothing is a picture. Reported as stated, the two sides disagreed
+;; about every such picture for ever: fifteen decks in the corpus, and a crop is
+;; one of the few properties a program can state the absence of, so it read as a
+;; crop the editor had removed.
 (define (crop-style c)
-  (and (list? c) (= 4 (length c)) (for/list ([v (in-list c)]) (round-to v 10000.0))))
+  (and (list? c) (= 4 (length c))
+       (let ([edges (for/list ([v (in-list c)]) (round-to v 10000.0))])
+         (and (not (andmap zero? edges)) edges))))
 
 (define (round-to v scale) (/ (round (* scale (exact->inexact v))) scale))
 

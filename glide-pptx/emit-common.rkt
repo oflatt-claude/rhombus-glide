@@ -304,7 +304,7 @@
     [(picture? e)
      (v:call "image-pict"
              (append (list (v:call "media" (list (v:str (media-name (or (picture-src e)
-                                                                       "missing.png")))))
+                                                                       MISSING-MEDIA)))))
                            (v:num (bbox-w b)) (v:num (bbox-h b)))
                      (if (picture-crop e)
                          (list (kwv "crop" (v:list (map v:num (picture-crop e)))))
@@ -467,9 +467,15 @@
             (if m (format "~a-~a~a" (cadr m) n (caddr m)) (format "~a-~a" base n)))))
     (values (hash-set taken base (add1 n)) (hash-set out src name))))
 
+;; The sources a program will name. A picture whose blip resolves to nothing is
+;; still written -- as `media("missing.png")`, so the slide keeps its shape and
+;; the file that is missing is named -- and it has to be counted here, or the
+;; program says `media(...)` with no `media` defined and does not load at all.
+(define MISSING-MEDIA "missing.png")
+
 (define (collect-media d)
   (define acc '())
-  (define (note! v) (when v (set! acc (cons v acc))))
+  (define (note! v) (set! acc (cons (or v MISSING-MEDIA) acc)))
   (for ([s (in-list (deck-slides d))])
     (when (image-fill? (slide-background s)) (note! (image-fill-src (slide-background s))))
     (for ([e (in-list (slide-all-elements s))])
