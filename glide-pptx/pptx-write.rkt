@@ -132,8 +132,7 @@
   (cond
     [(not p) (format "<a:~a><a:noFill/></a:~a>" name name)]
     [else
-     ;; A hairline has no width in DrawingML; the thinnest real line stands in.
-     (define w (if (zero? (pen*-width p)) 0.75 (pen*-width p)))
+     (define w (if (zero? (pen*-width p)) HAIRLINE-WIDTH (pen*-width p)))
      (format "<a:~a w=\"~a\" cap=\"~a\"><a:solidFill>~a</a:solidFill>~a<a:~a/>~a~a</a:~a>"
              name
              (emu w)
@@ -267,12 +266,10 @@
                            "<a:spcPct val=\"100000\"/></a:lnSpc><a:buNone/></a:pPr>"
                            "<a:r>~a<a:t>~a</a:t></a:r></a:p></p:txBody>")
             rpr (xml-escape (it:text-str i))))
-  ;; A little horizontal slack, because PowerPoint measures the string itself and
-  ;; a hair more than we did would otherwise clip it.
   (format "<p:sp>~a<p:spPr>~a<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr>~a</p:sp>"
           (nv-xml id (format "Text ~a" id))
           (xfrm-xml (it:text-x i) (it:text-y i)
-                    (+ 2.0 (it:text-w i)) (it:text-h i) (it:text-rot i))
+                    (+ TEXT-BOX-SLACK (it:text-w i)) (it:text-h i) (it:text-rot i))
           body))
 
 ;; ------------------------------------------------------- rich text bodies
@@ -324,8 +321,15 @@
           (format "<a:spcAft><a:spcPts val=\"~a\"/></a:spcAft>"
                   (inexact->exact (round (* 100 (ir:para-space-after p)))))
           (bullet-xml b)
-          (apply string-append
-                 (for/list ([r (in-list (ir:para-runs p))]) (run-xml r)))))
+          ;; A paragraph whose runs are all empty writes no run at all, and a
+          ;; paragraph with no run takes its line height from `endParaRPr`. Say
+          ;; there what the run would have said, or the blank line between two
+          ;; 60pt ones comes back the height of the default text.
+          (let ([runs (apply string-append
+                             (for/list ([r (in-list (ir:para-runs p))]) (run-xml r)))])
+            (if (and (string=? "" runs) (pair? (ir:para-runs p)))
+                (rpr-xml (car (ir:para-runs p)) "a:endParaRPr")
+                runs))))
 
 ;; The order is the format's: colour, then size, then font, then the bullet
 ;; itself.
@@ -367,10 +371,15 @@
                "<a:br/>"))
 
 (define (run-piece-xml r text)
-  (format (string-append "<a:r><a:rPr lang=\"en-US\" sz=\"~a\"~a~a~a~a~a~a~a dirty=\"0\">"
+  (format "<a:r>~a<a:t>~a</a:t></a:r>" (rpr-xml r "a:rPr") (xml-escape text)))
+
+;; The run properties, under whichever tag asks for them: `a:rPr` for a run,
+;; `a:endParaRPr` for the empty paragraph that has no run to carry them.
+(define (rpr-xml r tag)
+  (format (string-append "<~a lang=\"en-US\" sz=\"~a\"~a~a~a~a~a~a~a dirty=\"0\">"
                          "<a:solidFill>~a</a:solidFill>"
-                         "<a:latin typeface=\"~a\"/><a:cs typeface=\"~a\"/></a:rPr>"
-                         "<a:t>~a</a:t></a:r>")
+                         "<a:latin typeface=\"~a\"/><a:cs typeface=\"~a\"/></~a>")
+          tag
           (max 100 (inexact->exact (round (* 100 (ir:trun-size r)))))
           (if (ir:trun-bold? r) " b=\"1\"" "")
           (if (ir:trun-italic? r) " i=\"1\"" "")
@@ -388,7 +397,7 @@
               (format " baseline=\"~a\"" (pct* (ir:trun-baseline r))))
           (clr (ir-rgba (ir:trun-color r)))
           (xml-escape (ir:trun-family r)) (xml-escape (ir:trun-family r))
-          (xml-escape text)))
+          tag))
 
 (define (ir-rgba c)
   (rgba* (ir:rgba-r c) (ir:rgba-g c) (ir:rgba-b c) (ir:rgba-a c)))
