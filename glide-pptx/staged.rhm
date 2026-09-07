@@ -19,7 +19,9 @@
 //     which is the default and what a deck does;
 //   * `dead_beats`, which reads the frames back and says which advances change
 //     nothing, because a press of the clicker that does no work is invisible in
-//     the source and obvious from the audience.
+//     the source and obvious from the audience;
+//   * a held last frame on any slide that animates, so the closing epoch is not
+//     spent on the press that moves on -- see where `held` is computed below.
 //
 // Two changes from the talk's copy, both because this one is a library: the
 // slide assembler is installed on first use rather than on import, and a slide
@@ -267,9 +269,20 @@ fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
                             +& (if dead == [] | "" | "  DEAD-BEATS " +& dead)
                             +& (if shown_dead == [] | "" | "  SHOWN-DEAD " +& shown_dead)
                       | ""))
-    if shown is_a List
-    | slide(& shown, ~title: ttl, ~& kws)
-    | slide(shown, ~title: ttl, ~& kws)
+    // A slide's final epoch plays as the *outgoing* transition -- the press
+    // that runs it is the same press that moves on -- so whatever that epoch
+    // adds is never seen at rest. Sustaining gives the transition a duplicate
+    // frame to consume instead, which is why the extra press is not wasted even
+    // though `dead_beats` reports it as one. A slide that does not animate has
+    // no closing frame to lose, so it is left alone rather than spending a
+    // press on a frame nobody needs.
+    def held:
+      if shown is_a Pict && (shown :~ Pict).duration > 1
+      | (shown :~ Pict).sustain()
+      | shown
+    if held is_a List
+    | slide(& held, ~title: ttl, ~& kws)
+    | slide(held, ~title: ttl, ~& kws)
 
 expr.macro 'staged_slide:
               $(group_option_sequence
