@@ -73,6 +73,9 @@
     (list
      "import:"
      "  lib(\"slideshow/main.rkt\") as ss"
+     "  // For `sliderec_title`, which is what `a` and `s` navigate by and is"
+     "  // not something `slideshow/main` hands out."
+     "  lib(\"slideshow/core.rkt\") as core"
      "  lib(\"glide-pptx/show.rhm\") open"
      ""
      "println(\"plain \" +& glide.transition_of(canvas))"
@@ -101,6 +104,30 @@
      "println(\"panned \" +& emitted())"
      "show_slides([with_stages], ~width: w, ~height: h)"
      "println(\"stages \" +& emitted())"
+     "// The title every page carries, which `a` and `s` group by. Collected"
+     "// while retracting, so it also clears the slides it counted."
+     "fun titles():"
+     "  recur go(acc = []):"
+     "    def s = ss.#{most-recent-slide}()"
+     "    if s"
+     "    | block:"
+     "        ss.#{retract-most-recent-slide}()"
+     "        go([core.#{sliderec-title}(s), & acc])"
+     "    | acc"
+     "show_slides([with_stages, canvas], ~width: w, ~height: h)"
+     "def ts = titles()"
+     "def groups = for Map (t in ts): values(t, #true)"
+     "println(\"titles \" +& ts.length() +& \" pages \" +& groups.length() +& \" groups\")"
+     "// And the title is never drawn: a slide handed one is the same picture as"
+     "// a slide handed none."
+     "do_staged_slide(canvas, ~layout: #'center)"
+     "def plain = ss.#{slide->pict}(ss.#{most-recent-slide}())"
+     "ss.#{retract-most-recent-slide}()"
+     "do_staged_slide(canvas, ~title: \"Zebra Zebra Zebra\", ~layout: #'center)"
+     "def titled = ss.#{slide->pict}(ss.#{most-recent-slide}())"
+     "ss.#{retract-most-recent-slide}()"
+     "println(\"drawn \" +& (Pict.from_handle(plain).height"
+     "                      == Pict.from_handle(titled).height))"
      "// And with the reveal turned on, a still slide is faded up rather than cut"
      "// to, which costs it an advance."
      "set_reveal(#true)"
@@ -166,6 +193,25 @@
                        "a slide with stages is played out, with its last frame held")
    (check-regexp-match #px"revealed ([3-9]|[0-9][0-9]+)" out
                        "and with the reveal on, a still slide is faded up rather than cut to")
+
+   ;; ------------------------------------------------------- a and s navigate
+   ;; `s` skips to the next slide with a different title and `a` back to the
+   ;; start of the previous group, so the title is what decides how far a press
+   ;; of either goes. Every slide had the same one -- `#false` -- and both keys
+   ;; ran to the end of the talk. Now an animated slide's pages share one title
+   ;; and the next slide has its own: two groups over more than two pages, which
+   ;; is `s` stepping a slide at a time rather than a frame at a time.
+   (let ([m (regexp-match #px"titles ([0-9]+) pages ([0-9]+) groups" out)])
+     (check-true (and m #t) "the pages say what they are titled")
+     (when m
+       (check-equal? (string->number (caddr m)) 2
+                     "an animated slide and a still one are two groups")
+       (check-true (> (string->number (cadr m)) 2)
+                   "over more pages than that, which is what the grouping is for")))
+   ;; Set for navigating by, not for drawing: a converted deck carries its own
+   ;; title inside the page and a second one over the top is not the deck.
+   (check-regexp-match #rx"drawn #true" out
+                       "a slide handed a title is the same picture as one handed none")
 
    ;; Nothing is built for the slides that are skipped, and the one that is
    ;; shown is built when it is shown. Starting part way through a real talk is

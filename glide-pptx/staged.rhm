@@ -205,9 +205,15 @@ def _numbers = Array(#false)
 def _installed = Array(#false)
 fun set_slide_numbers(on): _numbers[0] := on
 
+// A slide's title is what `a` and `s` navigate by -- `s` skips to the next
+// slide with a different one, `a` back to the start of the previous group -- and
+// slideshow keeps it on the slide whether or not the assembler draws it. So it
+// is set for every slide, and never drawn: a converted deck carries its own
+// title inside the page, and a second one over the top is not what the deck
+// looked like.
 fun numbered_asm(default_asm):
   fun (s, v_sep, p):
-    def base = Pict.from_handle(default_asm(s, v_sep, p))
+    def base = Pict.from_handle(default_asm(#false, v_sep, p))
     cond
     | !_numbers[0]: base.handle
     | ~else:
@@ -241,10 +247,20 @@ fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
     when _emitted[0] && arrival != #'none
     | slide_transition(pan_transition(arrival))
     _emitted[0] := #true
+    // Its own title, or its number. Every epoch of one animated slide is one
+    // page with one title, so `s` steps a whole slide at a time rather than an
+    // animation frame at a time -- and with every slide sharing the one title
+    // `#false`, which is what they had, both keys ran to the end of the talk.
+    def title = ttl || ("slide " +& _current[0])
+    // A canvas arrives as a pict handle -- which is what `slide_canvas` hands
+    // back -- and `slide` takes a `Pict`. Converted on every path, not only on
+    // the one that reveals: a handle went straight through and `slide` refused
+    // it, which is the one shape this is documented to accept.
     def shown:
-      if _reveal[0] && rv && !(content is_a List)
-      | reveal_first(as_pict(content))
-      | content
+      cond
+      | content is_a List: content
+      | _reveal[0] && rv: reveal_first(as_pict(content))
+      | ~else: as_pict(content)
     when _debug_epochs[0]
     | block:
         // A slide given as a list of picts is slideshow's own layout, not one
@@ -281,8 +297,8 @@ fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
       | (shown :~ Pict).sustain()
       | shown
     if held is_a List
-    | slide(& held, ~title: ttl, ~& kws)
-    | slide(held, ~title: ttl, ~& kws)
+    | slide(& held, ~title: title, ~& kws)
+    | slide(held, ~title: title, ~& kws)
 
 expr.macro 'staged_slide:
               $(group_option_sequence
