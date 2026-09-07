@@ -447,6 +447,21 @@ BASIC
       [(<= left 0) #f]
       [else (sleep 0.05) (loop (sub1 left))])))
 
+;; Whether LibreOffice is up at all. A macro handed to a LibreOffice that is not
+;; running starts one with nothing in it, which then sits there being a running
+;; application -- so the macro is only worth handing over when there is a copy
+;; to hand it to. `pgrep` is on both a Mac and a Linux; where there is none this
+;; says yes and the bound on the dispatch is the backstop.
+(define (soffice-running?)
+  (define pgrep (find-executable-path "pgrep"))
+  (cond
+    [(not pgrep) #t]
+    [else
+     (for/or ([name (in-list '("soffice.bin" "soffice"))])
+       (eqv? 0 (parameterize ([current-output-port (open-output-nowhere)]
+                              [current-error-port (open-output-nowhere)])
+                 (system*/exit-code pgrep "-x" name))))]))
+
 ;; 'reloaded, 'not-open, or #f for could not tell.
 (define (libreoffice-macro-reload! pptx)
   (define exe (soffice-exe))
@@ -460,7 +475,7 @@ BASIC
        (display-to-file (string-append (path->url-string (path->complete-path pptx)) "\n")
                         target #:exists 'replace)
        (when (file-exists? proof) (delete-file proof))
-       (soffice-bounded exe (list "macro:///Glide.Reload.Run") 20)
+       (soffice-bounded exe (list "macro:///Glide.Reload.Run") 12)
        (wait-for-file proof 10)
        (cond
          [(not (file-exists? proof)) #f]
@@ -517,7 +532,7 @@ BASIC
        [(0) #t]
        ;; No UNO, or UNO could not say: ask over a Basic macro instead, which
        ;; needs no Python. A deck that is not open is one to open.
-       [else (case (libreoffice-macro-reload! pptx)
+       [else (case (and (soffice-running?) (libreoffice-macro-reload! pptx))
                [(reloaded) #t]
                [else (libreoffice-launch! pptx)])]))
    ;; Only the driver can say; without it the session runs until it is

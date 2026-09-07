@@ -349,9 +349,31 @@
        [else
         (define-values (argb iw ih)
           (pict->argb p (* FLATTEN-OVERSAMPLE (max 1.0 (xf-factor t)))))
-        (warn! "~a has no structure to sync, so it is exported as one picture"
-               (or tag "an unnamed element"))
-        (list (it:image x y w h rot argb iw ih tag))])]))
+        (cond
+          ;; A pict that draws nothing is nothing to export. A talk pins its
+          ;; arrows between `blank` markers -- `at(x, y, ~tag: "data flow from",
+          ;; blank(1.0, 1.0))` -- and a picture of a blank is an empty image
+          ;; part, and a note about it on every export, for something nobody can
+          ;; see. Both sides of the sync read the page the same way, so leaving
+          ;; it out leaves it out of both.
+          [(no-ink? argb) '()]
+          [else
+           ;; Saying why, because the why is the fix: the child of an `at` has to
+           ;; be a bare `shape_pict`, `textbox`, `image_pict`, `group_pict` or
+           ;; `table_pict`. Anything wrapped around one -- a `pad`, a `scale`, a
+           ;; `colorize`, an `overlay` -- is a different pict, and the descriptor
+           ;; that says what it is does not come with it.
+           (warn! (string-append
+                   "~a is not a bare shape, text box or picture -- something is"
+                   " wrapped around it -- so it is exported as one picture, and"
+                   " cannot be edited in the editor")
+                  (or tag "an unnamed element"))
+           (list (it:image x y w h rot argb iw ih tag))])])]))
+
+;; Whether every pixel is fully transparent.
+(define (no-ink? argb)
+  (for/and ([i (in-range 0 (bytes-length argb) 4)])
+    (zero? (bytes-ref argb i))))
 
 ;; Draws `p` on its own and returns its pixels.
 (define (pict->argb p oversample)
