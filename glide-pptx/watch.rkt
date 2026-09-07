@@ -13,6 +13,7 @@
          racket/system racket/port file/sha1 racket/runtime-path
          "export.rkt" "sync.rkt")
 (provide (struct-out app-adapter) adapters adapter-named scratch-dir-of
+         current-uno-probe forget-uno! uno-python
          watch-loop watch-once program-picts
          soffice-exe powerpoint-installed?
          current-watch-log)
@@ -204,17 +205,59 @@
   (or (for/or ([p (in-list bundled)]) (and (file-exists? p) (string->path p)))
       (find-executable-path "python3")))
 
+;; Whether the bundled Python can be run at all, asked once.
+;;
+;; On a recent macOS it cannot: LibreOffice's Python lives inside an app bundle
+;; of its own and the system refuses to launch it from anywhere else, killing it
+;; with a code-signing "launch constraint violation" before it runs a line. That
+;; is survivable -- the reload falls back to opening the deck, which works --
+;; but the loop asked the editor whether it was still open every ten seconds, so
+;; it spawned a process macOS killed and filed a crash report for, six times a
+;; minute, all session.
+;;
+;; So it is tried once. `#f` means it cannot be run here, and after that nothing
+;; asks it anything.
+(define uno-usable (box 'unknown))
+
+;; The probe itself, as a parameter so a test can count how often it is run:
+;; running it once is the whole point.
+(define current-uno-probe
+  (make-parameter
+   (lambda (py)
+     (and py
+          (let ([out (open-output-string)])
+            (parameterize ([current-output-port out] [current-error-port out])
+              (with-handlers ([exn:fail? (lambda (_e) #f)])
+                (eqv? 0 (system*/exit-code py "-c" "import uno, unohelper")))))))))
+
+;; For a test that wants to ask again.
+(define (forget-uno!) (set-box! uno-usable 'unknown))
+
+(define (uno-python)
+  (define py (libreoffice-python))
+  (cond
+    [(eq? 'unknown (unbox uno-usable))
+     (define ok? ((current-uno-probe) py))
+     (set-box! uno-usable (and ok? py))
+     (unless ok?
+       (log! (string-append
+              "  no UNO to ask ~a with, so the deck is reopened rather than reloaded\n")
+             (if py (path->string py) "python")))
+     (unbox uno-usable)]
+    [else (unbox uno-usable)]))
+
 ;; The helper says what it managed: 0 did it, 3 could not connect, 4 the
 ;; document is not open. Anything else, including no python-uno to run it
 ;; with, is "cannot tell".
 (define (libreoffice-driver! what pptx)
-  (define py (libreoffice-python))
+  (define py (uno-python))
   (and py
        (let ([out (open-output-string)])
          (parameterize ([current-output-port out] [current-error-port out])
-           (system*/exit-code py (path->string libreoffice-driver) what
-                              (number->string LIBREOFFICE-PORT)
-                              (path->string (path->complete-path pptx)))))))
+           (with-handlers ([exn:fail? (lambda (_e) #f)])
+             (system*/exit-code py (path->string libreoffice-driver) what
+                                (number->string LIBREOFFICE-PORT)
+                                (path->string (path->complete-path pptx))))))))
 
 (define (libreoffice-launch! pptx)
   (define exe (soffice-exe))

@@ -16,6 +16,25 @@
 (require rackunit racket/file racket/path racket/system racket/port racket/string
          "../watch.rkt" "../export.rkt" "../parse.rkt")
 
+;; The bundled Python is asked once whether it can run, and never again.
+;;
+;; On a recent macOS it cannot: LibreOffice keeps its Python inside an app
+;; bundle of its own and the system kills it, unrun, with a code-signing
+;; "launch constraint violation". That is survivable -- the reload falls back to
+;; reopening the deck -- but the loop asks the editor whether it is still open
+;; every ten seconds, so it spawned a process macOS killed and filed a crash
+;; report for six times a minute, for as long as the session lasted.
+(let ()
+  (define asked (box 0))
+  (parameterize ([current-uno-probe (lambda (py) (set-box! asked (add1 (unbox asked))) #f)])
+    (forget-uno!)
+    (check-false (uno-python) "a Python that cannot run UNO is not used")
+    (check-false (uno-python) "nor on the next tick")
+    (check-false (uno-python) "nor the one after that")
+    (check-equal? (unbox asked) 1 "and it was asked exactly once"))
+  ;; Left as this machine finds it, for the tests below.
+  (forget-uno!))
+
 (define (have-uno?)
   (define py (find-executable-path "python3"))
   (and py (zero? (parameterize ([current-output-port (open-output-nowhere)]
