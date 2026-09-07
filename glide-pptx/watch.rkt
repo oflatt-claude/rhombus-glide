@@ -14,6 +14,7 @@
          "export.rkt" "sync.rkt")
 (provide (struct-out app-adapter) adapters adapter-named scratch-dir-of
          current-uno-probe forget-uno! uno-python
+         libreoffice-macro-reload! libreoffice-user-dir glide-macro-files
          watch-loop watch-once program-picts
          soffice-exe powerpoint-installed?
          current-watch-log)
@@ -197,13 +198,30 @@
 ;; UNO comes from LibreOffice's own Python. A Mac's `python3` is the system's
 ;; and knows nothing about it, and even on Linux the packaged one is surer than
 ;; whatever `python3` happens to mean today.
-(define (libreoffice-python)
-  (define bundled
-    (list "/Applications/LibreOffice.app/Contents/MacOS/python"
-          "/Applications/LibreOffice.app/Contents/Resources/python"
-          "/usr/lib/libreoffice/program/python"))
-  (or (for/or ([p (in-list bundled)]) (and (file-exists? p) (string->path p)))
-      (find-executable-path "python3")))
+;; Several of them, because on a Mac only some can be run. The wrapper in
+;; `Resources` execs the framework's `Python.app`, and macOS kills that when
+;; anything but LibreOffice launches it -- a code-signing launch constraint,
+;; before it runs a line. The binaries further in are the same interpreter
+;; without an app bundle around them, so they are worth trying too: whichever
+;; can `import uno` is the one to use.
+(define (libreoffice-pythons)
+  (define mac "/Applications/LibreOffice.app/Contents")
+  (define framework
+    (let ([dir (build-path mac "Frameworks" "LibreOfficePython.framework" "Versions")])
+      (if (directory-exists? dir)
+          (append*
+           (for/list ([v (in-list (directory-list dir))])
+             (for/list ([leaf (in-list '("bin/python3" "Python"))])
+               (build-path dir v leaf))))
+          '())))
+  (define candidates
+    (append (list (build-path mac "MacOS" "python"))
+            framework
+            (list (build-path mac "Resources" "python")
+                  (string->path "/usr/lib/libreoffice/program/python")
+                  (string->path "/opt/libreoffice/program/python"))))
+  (append (for/list ([p (in-list candidates)] #:when (file-exists? p)) p)
+          (let ([p (find-executable-path "python3")]) (if p (list p) '()))))
 
 ;; Whether the bundled Python can be run at all, asked once.
 ;;
@@ -234,15 +252,22 @@
 (define (forget-uno!) (set-box! uno-usable 'unknown))
 
 (define (uno-python)
-  (define py (libreoffice-python))
   (cond
     [(eq? 'unknown (unbox uno-usable))
-     (define ok? ((current-uno-probe) py))
-     (set-box! uno-usable (and ok? py))
-     (unless ok?
+     ;; The first of them that can be run and knows what UNO is.
+     (define found
+       (for/or ([py (in-list (libreoffice-pythons))])
+         (and ((current-uno-probe) py) py)))
+     (set-box! uno-usable found)
+     (unless found
        (log! (string-append
-              "  no UNO to ask ~a with, so the deck is reopened rather than reloaded\n")
-             (if py (path->string py) "python")))
+              "  no python here can import UNO, so the deck is reopened rather than\n"
+              "  reloaded -- which means it may keep showing an older deck than the\n"
+              "  program. Tried: ~a\n")
+             (let ([ps (libreoffice-pythons)])
+               (if (null? ps)
+                   "nothing"
+                   (string-join (map path->string ps) ", ")))))
      (unbox uno-usable)]
     [else (unbox uno-usable)]))
 
@@ -259,8 +284,206 @@
                                 (number->string LIBREOFFICE-PORT)
                                 (path->string (path->complete-path pptx))))))))
 
+;; --------------------------- reloading LibreOffice without a Python at all
+
+;; LibreOffice has no reload on its command line, and the UNO bridge that would
+;; ask for one needs its own Python -- which a recent macOS will not let anyone
+;; but LibreOffice run. But it will run a *Basic* macro named on the command
+;; line, and a second `soffice` hands that to the copy already running. So the
+;; reload is a macro, installed once into the profile LibreOffice is using.
+;;
+;; Its own library, `Glide`, rather than `Standard`: somebody's own macros live
+;; in Standard and are not ours to write over.
+
+;; Where LibreOffice keeps the profile it is using. Only somewhere that already
+;; exists -- if LibreOffice has never run there is nothing to install into, and
+;; making one would be making decisions about somebody's configuration.
+(define (libreoffice-user-dir)
+  (define home (find-system-path 'home-dir))
+  (define candidates
+    (case (system-type 'os)
+      [(macosx) (list (build-path home "Library" "Application Support"
+                                  "LibreOffice" "4" "user"))]
+      [(windows) (let ([app (getenv "APPDATA")])
+                   (if app (list (build-path app "LibreOffice" "4" "user")) '()))]
+      [else (list (build-path home ".config" "libreoffice" "4" "user"))]))
+  (for/or ([d (in-list candidates)])
+    (and (directory-exists? (build-path d "basic")) d)))
+
+;; `&`, `<` and `>` are Basic's string concatenation and comparisons, and the
+;; module is XML: unescaped, the file does not parse and the library silently
+;; does not load, which looks exactly like a macro that ran and did nothing.
+(define (xml-text s)
+  (regexp-replaces s '((#rx"&" "\\&amp;") (#rx"<" "\\&lt;") (#rx">" "\\&gt;"))))
+
+(define (glide-basic target-file proof-file)
+  (format #<<BASIC
+REM  *****  BASIC  *****
+
+' Reload the deck glide named, and say whether it was open to be reloaded.
+'
+' The URL is read from a file rather than passed as an argument to the macro,
+' so nothing has to survive being quoted through a URL and a shell.
+'
+' `StarDesktop.Components` holds more than documents -- the Basic IDE is in
+' there -- and asking one of those for its URL is an error that takes the whole
+' macro with it, so each one is checked for `XModel` first.
+Sub Run
+  Dim sUrl As String
+  Dim sFound As String
+  Dim iFile As Integer
+  Dim iIn As Integer
+  Dim oEnum
+  Dim oComp
+  Dim oFrame
+  Dim oDisp
+
+  sFound = "not open"
+
+  iIn = FreeFile
+  Open "~a" For Input As #iIn
+  Line Input #iIn, sUrl
+  Close #iIn
+
+  oEnum = StarDesktop.Components.createEnumeration()
+  Do While oEnum.hasMoreElements()
+    oComp = oEnum.nextElement()
+    If HasUnoInterfaces(oComp, "com.sun.star.frame.XModel") Then
+      If InStr(oComp.getURL(), sUrl) > 0 Then
+        oFrame = oComp.CurrentController.Frame
+        oDisp = createUnoService("com.sun.star.frame.DispatchHelper")
+        oDisp.executeDispatch(oFrame, ".uno:Reload", "", 0, Array())
+        sFound = "reloaded"
+      End If
+    End If
+  Loop
+
+  iFile = FreeFile
+  Open "~a" For Output As #iFile
+  Print #iFile, sFound
+  Close #iFile
+End Sub
+BASIC
+          target-file proof-file))
+
+;; Written every time, because they are ours; the index of libraries is only
+;; added to, because it is not.
+(define (install-glide-macro! user)
+  (define lib (build-path user "basic" "Glide"))
+  (make-directory* lib)
+  (define target (path->string (build-path user "glide-target.txt")))
+  (define proof (path->string (build-path user "glide-reloaded.txt")))
+  (display-to-file
+   (string-append
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<!DOCTYPE script:module PUBLIC \"-//OpenOffice.org//DTD OfficeDocument 1.0//EN\""
+    " \"module.dtd\">\n"
+    "<script:module xmlns:script=\"http://openoffice.org/2000/script\""
+    " script:name=\"Reload\" script:language=\"StarBasic\">"
+    (xml-text (glide-basic target proof))
+    "</script:module>")
+   (build-path lib "Reload.xba") #:exists 'replace)
+  (display-to-file
+   (string-append
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<!DOCTYPE library:library PUBLIC \"-//OpenOffice.org//DTD OfficeDocument 1.0//EN\""
+    " \"library.dtd\">\n"
+    "<library:library xmlns:library=\"http://openoffice.org/2000/library\""
+    " library:name=\"Glide\" library:readonly=\"false\" library:passwordprotected=\"false\">\n"
+    " <library:element library:name=\"Reload\"/>\n</library:library>")
+   (build-path lib "script.xlb") #:exists 'replace)
+  (define xlc (build-path user "basic" "script.xlc"))
+  (when (file-exists? xlc)
+    (define text (file->string xlc))
+    (unless (regexp-match? #rx"library:name=\"Glide\"" text)
+      (display-to-file
+       (regexp-replace #rx"</library:libraries>" text
+                       (string-append
+                        " <library:library library:name=\"Glide\" library:link=\"false\"/>\n"
+                        "</library:libraries>"))
+       xlc #:exists 'replace)))
+  (values target proof))
+
+;; Whether the macro has been put there this session, and whether it can be.
+(define glide-macro (box 'unknown))
+
+(define (glide-macro-files)
+  (when (eq? 'unknown (unbox glide-macro))
+    (define user (libreoffice-user-dir))
+    (set-box!
+     glide-macro
+     (and user
+          (with-handlers ([exn:fail? (lambda (_e) #f)])
+            (define-values (target proof) (install-glide-macro! user))
+            (log! (string-append
+                   "  installed a reload macro in LibreOffice's own profile\n"
+                   "  (~a), since there is no UNO here to ask over\n")
+                  (path->string (build-path user "basic" "Glide")))
+            (cons target proof)))))
+  (unbox glide-macro))
+
+;; Runs `soffice` and gives up on it after `seconds`. A macro handed to a
+;; LibreOffice that is not running starts one, which then sits there being a
+;; running application: without a bound, the loop would stop there.
+(define (soffice-bounded exe args seconds)
+  ;; Pipes rather than a sink: `subprocess` takes file-stream ports or nothing,
+  ;; and handing it anything else raises rather than running the process.
+  (define-values (sp out in err) (apply subprocess #f #f #f exe args))
+  (define ok? (and (sync/timeout seconds sp) (eqv? 0 (subprocess-status sp))))
+  (unless (memq (subprocess-status sp) '(0))
+    (with-handlers ([exn:fail? void]) (subprocess-kill sp #t)))
+  (close-output-port in)
+  (close-input-port out)
+  (close-input-port err)
+  ok?)
+
+;; The `soffice` that carries the request exits as soon as the copy already
+;; running has been handed it, which is before that copy has run the macro. So
+;; the answer is waited for rather than looked for once.
+(define (wait-for-file p seconds)
+  (let loop ([left (* 20 seconds)])
+    (cond
+      [(file-exists? p) #t]
+      [(<= left 0) #f]
+      [else (sleep 0.05) (loop (sub1 left))])))
+
+;; 'reloaded, 'not-open, or #f for could not tell.
+(define (libreoffice-macro-reload! pptx)
+  (define exe (soffice-exe))
+  (define files (glide-macro-files))
+  (cond
+    [(not (and exe files)) #f]
+    [else
+     (define target (car files))
+     (define proof (cdr files))
+     (with-handlers ([exn:fail? (lambda (_e) #f)])
+       (display-to-file (string-append (path->url-string (path->complete-path pptx)) "\n")
+                        target #:exists 'replace)
+       (when (file-exists? proof) (delete-file proof))
+       (soffice-bounded exe (list "macro:///Glide.Reload.Run") 20)
+       (wait-for-file proof 10)
+       (cond
+         [(not (file-exists? proof)) #f]
+         [(regexp-match? #rx"reloaded" (file->string proof)) 'reloaded]
+         [else 'not-open]))]))
+
+;; LibreOffice matches documents by URL, and its own are `file://` with the
+;; awkward characters escaped.
+(define (path->url-string p)
+  (string-append "file://"
+                 (regexp-replace* #rx"[ ?#]"
+                                  (path->string p)
+                                  (lambda (m)
+                                    (case (string-ref m 0)
+                                      [(#\space) "%20"] [(#\?) "%3F"] [else "%23"])))))
+
 (define (libreoffice-launch! pptx)
   (define exe (soffice-exe))
+  ;; Before it starts, because LibreOffice reads its Basic libraries once when
+  ;; it starts: a macro installed afterwards is a macro the running copy has
+  ;; never heard of. Only when there is no UNO, which is the only case that
+  ;; needs it.
+  (unless (uno-python) (void (glide-macro-files)))
   ;; Started on the person's own LibreOffice, with their settings and none of
   ;; the dialogs a fresh profile puts up -- and a fresh profile puts up a
   ;; welcome wizard, which is modal, which means nothing can be asked of the
@@ -292,7 +515,11 @@
      ;; either way falls back to the launch, which at least shows something.
      (case (libreoffice-driver! "reload" pptx)
        [(0) #t]
-       [else (libreoffice-launch! pptx)]))
+       ;; No UNO, or UNO could not say: ask over a Basic macro instead, which
+       ;; needs no Python. A deck that is not open is one to open.
+       [else (case (libreoffice-macro-reload! pptx)
+               [(reloaded) #t]
+               [else (libreoffice-launch! pptx)])]))
    ;; Only the driver can say; without it the session runs until it is
    ;; interrupted, which is what every other adapter that cannot tell does.
    (lambda ()

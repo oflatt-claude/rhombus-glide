@@ -75,6 +75,40 @@
           [(>= n tries) #f]
           [else (sleep 1) (loop (add1 n))])))
 
+;; Reloading with no UNO at all, which is what a recent macOS leaves us with.
+;;
+;; LibreOffice has no reload on its command line, but it will run a Basic macro
+;; named there, and a second `soffice` hands that to the copy already running.
+;; The macro reports back whether it found the document to reload, and that
+;; report is the test: it can only say `reloaded` if a document at that URL was
+;; there and `.uno:Reload` was dispatched at it.
+;;
+;; It installs into whichever profile LibreOffice is using here, in a library of
+;; its own called `Glide`, which is what it does in earnest too.
+(cond
+  [(not (and soffice (getenv "DISPLAY") (libreoffice-user-dir)))
+   (printf "no LibreOffice profile to install a reload macro into; skipped\n")]
+  [else
+   (define dir (build-path (find-system-path 'temp-dir) "glide-pptx-lo-macro"))
+   (delete-directory/files dir #:must-exist? #f)
+   (make-directory* dir)
+   (define deck (build-path dir "deck.pptx"))
+   (define here (collection-file-path "tests" "glide-pptx"))
+   (copy-file (build-path here "decks" "03-shapes.pptx") deck #t)
+   (parameterize ([current-uno-probe (lambda (py) #f)])
+     (forget-uno!)
+     ;; Installed before anything starts: LibreOffice reads its Basic libraries
+     ;; once, when it starts.
+     (check-true (and (glide-macro-files) #t) "the reload macro could be installed")
+     (define lo (adapter-named 'libreoffice))
+     (check-true (and ((app-adapter-reload! lo) deck) #t) "LibreOffice was started")
+     (sleep 20)
+     (copy-file (build-path here "decks" "05-realistic.pptx") deck #t)
+     (check-equal? (libreoffice-macro-reload! deck) 'reloaded
+                   "and the macro found the open deck and reloaded it"))
+   (forget-uno!)
+   (printf "libreoffice macro reload done\n")])
+
 (cond
   [(not (and soffice (have-uno?) (getenv "DISPLAY")))
    (printf "no LibreOffice to drive (needs soffice, python3-uno and a display); skipped\n")]
