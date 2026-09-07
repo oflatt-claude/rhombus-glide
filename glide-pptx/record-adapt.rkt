@@ -280,6 +280,7 @@
 ;; Interprets a recorded datum into display-list items.
 (define (datum->items ops)
   (define s (fresh-state))
+  (define alpha-stack '())
   (define items '())
   (define (emit! i) (set! items (cons i items)))
   (define (fill) (and (st-brush s) (brush-of (st-brush s) (st-alpha s) (st-ctm s))))
@@ -303,6 +304,16 @@
       [(do-set-brush!) (set-st-brush! s (first args))]
       [(set-font) (set-st-font! s (first args))]
       [(set-alpha) (set-st-alpha! s (first args))]
+      ;; A recording dc does not replay `cellophane` as a `set-alpha`: it brackets
+      ;; the faded drawing in `start-alpha`/`end-alpha`, and the value there is a
+      ;; factor on whatever alpha is already in force, so they nest.
+      [(start-alpha)
+       (set! alpha-stack (cons (st-alpha s) alpha-stack))
+       (set-st-alpha! s (* (st-alpha s) (first args)))]
+      [(end-alpha)
+       (unless (null? alpha-stack)
+         (set-st-alpha! s (car alpha-stack))
+         (set! alpha-stack (cdr alpha-stack)))]
       [(set-text-foreground) (set-st-text-fg! s (first args))]
       ;; racket/draw folds a transform into the initial matrix and resets the
       ;; origin, scale and rotation -- so a later `set-scale` multiplies on top

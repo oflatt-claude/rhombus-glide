@@ -111,6 +111,21 @@
 ;; what is drawn -- it is what the file says about showing it.
 (struct display-page (width height background items hidden?) #:prefab)
 
+;; The horizontal slack a drawn word is written with. PowerPoint measures the
+;; string itself, and a box sized to our measurement clips a string it makes a
+;; hair wider -- so the box is written wider than the word. It is stated here
+;; because both sides of the sync have to agree on it: the deck holds the box
+;; the writer wrote, and a program state that described the word instead
+;; reported a resize on every drawn word on every pass.
+(define TEXT-BOX-SLACK 2.0)
+
+;; What a pen of no width is written as. A hairline has no width in DrawingML,
+;; so the thinnest real line stands in for it -- and, like the slack above, both
+;; sides of the sync have to agree, or every hairline in the drawing reports as
+;; an outline the editor thickened. `drawing.rkt` reads the same number from the
+;; other direction.
+(define HAIRLINE-WIDTH 0.75)
+
 (define (item-box i)
   (cond
     [(it:rect? i) (list (it:rect-x i) (it:rect-y i) (it:rect-w i) (it:rect-h i))]

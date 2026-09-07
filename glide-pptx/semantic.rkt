@@ -87,6 +87,43 @@
 ;;
 ;; `pict-children` lists the last-drawn child first, so consing as the walk goes
 ;; gives the pieces back in the order they are drawn.
+;; The children of a pict, last-drawn first -- the order `pieces-within` needs,
+;; and not the order `pict-children` gives: a `picture` (superimpose, place, pin)
+;; lists its children last-drawn first, an append lists them first-drawn first.
+;; Only the drawing settles it, so the order is read off `pict-draw`, whose
+;; commands each carry the child's own drawing and so can be matched by `eq?`.
+;; A drawing we cannot account for child-for-child is left in the order it came,
+;; which is the order this always assumed.
+;; A pict that paints nothing: `ghost` -- which is also what `cellophane` and so
+;; Rhombus's `alpha` give at zero -- keeps its subject as a child but drops it
+;; from the drawing, leaving a `picture` with no commands. Its canvases are still
+;; found by a walk over children, and reading them puts a stage that is not on
+;; screen into the page, in front of the one that is.
+(define (draws-nothing? p)
+  (define draw (pict-draw p))
+  (and (list? draw) (pair? draw) (eq? 'picture (car draw)) (null? (cdddr draw))))
+
+(define (children-last-drawn-first p)
+  (define kids (pict-children p))
+  (define draw (pict-draw p))
+  (cond
+    [(or (null? kids) (null? (cdr kids))
+         (not (and (list? draw) (pair? draw) (eq? 'picture (car draw)))))
+     kids]
+    [else
+     (define waiting (make-hasheq))
+     (for ([c (in-list kids)])
+       (hash-update! waiting (pict-draw (child-pict c))
+                     (lambda (l) (append l (list c))) '()))
+     (define ordered
+       (for*/list ([cmd (in-list (cdddr draw))]
+                   [part (in-list (if (list? cmd) cmd '()))]
+                   #:when (pair? (hash-ref waiting part '())))
+         (define l (hash-ref waiting part))
+         (hash-set! waiting part (cdr l))
+         (car l)))
+     (if (= (length ordered) (length kids)) (reverse ordered) kids)]))
+
 (define (pieces-within p)
   (define (has-layer? p)
     (and (pict? p)
@@ -98,15 +135,25 @@
     (cond
       [(not (pict? p)) acc]
       [(or (slide-desc? d) (group-desc? d)) (cons (list 'layer d t) acc)]
+      [(draws-nothing? p) acc]
       ;; Nothing addressable in here, so what it draws is what it is.
       [(not (has-layer? p)) (cons (list 'drawn p t) acc)]
       [else
-       (for/fold ([acc acc]) ([c (in-list (pict-children p))])
-         (walk (child-pict c)
+       (for/fold ([acc acc]) ([c (in-list (children-last-drawn-first p))])
+         ;; `child-dy` is measured from the *bottom* of the parent, and a page
+         ;; is measured from the top. Reading it as a top-down offset puts a
+         ;; header at the foot of the slide and sends an arrow on a detour --
+         ;; and it does so only for the pieces around a canvas, since a canvas
+         ;; places its own elements itself.
+         (define kid (child-pict c))
+         (define sy (* (xf-sy t) (child-sy c)))
+         (define top (- (pict-height p) (child-dy c)
+                        (* (child-sy c) (pict-height kid))))
+         (walk kid
                (xf (+ (xf-ox t) (* (xf-sx t) (child-dx c)))
-                   (+ (xf-oy t) (* (xf-sy t) (child-dy c)))
+                   (+ (xf-oy t) (* (xf-sy t) top))
                    (* (xf-sx t) (child-sx c))
-                   (* (xf-sy t) (child-sy c)))
+                   sy)
                acc))])))
 
 ;; What one piece draws, in the page's own coordinates. A canvas draws its

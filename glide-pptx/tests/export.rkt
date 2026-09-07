@@ -106,6 +106,60 @@
   (check-true (it:ellipse? (second items)) "a filled-ellipse stays an ellipse")
   (check-false (ormap it:image? items) "nothing was rasterized"))
 
+;; A faded pict is faded in the deck too.
+;;
+;; A recording dc does not replay `cellophane` -- which is what Rhombus's
+;; `.alpha()` becomes -- as a `set-alpha`. It brackets the drawing in
+;; `start-alpha`/`end-alpha`, and reading only `set-alpha` left every faded
+;; thing at full strength: a talk's dimmed outline came out in the accent
+;; colours of the section it was not on.
+(let ()
+  (define page (pict->display-page
+                (lambda (dc)
+                  (draw-pict (cellophane (filled-ellipse 50 50 #:color "red") 0.25)
+                             dc 0 0))
+                60.0 60.0))
+  (define e (first (display-page-items page)))
+  (check-true (it:ellipse? e) "a faded ellipse is still an ellipse")
+  (check-= (rgba*-a (fill:solid-color (it:ellipse-fill e))) 0.25 1e-6
+           "and it carries the fade")
+  ;; They nest, because each `start-alpha` is a factor on the alpha in force.
+  (define nested (pict->display-page
+                  (lambda (dc)
+                    (draw-pict (cellophane (cellophane (filled-ellipse 50 50 #:color "red")
+                                                       0.5)
+                                           0.4)
+                               dc 0 0))
+                  60.0 60.0))
+  (check-= (rgba*-a (fill:solid-color (it:ellipse-fill (first (display-page-items nested)))))
+           0.2 1e-6 "two fades multiply"))
+
+;; An empty paragraph keeps its height.
+;;
+;; A run with no text writes no `<a:r>`, so the paragraph holding it writes
+;; none -- and a paragraph with no run takes its line height from
+;; `endParaRPr`. Without one, the blank line between two 60pt lines came back
+;; the height of the default text and pulled everything under it up.
+(let ()
+  (define dir (build-path work "empty-para"))
+  (make-directory* dir)
+  (define pptx (build-path dir "out.pptx"))
+  (define (line s) (para* #:line-spacing '(percent . 0.8) (run* s #:size 60.0)))
+  (define box (textbox #:width 400.0 #:height 300.0 #:wrap? #f
+                       (line "first") (line "") (line "third")))
+  (picts->pptx (list (slide-canvas #:width 640.0 #:height 480.0 (at 20.0 20.0 box)))
+               pptx)
+  (define read-back (pptx->deck pptx #:workdir (build-path dir "unpacked")))
+  (define paras
+    (let* ([s (first (deck-slides read-back))]
+           [e (first (slide-elements s))])
+      (text-body-paras (shape-body e))))
+  (check-equal? (length paras) 3 "three paragraphs came back")
+  (check-equal? (map (lambda (p) (trun-text (first (para-runs p)))) paras)
+                '("first" "" "third") "the middle one is still empty")
+  (check-equal? (map (lambda (p) (trun-size (first (para-runs p)))) paras)
+                '(60.0 60.0 60.0) "and still 60pt, so it still holds a line"))
+
 ;; A deck with images has to come out with media parts in the package. This
 ;; guards a real bug: a generated program resolves its images relative to
 ;; itself, which it cannot work out when loaded with `dynamic-require`, so the
