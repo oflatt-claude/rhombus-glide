@@ -5,11 +5,11 @@
 ;; to: what elements exist, where they are, and enough of what they look like to
 ;; recognize one after an editor has renamed it. That is this.
 (require racket/file racket/path racket/list racket/string racket/format racket/math
-         "ir.rkt" "draw-ir.rkt")
+         "ir.rkt" "draw-ir.rkt" "shapes.rkt")
 (provide (struct-out el-state) (struct-out slide-state)
          items->slide-state deck->slide-states
          el-geometry el-geometry-same? el-signature signature-distance
-         nth-property
+         nth-property group-text-entries body-text
          write-sync-base read-sync-base write-atomically)
 
 ;; `kind` is 'shape, 'text, 'picture or 'other. `text` is the element's visible
@@ -157,6 +157,48 @@
                              (+ (second b) (max 0.0 (fourth b))))))
      (list x0 y0 (- x1 x0) (- y1 y0))]))
 
+;; The text inside a group, as one string, so that a change to it is visible at
+;; all. A group is one element to drag and the merge does not look inside it --
+;; which meant retyping a word in a text box that happened to be in a group did
+;; nothing, said nothing, and was not even refused.
+;;
+;; Only the text. Where the children *are* is the group's business: they move
+;; with it, and reading their positions as edits of their own would report every
+;; child of every group anyone dragged.
+;;
+;; Written as a datum rather than joined with separators, because a name and a
+;; text can hold anything and a separator that cannot appear in either does not
+;; exist. Sorted by name, so the two sides need not agree on the order the
+;; children were painted in.
+(define (group-text-digest pairs)
+  (format "~s" (sort pairs string<? #:key car)))
+
+;; And back again, for working out which child it was that changed.
+(define (group-text-entries digest)
+  (with-handlers ([exn:fail? (lambda (_e) '())])
+    (define v (read (open-input-string digest)))
+    (if (list? v)
+        (for/list ([e (in-list v)] #:when (and (pair? e) (string? (car e)) (string? (cdr e))))
+          e)
+        '())))
+
+;; (name . text) for the items inside a group, however deep.
+(define (item-text-pairs items)
+  (append*
+   (for/list ([i (in-list items)])
+     (cond
+       [(it:group? i) (item-text-pairs (it:group-items i))]
+       [(it:textbox? i)
+        (let ([t (body-text (it:textbox-body i))] [tag (it:textbox-tag i)])
+          (if (and tag (not (string=? "" t))) (list (cons tag t)) '()))]
+       [(it:preset? i)
+        (let ([t (body-text (it:preset-body i))] [tag (it:preset-tag i)])
+          (if (and tag (not (string=? "" t))) (list (cons tag t)) '()))]
+       [(it:shape-path? i)
+        (let ([t (body-text (it:shape-path-body i))] [tag (it:shape-path-tag i)])
+          (if (and tag (not (string=? "" t))) (list (cons tag t)) '()))]
+       [else '()]))))
+
 (define (item->el-state i z)
   (cond
     [(it:preset? i)
@@ -193,7 +235,8 @@
      (el-state (it:image-tag i) 'picture (it:image-x i) (it:image-y i)
                (it:image-w i) (it:image-h i) (it:image-rot i) #f #f
                "" "flattened" '() z)]
-    ;; A group is one element to drag, whatever it holds.
+    ;; A group is one element to drag, whatever it holds -- but what it holds can
+    ;; still be retyped, so its text comes along.
     [(it:group? i)
      (define box
        (contents-box (list (it:group-x i) (it:group-y i) (it:group-w i) (it:group-h i))
@@ -201,7 +244,8 @@
                      (it:group-rot i) (it:group-flip-h? i) (it:group-flip-v? i)))
      (el-state (it:group-tag i) 'group
                (first box) (second box) (third box) (fourth box) (it:group-rot i)
-               (it:group-flip-h? i) (it:group-flip-v? i) "" "group" '() z)]
+               (it:group-flip-h? i) (it:group-flip-v? i)
+               (group-text-digest (item-text-pairs (it:group-items i))) "group" '() z)]
     [(it:shape-path? i)
      (define-values (x y w h) (apply values (it:shape-path-box i)))
      (el-state (it:shape-path-tag i) 'shape x y w h (it:shape-path-rot i)
@@ -500,18 +544,42 @@
           (* sx (bbox-w k))
           (* sy (bbox-h k)))))
 
+;; The same, from a deck's own elements.
+(define (element-text-pairs es)
+  (append*
+   (for/list ([e (in-list es)])
+     (cond
+       [(group? e) (element-text-pairs (group-children e))]
+       [(shape? e)
+        (let ([t (body-text (shape-body e))] [n (element-name e)])
+          (if (and (not (string=? "" n)) (not (string=? "" t))) (list (cons n t)) '()))]
+       [else '()]))))
+
 (define (deck->slide-states d #:include-inherited? [include-inherited? #f]
                             #:descend-groups? [descend-groups? #f])
   (for/list ([s (in-list (deck-slides d))])
     (define acc '())
     (define z 0)
+    ;; Which of this slide's names the deck states as ours, when the caller
+    ;; collected them. A shape it does not so state is one the editor made, and
+    ;; it is not the program's element of that name however it is called: an
+    ;; editor names a new text box after the box it numbered last, which is the
+    ;; name of the box the same edit deleted. Untagged, it is matched by where
+    ;; it is and what it looks like, along with everything else the program drew
+    ;; without an `at` form of its own.
+    (define stated
+      (let ([h (current-slide-tag-names)])
+        (and h (hash-ref h (slide-index s) #f))))
     (let walk ([es (if include-inherited? (slide-all-elements s) (slide-elements s))])
       (for ([e (in-list es)])
         (cond
           [(and (group? e) descend-groups?) (walk (group-children e))]
           [else
            (define b (element-bbox e))
-           (define tag (let ([n (element-name e)]) (and (not (string=? "" n)) n)))
+           (define tag (let ([n (element-name e)])
+                         (and (not (string=? "" n))
+                              (or (not stated) (hash-ref stated n #f))
+                              n)))
            ;; A group by what it holds, for the reason `contents-box` gives. Its
            ;; children carry the slide's own coordinates, so their union is the
            ;; box in the same terms the group's own is.
@@ -533,7 +601,14 @@
                                        [else 'other])
                                  (first gb) (second gb) (third gb) (fourth gb) (bbox-rot b)
                                  (bbox-flip-h? b) (bbox-flip-v? b)
-                                 (if (shape? e) (body-text (shape-body e)) "")
+                                 (cond
+                                   [(shape? e) (body-text (shape-body e))]
+                                   ;; A group's text is what it holds, so that
+                                   ;; retyping a word inside one is noticed.
+                                   [(group? e)
+                                    (group-text-digest
+                                     (element-text-pairs (group-children e)))]
+                                   [else ""])
                                  (if (shape? e) (ir-fill-digest (shape-fill e)) "")
                                  (ir-style e (deck-media-dir d))
                                  z)

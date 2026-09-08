@@ -8,7 +8,7 @@
          "xml-util.rkt" "units.rkt" "ir.rkt" "opc.rkt" "theme.rkt"
          "drawing.rkt" "text.rkt" "shapes.rkt")
 (provide pptx->deck current-warnings current-allow-unsupported? build-steps
-         current-build-frames?)
+         current-build-frames? current-slide-tag-names)
 
 ;; Collected diagnostics for things we render approximately.
 (define current-warnings (make-parameter #f))
@@ -185,6 +185,8 @@
   (define elements
     (parameterize ([current-tag-names tag-names])
       (parse-sp-tree (ctx-for slide-name layout-phs master-phs tx-styles) slide-tree)))
+  (let ([collect (current-slide-tag-names)])
+    (when collect (hash-set! collect index tag-names)))
 
   (define bg (resolve-background
               cctx

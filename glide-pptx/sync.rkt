@@ -117,6 +117,14 @@
       (for/list ([p (in-list ps)] [n (in-naturals 1)]) (number-on p n))
       ps))
 
+;; Can this namespace hand its racket/gui/base to another one? Declared is not
+;; enough: expansion loads the module without running it, and only an
+;; instantiated module has an instance to share.
+(define (gui-instantiated? ns)
+  (with-handlers ([exn:fail? (lambda (_e) #f)])
+    (namespace-attach-module ns 'racket/gui/base (make-base-empty-namespace))
+    #t))
+
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
   (define ns (make-base-empty-namespace))
@@ -138,21 +146,28 @@
   (define from (or (unbox gui-program-namespace) (current-namespace)))
   (for ([m (in-list '(pict glide-pptx/runtime glide-pptx/tagged glide-pptx/ir))])
     (namespace-attach-module from m ns))
-  ;; And the GUI itself, once some program has started one. Nothing is attached
-  ;; when none has, which is the usual case and has to stay that way:
-  ;; translating a deck should never start a GUI.
+  ;; And the GUI itself, from the namespace of a program that started one.
+  ;; Nothing is attached when none has, which is the usual case and has to stay
+  ;; that way: translating a deck should never start a GUI.
   ;;
   ;; `slideshow` is in the list for a reason worth stating. It cannot be
-  ;; attached from here, because instantiating it reads the command line and
-  ;; brings up the GUI machinery, which translating a deck must never do. But
-  ;; once a program has instantiated it, it must be attached from there: it is
-  ;; pinned by the `racket/gui` it registers with, and `racket/gui` is shared,
-  ;; so a fresh copy per read is a copy that is never released. That was ten
-  ;; megabytes a read -- a save, in the watch loop -- and a long afternoon of
-  ;; dragging things around turns that into gigabytes.
-  (when (unbox gui-program-namespace)
-    (for ([m (in-list '(racket/draw racket/gui/base slideshow slideshow/base))])
-      (with-handlers ([exn:fail? void]) (namespace-attach-module from m ns))))
+  ;; attached from the tool's own namespace, because instantiating it reads the
+  ;; command line and brings up the GUI machinery, which translating a deck
+  ;; must never do. But once a program has instantiated it, it must be attached
+  ;; from there: it is pinned by the `racket/gui` it registers with, and
+  ;; `racket/gui` is shared, so a fresh copy per read is a copy that is never
+  ;; released. That was ten megabytes a read -- a save, in the watch loop --
+  ;; and a long afternoon of dragging things around turns that into gigabytes.
+  (define gui-shared?
+    (and (unbox gui-program-namespace)
+         (with-handlers ([exn:fail? (lambda (_e) #f)])
+           (namespace-attach-module from 'racket/gui/base ns)
+           ;; A program can start a GUI without slideshow, and then has no
+           ;; slideshow to give.
+           (for ([m (in-list '(racket/draw slideshow slideshow/base))])
+             (with-handlers ([exn:fail? void])
+               (namespace-attach-module from m ns)))
+           #t)))
   (define names (if named (list (string->symbol named)) '(all_slides all-slides)))
   ;; Whatever the last program asked for is not what this one asks for. The
   ;; numbering is a switch the program throws as it loads, and the box it throws
@@ -165,15 +180,25 @@
   (unless (equal? (unbox last-program-read) (path->string full))
     (forget-bitmaps!)
     (set-box! last-program-read (path->string full)))
-  ;; Recorded before the program runs, not after: a program that fails part way
+  ;; The namespace kept is the one a later read takes its GUI from, and that
+  ;; asks for an instance rather than a declaration: expanding a program loads
+  ;; racket/gui/base without running it, so a program that drew no slide of its
+  ;; own leaves the module declared with no instance behind it. Keeping that
+  ;; one left the next read to start a GUI of its own -- and the read after
+  ;; that to start a second, which is the one that raises.
+  ;;
+  ;; Kept whether the program got to the end or not: one that fails part way
   ;; through may already have started a GUI, and the next read has to take that
-  ;; one rather than start a second. Only the first one is kept -- a namespace
-  ;; that turns out to have started no GUI is dropped again below, so that the
-  ;; usual case keeps nothing.
-  (define first-read? (not (unbox gui-program-namespace)))
-  (when first-read? (set-box! gui-program-namespace ns))
+  ;; one rather than start a second. A program that started none keeps nothing,
+  ;; which is the usual case -- translating, exporting, syncing.
+  (define (keep-gui-namespace!)
+    (when (and (not gui-shared?) (gui-instantiated? ns))
+      (set-box! gui-program-namespace ns)))
   (define found
-    (parameterize ([current-media-base (path-only full)] [current-namespace ns]
+    (dynamic-wind
+     void
+     (lambda ()
+      (parameterize ([current-media-base (path-only full)] [current-namespace ns]
                    ;; A program that imports slideshow reads the command line
                    ;; when it loads, and refuses anything that is not a single
                    ;; module file -- so `raco glide talk.rhm --app none` failed
@@ -196,14 +221,7 @@
         ;; is -- so this branch is the one a hand-written talk takes.
         [(treelist? v) (numbered (map force-slide (treelist->list v)))]
         [else (force-slide v)])))
-  ;; A program that started no GUI is not one anything has to be taken from, so
-  ;; its namespace is let go: the usual case -- translating, exporting, syncing
-  ;; -- keeps nothing between reads, and only a program that opened a window
-  ;; leaves a registry behind for the next read to share.
-  (when (and first-read?
-             (not (parameterize ([current-namespace ns])
-                    (module-declared? 'racket/gui/base #f))))
-    (set-box! gui-program-namespace #f))
+     keep-gui-namespace!))
   (cond
     [(list? found) found]
     [(pict? found) (list found)]
@@ -224,7 +242,13 @@
 
 (define (deck-slide-states pptx-path #:workdir [workdir #f])
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
-  (deck->slide-states (pptx->deck pptx-path #:workdir dir)))
+  ;; Which names the deck states as ours, collected as it is read and consulted
+  ;; as the states are built. The merge is the one caller that has to tell the
+  ;; program's elements from the ones the editor made itself: see
+  ;; `current-slide-tag-names`.
+  (define stated (make-hash))
+  (parameterize ([current-slide-tag-names stated])
+    (deck->slide-states (pptx->deck pptx-path #:workdir dir))))
 
 ;; ------------------------------------------------------------------ matching
 
@@ -234,6 +258,10 @@
 ;;
 ;; Returns (values pairs unmatched-now unmatched-base), pairs as (now . base).
 (define MATCH-LIMIT 8.0)
+;; And how much for a pair the tags disagree about: under the 2.0 a different
+;; colour costs and the 6.0 different words cost, so a dragged or resized shape
+;; that lost its alt text is still itself and a new shape is not.
+(define LOST-TAG-LIMIT 1.0)
 
 (define (match-elements now base #:slide-size [size 1000.0])
   ;; By tag, several deep: one `at` in a loop draws several elements under one
@@ -265,10 +293,43 @@
          [else '()]))))
   (define rest-now (filter (lambda (n) (not (hash-ref matched-now n #f))) now))
   (define rest-base (filter (lambda (b) (not (hash-ref used b #f))) base))
+  ;; Whether the editor kept our alt text at all. It keeps all of it or strips
+  ;; all of it -- one editor doing one thing to one file -- so if any of the
+  ;; program's tags came back, a tag that did not came back missing because the
+  ;; element is gone.
+  ;;
+  ;; Then a tagged element must not be paired with a shape the editor made
+  ;; itself. A new text box is not the box the same sitting deleted, however
+  ;; alike the two look, and LibreOffice numbers a new one after the last box it
+  ;; numbered -- so the new one arrives wearing the deleted one's name. Paired,
+  ;; the two report as one element resized and restyled and retyped beyond
+  ;; recognition, and the deletion and the addition are both lost. Apart, they
+  ;; report as what they are.
+  (define kept-tags?
+    (for/or ([n (in-list now)])
+      (and (el-state-tag n) (hash-ref base-by-tag (el-state-tag n) #f) #t)))
+  ;; A tagged element that came back untagged is held to a much closer likeness
+  ;; than the rest. Not refused outright: LibreOffice keeps our alt text on a
+  ;; shape and loses it on a connector, so an element can lose its tag and still
+  ;; be the same element -- and it will be, if it is otherwise the same shape.
+  ;; What it may not be is a shape whose words or whose colour are different as
+  ;; well. That is the editor's own new shape wearing a name it invented, and
+  ;; the limit that lets it through reads a deletion and an addition as one
+  ;; element changed past recognition, losing both.
+  ;;
+  ;; Only that way round. An untagged element that came back tagged is one the
+  ;; program has since learned to place: the deck is written again from the
+  ;; program after every merge, and the shape added last time carries the tag of
+  ;; the `at` form written for it.
+  (define (limit-for n b)
+    (if (or (not kept-tags?) (not (el-state-tag b)) (el-state-tag n))
+        MATCH-LIMIT
+        LOST-TAG-LIMIT))
   ;; Everything left is matched by how much it looks alike, best pair first.
   (define costs
     (sort (for*/list ([n (in-list rest-now)] [b (in-list rest-base)]
-                      #:when (< (signature-distance n b #:slide-size size) MATCH-LIMIT))
+                      #:when (< (signature-distance n b #:slide-size size)
+                                (limit-for n b)))
             (list (signature-distance n b #:slide-size size) n b))
           < #:key first))
   (define extra
@@ -375,6 +436,39 @@
 (define (shrinks-to-fit? style)
   (define p (assoc 'autofit style))
   (and p (eq? 'shrink (cdr p))))
+
+;; A text box that does not wrap is as wide as its words; one set to grow is as
+;; tall as them. Those numbers belong to the text, and the two sides do not
+;; measure text with the same machinery -- so they differ for ever, and there is
+;; nothing the program could be made to say that would settle it: it draws its
+;; own text at its own width whatever the source states.
+;;
+;; Retyping a word in LibreOffice grows the box it is in, which reported the
+;; retyping and a resize together. The resize was applied, wrote a width the
+;; program does not use, and came back on the next save, and on the one after
+;; that. So the numbers the text decides are set aside before the two boxes are
+;; compared, and only a size somebody really set is a resize.
+(define (text-driven-size? st which)
+  (and (eq? 'text (el-state-kind st))
+       (let ([style (el-state-style st)])
+         (case which
+           ;; `wrap` stated false: the box does not hold the text to a width.
+           [(w) (let ([p (assoc 'wrap style)]) (and p (not (cdr p)) #t))]
+           ;; `grow` is spAutoFit: the box takes the height the text needs.
+           ;; `shrink` is the other way round -- the box is set and the text is
+           ;; made to fit it -- so its height is a number somebody chose.
+           [(h) (let ([p (assoc 'autofit style)]) (and p (eq? 'grow (cdr p))))]
+           [else #f]))))
+
+;; One element with those numbers taken out of the picture, `like` saying which
+;; they are: the program's side says how the box is drawn, on both sides.
+(define (aside-text-driven st like)
+  (cond
+    [(not (eq? 'text (el-state-kind like))) st]
+    [else
+     (struct-copy el-state st
+                  [w (if (text-driven-size? like 'w) 0.0 (el-state-w st))]
+                  [h (if (text-driven-size? like 'h) 0.0 (el-state-h st))])]))
 
 (define (derived-by-fitting? ch)
   (memq (property-head (first ch)) '(size line-spacing)))
@@ -588,8 +682,11 @@
    ;; and the deck is rewritten from the program before the order could be
    ;; merged separately.
    (for/list ([d (in-list deck-added)] #:unless (memq d groupings))
+     ;; With where it sits in the drawing order, which is the only handle on a
+     ;; shape the editor made itself: LibreOffice writes a new text box with no
+     ;; name, and a name is how every other action finds its element.
      (sync-action 'added (or (el-state-tag d) "(unnamed)") index
-                  (list (el-geometry d) (drawn-under d deck-pairs)) #f))
+                  (list (el-geometry d) (drawn-under d deck-pairs) (el-state-z d)) #f))
    (for/list ([b (in-list deck-removed)] #:unless (hash-ref into-a-group (el-state-tag b) #f))
      (define tag (el-state-tag b))
      ;; One of a family deleted: the others are still drawn by the same `at`.
@@ -626,13 +723,37 @@
      (list (sync-action 'moved tag index (el-geometry d) (and p (el-geometry p))))]))
 
 ;; The ordinary case: one element, one tag, one `at`.
+;; The children of a group whose text differs, each named in its own right: the
+;; `at` that draws a child carries the child's tag, so that is what an edit has
+;; to be written to.
+;;
+;; Only the ones the deck still holds. A child that has gone from the digest
+;; went with the group or was deleted, and neither is a retyping.
+(define (group-retexts tag index d b)
+  (cond
+    [(not (eq? 'group (el-state-kind d))) '()]
+    [(string=? (el-state-text d) (el-state-text b)) '()]
+    [else
+     (define was (group-text-entries (el-state-text b)))
+     (for/list ([now (in-list (group-text-entries (el-state-text d)))]
+                #:when (let ([old (assoc (car now) was)])
+                         (and old (not (string=? (cdr old) (cdr now))))))
+       (sync-action 'retext (car now) index (cdr now) #f))]))
+
 (define (single-actions tag index pair p)
   (define d (car pair)) (define b (cdr pair))
-  (define deck-moved? (not (el-geometry-same? d b)))
-  (define prog-moved? (and p (not (el-geometry-same? p b))))
+  ;; Compared with the numbers the text decides set aside: see
+  ;; `text-driven-size?`.
+  (define d* (aside-text-driven d b))
+  (define b* (aside-text-driven b b))
+  (define p* (and p (aside-text-driven p b)))
+  (define deck-moved? (not (el-geometry-same? d* b*)))
+  (define prog-moved? (and p* (not (el-geometry-same? p* b*))))
   (define deck-retext? (not (string=? (el-state-text d) (el-state-text b))))
   (define prog-retext? (and p (not (string=? (el-state-text p) (el-state-text b)))))
-  (filter
+  (append
+   (group-retexts tag index d b)
+   (filter
    values
    (list
     (cond
@@ -643,8 +764,8 @@
                     (list 'geometry (el-geometry b) (el-geometry p) (el-geometry d))
                     (and p (el-geometry p)))]
       [deck-moved?
-       (sync-action (if (and (< (abs (- (el-state-w d) (el-state-w b))) 0.05)
-                             (< (abs (- (el-state-h d) (el-state-h b))) 0.05))
+       (sync-action (if (and (< (abs (- (el-state-w d*) (el-state-w b*))) 0.05)
+                             (< (abs (- (el-state-h d*) (el-state-h b*))) 0.05))
                         'moved 'resized)
                     tag index (el-geometry d)
                     (and p (el-geometry p)))]
@@ -670,8 +791,12 @@
        (sync-action 'conflict tag index
                     (list 'text (el-state-text b) (el-state-text p) (el-state-text d))
                     (and p (el-geometry p)))]
+      ;; A group's own text is the text of what it holds, and a change to that is
+      ;; a change to one of its children -- reported below as the children, not
+      ;; as the group, since a group has no text of its own to write to.
+      [(and deck-retext? (eq? 'group (el-state-kind d))) #f]
       [deck-retext? (sync-action 'retext tag index (el-state-text d) #f)]
-      [else #f]))))
+      [else #f])))))
 
 ;; Which deck slide is which of the base's. The merge pairs slides so that
 ;; adding one in the editor does not shift every later one: it used to pair by
@@ -2174,17 +2299,28 @@
 ;; An element added in the editor has to be written as source, which is the same
 ;; job the translator does -- so it is the same code, for one element, at the
 ;; indentation its new siblings sit at.
-(define (added-element d index tag)
+(define (added-element d index tag [z #f])
   (and d
        (let ([s (for/first ([s (in-list (deck-slides d))]
                             #:when (= index (slide-index s)))
                   s)])
-         (and s (let loop ([es (slide-elements s)])
-                  (for/or ([e (in-list es)])
-                    (cond
-                      [(group? e) (loop (group-children e))]
-                      [(equal? tag (element-name e)) e]
-                      [else #f])))))))
+         (and s
+              (or (let loop ([es (slide-elements s)])
+                    (for/or ([e (in-list es)])
+                      (cond
+                        [(group? e) (loop (group-children e))]
+                        [(equal? tag (element-name e)) e]
+                        [else #f])))
+                  ;; A shape the editor made itself has no name to find it by --
+                  ;; so it is found where the state said it was drawn, which is
+                  ;; its position among the slide's own elements.
+                  (and z (< z (length (slide-elements s)))
+                       (list-ref (slide-elements s) z)))))))
+
+;; Where an `added` action's element sits in the deck's drawing order.
+(define (added-z a)
+  (let ([d (sync-action-detail a)])
+    (and (list? d) (>= (length d) 3) (third d))))
 
 ;; The srcs an element needs, so they can be copied next to the program.
 (define (element-media e)
@@ -2733,7 +2869,7 @@
       ;; last, which is where the editor put it in the z-order.
       [(added)
        (define ss (slide-site-for a))
-       (define e (added-element d (sync-action-slide a) (sync-action-tag a)))
+       (define e (added-element d (sync-action-slide a) (sync-action-tag a) (added-z a)))
        (define srcs (if e (element-media e) '()))
        (cond
          [(not ss)
@@ -2784,7 +2920,7 @@
           ;; takes it last, which is where the editor usually put it anyway.
           (define under
             (let ([d (sync-action-detail a)])
-              (and (list? d) (= 2 (length d)) (second d))))
+              (and (list? d) (>= (length d) 2) (second d))))
           (define canvas-here (canvas-forms (slide-site-scope ss) all-sites))
           ;; Drawn over something the canvas does not hold itself -- a shape
           ;; inside a group -- it goes at the end of the slide instead. The
@@ -3520,7 +3656,7 @@
 
 ;; The file behind a deck's picture, for the element an action names.
 (define (picture-file-for d a)
-  (define e (added-element d (sync-action-slide a) (sync-action-tag a)))
+  (define e (added-element d (sync-action-slide a) (sync-action-tag a) (added-z a)))
   (define src (and (picture? e) (picture-src e)))
   (define p (and src (build-path (deck-media-dir d) src)))
   (and p (file-exists? p) p))
@@ -3724,7 +3860,20 @@
     ;; was inside it has nothing left to change. Dropping it costs a pass and
     ;; not the edit -- the base is the program as it now reads, so the next
     ;; look reports the difference again.
-    [(string? body) body]
+    ;;
+    ;; An insertion is not one of those. It does not change the text being
+    ;; rewritten; it puts new text at a point inside it, and there is nothing
+    ;; left of that point -- so it goes after what the rewrite says. Dropped, it
+    ;; costs the edit and not a pass: deleting a shape in the editor and drawing
+    ;; a new one writes the new form after the deleted one, and the deletion
+    ;; rewrites that form to nothing. The form was reported as written, the loop
+    ;; wrote the deck again from a program that did not hold it, and the shape
+    ;; the editor had just drawn was gone.
+    [(string? body)
+     (apply string-append body
+            (for/list ([k (in-list (sort kids < #:key (lambda (k) (rng-start (first k)))))]
+                       #:when (let ([r (first k)]) (= (rng-start r) (rng-end r))))
+              (render-edit text k)))]
     [else
      (apply string-append
             (for/list ([item (in-list body)])
@@ -3812,8 +3961,15 @@
   ;; owns the scratch and clears it before returning.
   (define given-dir workdir)
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
-  (define deck-ir (pptx->deck pptx-path #:workdir dir))
-  (define deck (deck->slide-states deck-ir))
+  ;; Which of the deck's names it states as ours, collected as it is read and
+  ;; consulted as the states are built: the merge is the one reader that has to
+  ;; tell the program's elements from the ones the editor made itself. See
+  ;; `current-slide-tag-names`.
+  (define stated (make-hash))
+  (define-values (deck-ir deck)
+    (parameterize ([current-slide-tag-names stated])
+      (let ([d (pptx->deck pptx-path #:workdir dir)])
+        (values d (deck->slide-states d)))))
   (define prog prog0)
   (define (done! v)
     (when (and (not given-dir) (not (current-keep-work?)))

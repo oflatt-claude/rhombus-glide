@@ -6,7 +6,8 @@
 (require racket/list racket/string racket/file racket/path racket/format
          file/unzip file/zip)
 (provide with-unpacked-deck drag-in-deck! deck-part
-         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide! retext-in-deck! delete-slide! move-slide!
+         add-shape-to-deck! delete-from-deck! nudge-family-in-deck! paste-slide!
+         retext-in-deck! retype-run-in-deck! delete-slide! move-slide!
          resize-in-deck! rotate-in-deck! edit-after-tag! shape-rx find-tag
          bring-to-front! duplicate-in-deck!
          group-in-deck! ungroup-in-deck! move-element-to-slide! edit-slide-part!
@@ -428,6 +429,39 @@
         (call-with-output-file part #:exists 'replace
           (lambda (o) (write-string (string-replace d (first m) retexted) o)))
         #t]))))
+
+;; Retypes one run of the shape tagged `tag`, leaving its other runs as they
+;; were -- which is what changing a word in the editor amounts to. `retext-in-deck!`
+;; puts the whole body in the first run and empties the rest, which is a
+;; retyping that crosses runs and cannot be traced back to one of them.
+;; `which` counts from 1. Returns #t when there was a run that far in.
+(define (retype-run-in-deck! pptx slide tag which text)
+  (with-unpacked-deck
+   pptx
+   (lambda (dir)
+     (define part (build-path dir "ppt" "slides" (format "slide~a.xml" slide)))
+     (define d (file->string part))
+     (define m (regexp-match (shape-rx tag) d))
+     (cond
+       [(not m) #f]
+       [else
+        (define seen (box 0))
+        (define hit (box #f))
+        (define retyped
+          (regexp-replace* #px"<a:t>[^<]*</a:t>" (first m)
+                           (lambda (whole)
+                             (set-box! seen (add1 (unbox seen)))
+                             (cond
+                               [(= which (unbox seen))
+                                (set-box! hit #t)
+                                (format "<a:t>~a</a:t>" text)]
+                               [else whole]))))
+        (cond
+          [(not (unbox hit)) #f]
+          [else
+           (call-with-output-file part #:exists 'replace
+             (lambda (o) (write-string (string-replace d (first m) retyped) o)))
+           #t])]))))
 
 ;; Removes slide `n` from the deck's slide list, which is what deleting it in the
 ;; editor amounts to. The part is left in the package, unreferenced, the way an

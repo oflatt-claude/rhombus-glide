@@ -13,9 +13,13 @@
          "action-fuzz.rkt"
          ;; And what could be edited at all, which needs no deck to answer.
          "editable.rkt"
+         ;; Every string in a program retyped, one run at a time.
+         "retype-all.rkt"
          ;; These skip themselves where there is no LibreOffice to drive.
-         ;; `lo-roundtrip` needs only `--convert-to`, not UNO or a display.
-         "libreoffice.rkt" "libreoffice-edits.rkt" "lo-roundtrip.rkt")
+         ;; `lo-roundtrip` needs only `--convert-to`; `lo-edit` drives a real
+         ;; editor through a real edit -- move, retype, recolour, delete, add --
+         ;; which is the workflow the rest of this only approximates.
+         "libreoffice.rkt" "lo-roundtrip.rkt" "lo-edit.rkt")
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

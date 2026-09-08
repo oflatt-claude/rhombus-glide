@@ -11,7 +11,7 @@
          parse-sp-tree
          placeholder-info
          current-allow-unsupported?
-         current-tag-names)
+         current-tag-names current-slide-tag-names)
 
 ;; layout-phs / master-phs map a placeholder key to its <p:sp>.
 ;; tx-styles is the master's <p:txStyles>; default-text-style is the
@@ -164,6 +164,16 @@
 ;; alone, and there is nowhere on `element` to record it -- the IR is the format,
 ;; not the provenance.
 (define current-tag-names (make-parameter #f))
+
+;; Where the parser puts those names, slide by slide, for a caller that asked.
+;; A name is not evidence that a shape is the program's: an editor invents one
+;; for every shape somebody draws, and the one it invents for a new text box is
+;; the name the box deleted in the same sitting had. The alt text is evidence.
+;; So the merge, which has to tell the program's elements from the editor's own,
+;; hands a hash to `pptx->deck` and is told which names the deck states as ours.
+;; The translator asks for none: reading a real deck, a name is the only tag
+;; there is.
+(define current-slide-tag-names (make-parameter #f))
 
 (define (shape-id-name node)
   (define nv (or (xpath node 'nvSpPr 'cNvPr) (xpath node 'nvPicPr 'cNvPr)
