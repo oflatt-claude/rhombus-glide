@@ -12,7 +12,7 @@
 ;; The show needs a display; the PDF does not, and is checked either way.
 (require rackunit/log)
 (require rackunit racket/file racket/list racket/path racket/system racket/port
-         racket/string racket/runtime-path
+         racket/string racket/runtime-path racket/class racket/draw pict
          glide-pptx/sync glide-pptx/sync-state glide-pptx/export
          "deck-edit.rkt")
 
@@ -120,16 +120,10 @@
      "def ts = titles()"
      "def groups = for Map (t in ts): values(t, #true)"
      "println(\"titles \" +& ts.length() +& \" pages \" +& groups.length() +& \" groups\")"
-     "// And the title is never drawn: a slide handed one is the same picture as"
-     "// a slide handed none."
-     "do_staged_slide(canvas, ~layout: #'center)"
-     "def plain = ss.#{slide->pict}(ss.#{most-recent-slide}())"
-     "ss.#{retract-most-recent-slide}()"
-     "do_staged_slide(canvas, ~title: \"Zebra Zebra Zebra\", ~layout: #'center)"
-     "def titled = ss.#{slide->pict}(ss.#{most-recent-slide}())"
-     "ss.#{retract-most-recent-slide}()"
-     "println(\"drawn \" +& (Pict.from_handle(plain).height"
-     "                      == Pict.from_handle(titled).height))"
+     "// Whether the number a slide is known by is drawn is asked of the pixels,"
+     "// in `numbers-are-not-drawn` below: two pages the same height is what this"
+     "// used to ask, and a page with a title over it is the same height as one"
+     "// without -- so it passed while the number was being drawn on every slide."
      "// And with the reveal turned on, a still slide is faded up rather than cut"
      "// to, which costs it an advance."
      "set_reveal(#true)"
@@ -210,10 +204,6 @@
                      "an animated slide and a still one are two groups")
        (check-true (> (string->number (cadr m)) 2)
                    "over more pages than that, which is what the grouping is for")))
-   ;; Set for navigating by, not for drawing: a converted deck carries its own
-   ;; title inside the page and a second one over the top is not the deck.
-   (check-regexp-match #rx"drawn #true" out
-                       "a slide handed a title is the same picture as one handed none")
 
    ;; Nothing is built for the slides that are skipped, and the one that is
    ;; shown is built when it is shown. Starting part way through a real talk is
@@ -535,6 +525,73 @@
   (check-regexp-match #rx"at[(]100[.]0, 120[.]0, ~tag: \"Drawn over\""
                       (file->string program)
                       "to the `at` form the layer holds"))
+
+;; ------------------------------------ the number a slide is known by is not drawn
+;;
+;; Every slide is given a name so that `a` and `s` step a whole slide rather
+;; than an animation frame -- with every slide sharing one name, both keys ran
+;; to the end of the talk. The name must not be drawn: a converted deck carries
+;; its own title inside the page, and a second one over the top is not what the
+;; deck looked like.
+;;
+;; Asked of the pixels, because the question is about pixels. It was asked of
+;; two pages' heights before, and a page with a title over it is exactly as tall
+;; as one without -- so it passed while the name was being drawn on every slide
+;; of a real talk, fading in and out through the animation because a title takes
+;; part in the timeline. Passing the name as slideshow's `~name:` rather than as
+;; a `~title:` is what stopped it: `~title:` is composed into the page by the
+;; Rhombus slide assembler, which is not the assembler this used to install.
+;;
+;; The titled case is here so that this cannot pass by seeing nothing: a title
+;; somebody asks for is drawn, and these pixels say so.
+(cond
+  [(not display?) (printf "no display; what a page draws is not checked\n")]
+  [else
+   (define (program-of name body)
+     (define path (build-path work (format "draws-~a.rhm" name)))
+     (display-to-file
+      (string-join
+       (list "#lang rhombus/and_meta"
+             "import:"
+             "  slideshow open"
+             "  lib(\"glide-pptx/runtime.rhm\") as glide"
+             "  lib(\"glide-pptx/staged.rhm\") open"
+             "def canvas = glide.slide_canvas("
+             "  ~width: 320.0, ~height: 240.0, ~background: glide.hex(\"FFFFFF\"),"
+             "  glide.at(20.0, 20.0, ~tag: \"Box\","
+             "           glide.shape_pict(~width: 60.0, ~height: 40.0,"
+             "                            ~fill: glide.hex(\"4472C4\"))))"
+             (format "for (n in 1..3): ~a" body))
+       "\n")
+      path #:exists 'replace)
+     path)
+   (define raw (program-of "raw" "slide(Pict.from_handle(canvas), ~layout: #'center)"))
+   (define named (program-of "named"
+                             "do_staged_slide(Pict.from_handle(canvas), ~layout: #'center)"))
+   (define titled (program-of "titled"
+                              (string-append "do_staged_slide(Pict.from_handle(canvas),"
+                                             " ~title: \"Zebra\", ~layout: #'center)")))
+   (define W 512) (define H 384)
+   (define (page-bytes path)
+     (define get (dynamic-require 'slideshow/slides-to-picts 'get-slides-as-picts))
+     (define p (first (get (path->string path) W H #t)))
+     (define bm (make-bitmap W H))
+     (define dc (new bitmap-dc% [bitmap bm]))
+     (send dc set-brush "white" 'solid)
+     (send dc set-pen "white" 1 'solid)
+     (send dc draw-rectangle 0 0 W H)
+     (draw-pict p dc 0 0)
+     (define bs (make-bytes (* 4 W H)))
+     (send bm get-argb-pixels 0 0 W H bs)
+     bs)
+   (define (differing a b)
+     (for/sum ([i (in-range (* 4 W H))])
+       (if (> (abs (- (bytes-ref a i) (bytes-ref b i))) 8) 1 0)))
+   (define raw-px (page-bytes raw))
+   (check-equal? (differing raw-px (page-bytes named)) 0
+                 "the name a slide is known by draws nothing")
+   (check-true (> (differing raw-px (page-bytes titled)) 100)
+               "and a title somebody asks for is drawn, so these pixels can see one")])
 
 (printf "staged tests done\n")
 

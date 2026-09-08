@@ -25,11 +25,10 @@
 //   * a held last frame on any slide that animates, so the closing epoch is not
 //     spent on the press that moves on -- see where `held` is computed below.
 //
-// Two changes from the talk's copy, both because this one is a library: the
-// slide assembler is installed on first use rather than on import, and a slide
-// may arrive as a pict handle, which is what `slide_canvas` hands back. The
-// assembler is left only to keep slideshow from drawing a title over a deck
-// that carries its own.
+// Two changes from the talk's copy, both because this one is a library: what it
+// installs -- slideshow's own page numbers, off -- is installed on first use
+// rather than on import, and a slide may arrive as a pict handle, which is what
+// `slide_canvas` hands back.
 import:
   slideshow open
   draw
@@ -213,31 +212,22 @@ def _installed = Array(#false)
 // assembled, so that the deck the exporter writes carries it too.
 fun set_slide_numbers(on = #true): glide.set_slide_numbers(on)
 
-// A slide's title is what `a` and `s` navigate by -- `s` skips to the next
-// slide with a different one, `a` back to the start of the previous group -- and
-// slideshow keeps it on the slide whether or not the assembler draws it. So it
-// is set for every slide, and never drawn: a converted deck carries its own
-// title inside the page, and a second one over the top is not what the deck
-// looked like.
-fun untitled_asm(default_asm):
-  fun (s, v_sep, p):
-    default_asm(#false, v_sep, p)
-
+// Slideshow draws its own page number at the corner, and a converted deck
+// draws the number it counts by itself -- see `set_slide_numbers` -- so
+// slideshow's is turned off rather than shown alongside.
+//
 // On first use rather than on import: this is a library, and importing it to
-// call `dead_beats` on a pict should not change how a program's own slides are
-// assembled.
-fun install_assembler():
+// call `dead_beats` on a pict should not change how a program's own slides look.
+fun hide_page_numbers():
   when !_installed[0]
   | _installed[0] := #true
-    def default_asm = ss.#{current-slide-assembler}()
-    ss.#{current-slide-assembler}(untitled_asm(default_asm))
     ss.#{set-page-numbers-visible!}(#false)
 
 // `~transition` names where the next slide comes from: `#'down` (the default)
 // means the old page leaves upwards and this one follows it in.
 fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
                     ~reveal: rv = #true, ~& kws):
-  install_assembler()
+  hide_page_numbers()
   _slide_no[0] := _slide_no[0] + 1
   when _slide_no[0] >= _start_from[0]
   | _current[0] := _slide_no[0]
@@ -250,10 +240,21 @@ fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
     | slide_transition(pan_transition(arrival))
     _emitted[0] := #true
     // Its own title, or its number. Every epoch of one animated slide is one
-    // page with one title, so `s` steps a whole slide at a time rather than an
-    // animation frame at a time -- and with every slide sharing the one title
-    // `#false`, which is what they had, both keys ran to the end of the talk.
-    def title = ttl || ("slide " +& _current[0])
+    // page under one of these, so `s` steps a whole slide at a time rather than
+    // an animation frame at a time -- and with every slide sharing the one
+    // title `#false`, which is what they had, both keys ran to the end of the
+    // talk.
+    //
+    // The number goes in as a *name* and not as a title. `~name:` without
+    // `~title:` is slideshow's own way of saying "for navigating by, never
+    // drawn": it makes the page a `name-only`, which is laid out exactly as a
+    // page with no title is. Passed as a title it would be drawn -- swallowing
+    // it with a slide assembler of our own worked, until anything else wanted
+    // the assembler -- and a page given a title also gives up the room a title
+    // would take, which is room a converted deck is already using.
+    //
+    // A slide that asks for a title gets one, drawn where slideshow draws it.
+    def named = ttl || ("slide " +& _current[0])
     // A canvas arrives as a pict handle -- which is what `slide_canvas` hands
     // back -- and `slide` takes a `Pict`. Converted on every path, not only on
     // the one that reveals: a handle went straight through and `slide` refused
@@ -298,9 +299,11 @@ fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
       if shown is_a Pict && (shown :~ Pict).duration > 1
       | (shown :~ Pict).sustain()
       | shown
-    if held is_a List
-    | slide(& held, ~title: title, ~& kws)
-    | slide(held, ~title: title, ~& kws)
+    cond
+    | ttl && held is_a List: slide(& held, ~title: named, ~& kws)
+    | ttl: slide(held, ~title: named, ~& kws)
+    | held is_a List: slide(& held, ~name: named, ~& kws)
+    | ~else: slide(held, ~name: named, ~& kws)
 
 expr.macro 'staged_slide:
               $(group_option_sequence
