@@ -188,21 +188,24 @@
           e)
         '())))
 
-;; (name . text) for the items inside a group, however deep.
+;; (tag . text) for everything a group holds, however deep, whether it holds
+;; text or not. Not only the ones with words in them: what a group holds is how
+;; a group is told apart from itself, so a shape deleted inside one is a change
+;; to the group -- and with only the talking children listed, deleting a plain
+;; oval out of a group was a save with nothing in it.
 (define (item-text-pairs items)
+  (define (entry tag body) (if tag (list (cons tag (if body (body-text body) ""))) '()))
   (append*
    (for/list ([i (in-list items)])
      (cond
-       [(it:group? i) (item-text-pairs (it:group-items i))]
-       [(it:textbox? i)
-        (let ([t (body-text (it:textbox-body i))] [tag (it:textbox-tag i)])
-          (if (and tag (not (string=? "" t))) (list (cons tag t)) '()))]
-       [(it:preset? i)
-        (let ([t (body-text (it:preset-body i))] [tag (it:preset-tag i)])
-          (if (and tag (not (string=? "" t))) (list (cons tag t)) '()))]
-       [(it:shape-path? i)
-        (let ([t (body-text (it:shape-path-body i))] [tag (it:shape-path-tag i)])
-          (if (and tag (not (string=? "" t))) (list (cons tag t)) '()))]
+       [(it:group? i) (append (entry (it:group-tag i) #f)
+                              (item-text-pairs (it:group-items i)))]
+       [(it:textbox? i) (entry (it:textbox-tag i) (it:textbox-body i))]
+       [(it:preset? i) (entry (it:preset-tag i) (it:preset-body i))]
+       [(it:shape-path? i) (entry (it:shape-path-tag i) (it:shape-path-body i))]
+       [(it:picture? i) (entry (it:picture-tag i) #f)]
+       [(it:image? i) (entry (it:image-tag i) #f)]
+       [(it:table? i) (entry (it:table-tag i) #f)]
        [else '()]))))
 
 (define (item->el-state i z)
@@ -251,7 +254,14 @@
      (el-state (it:group-tag i) #f 'group
                (first box) (second box) (third box) (fourth box) (it:group-rot i)
                (it:group-flip-h? i) (it:group-flip-v? i)
-               (group-text-digest (item-text-pairs (it:group-items i))) "group" '() z)]
+               ;; No paint of its own, said the same way the deck says it: a
+               ;; group has no fill in either IR, and one side calling it
+               ;; "group" while the other called it nothing put a permanent two
+               ;; points of difference between every group and itself. With the
+               ;; six that different words cost, that was over the limit -- so
+               ;; retyping a word inside a group whose alt text the editor had
+               ;; dropped read as the group deleted and a new one added.
+               (group-text-digest (item-text-pairs (it:group-items i))) "" '() z)]
     [(it:shape-path? i)
      (define-values (x y w h) (apply values (it:shape-path-box i)))
      (el-state (it:shape-path-tag i) #f 'shape x y w h (it:shape-path-rot i)
@@ -552,14 +562,14 @@
 
 ;; The same, from a deck's own elements.
 (define (element-text-pairs es)
+  (define (entry e t)
+    (let ([n (element-name e)]) (if (string=? "" n) '() (list (cons n t)))))
   (append*
    (for/list ([e (in-list es)])
      (cond
-       [(group? e) (element-text-pairs (group-children e))]
-       [(shape? e)
-        (let ([t (body-text (shape-body e))] [n (element-name e)])
-          (if (and (not (string=? "" n)) (not (string=? "" t))) (list (cons n t)) '()))]
-       [else '()]))))
+       [(group? e) (append (entry e "") (element-text-pairs (group-children e)))]
+       [(shape? e) (entry e (body-text (shape-body e)))]
+       [else (entry e "")]))))
 
 (define (deck->slide-states d #:include-inherited? [include-inherited? #f]
                             #:descend-groups? [descend-groups? #f])

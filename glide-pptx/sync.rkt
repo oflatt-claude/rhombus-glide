@@ -331,21 +331,30 @@
          [else '()]))))
   (define rest-now (filter (lambda (n) (not (hash-ref matched-now n #f))) now))
   (define rest-base (filter (lambda (b) (not (hash-ref used b #f))) base))
-  ;; Whether the editor kept our alt text at all. It keeps all of it or strips
-  ;; all of it -- one editor doing one thing to one file -- so if any of the
-  ;; program's tags came back, a tag that did not came back missing because the
-  ;; element is gone.
+  ;; Whether the editor kept our alt text -- asked of each kind on its own,
+  ;; because an editor treats a kind consistently and treats the kinds
+  ;; differently. LibreOffice keeps it on a shape, on a text box and on a
+  ;; picture, and drops it on a group and on a connector. Asked once for the
+  ;; whole slide, a group that came back without its tag looked like a group
+  ;; that had been deleted, with a new one in its place: retyping a word inside
+  ;; a group reported the group deleted and a flattened copy added, and the
+  ;; retyping itself was lost.
   ;;
-  ;; Then a tagged element must not be paired with a shape the editor made
-  ;; itself. A new text box is not the box the same sitting deleted, however
-  ;; alike the two look, and LibreOffice numbers a new one after the last box it
-  ;; numbered -- so the new one arrives wearing the deleted one's name. Paired,
-  ;; the two report as one element resized and restyled and retyped beyond
-  ;; recognition, and the deletion and the addition are both lost. Apart, they
-  ;; report as what they are.
-  (define kept-tags?
-    (for/or ([n (in-list now)])
-      (and (el-state-tag n) (hash-ref base-by-tag (el-state-tag n) #f) #t)))
+  ;; Where a kind's tags did come back, a tagged element must not be paired with
+  ;; a shape the editor made itself. A new text box is not the box the same
+  ;; sitting deleted, however alike the two look, and LibreOffice numbers a new
+  ;; one after the last box it numbered -- so the new one arrives wearing the
+  ;; deleted one's name. Paired, the two report as one element resized and
+  ;; restyled and retyped beyond recognition, and the deletion and the addition
+  ;; are both lost. Apart, they report as what they are.
+  (define kept-tags-of
+    (for/hash ([kind (in-list (remove-duplicates (map el-state-kind base)))])
+      (values kind
+              (for/or ([n (in-list now)])
+                (and (eq? kind (el-state-kind n))
+                     (el-state-tag n)
+                     (hash-ref base-by-tag (el-state-tag n) #f)
+                     #t)))))
   ;; A tagged element that came back untagged is held to a much closer likeness
   ;; than the rest. Not refused outright: LibreOffice keeps our alt text on a
   ;; shape and loses it on a connector, so an element can lose its tag and still
@@ -360,7 +369,9 @@
   ;; program after every merge, and the shape added last time carries the tag of
   ;; the `at` form written for it.
   (define (limit-for n b)
-    (if (or (not kept-tags?) (not (el-state-tag b)) (el-state-tag n))
+    (if (or (not (hash-ref kept-tags-of (el-state-kind b) #f))
+            (not (el-state-tag b))
+            (el-state-tag n))
         MATCH-LIMIT
         LOST-TAG-LIMIT))
   ;; Everything left is matched by how much it looks alike, best pair first.
@@ -487,26 +498,39 @@
 ;; that. So the numbers the text decides are set aside before the two boxes are
 ;; compared, and only a size somebody really set is a resize.
 (define (text-driven-size? st which)
-  (and (eq? 'text (el-state-kind st))
-       (let ([style (el-state-style st)])
-         (case which
-           ;; `wrap` stated false: the box does not hold the text to a width.
-           [(w) (let ([p (assoc 'wrap style)]) (and p (not (cdr p)) #t))]
-           ;; `grow` is spAutoFit: the box takes the height the text needs.
-           ;; `shrink` is the other way round -- the box is set and the text is
-           ;; made to fit it -- so its height is a number somebody chose.
-           [(h) (let ([p (assoc 'autofit style)]) (and p (eq? 'grow (cdr p))))]
-           [else #f]))))
+  (case (el-state-kind st)
+    [(text)
+     (let ([style (el-state-style st)])
+       (case which
+         ;; `wrap` stated false: the box does not hold the text to a width.
+         [(w) (let ([p (assoc 'wrap style)]) (and p (not (cdr p)) #t))]
+         ;; `grow` is spAutoFit: the box takes the height the text needs.
+         ;; `shrink` is the other way round -- the box is set and the text is
+         ;; made to fit it -- so its height is a number somebody chose.
+         [(h) (let ([p (assoc 'autofit style)]) (and p (eq? 'grow (cdr p))))]
+         [else #f]))]
+    ;; A group is the box around what it holds -- both sides work it out that
+    ;; way -- so its width and its height are its children's. Where one of those
+    ;; children holds text, the two sides measure that text with different
+    ;; machinery, and the box comes out a little different for ever: retyping a
+    ;; word inside a group reported the retyping and a resize of the group with
+    ;; it, and the resize came back on every save afterwards. There is nothing
+    ;; to write it to either -- a group's size in the source is the size of what
+    ;; it holds, not a number of its own.
+    [(group) (pair? (group-text-entries (el-state-text st)))]
+    [else #f]))
 
 ;; One element with those numbers taken out of the picture, `like` saying which
 ;; they are: the program's side says how the box is drawn, on both sides.
 (define (aside-text-driven st like)
+  (define w? (text-driven-size? like 'w))
+  (define h? (text-driven-size? like 'h))
   (cond
-    [(not (eq? 'text (el-state-kind like))) st]
+    [(not (or w? h?)) st]
     [else
      (struct-copy el-state st
-                  [w (if (text-driven-size? like 'w) 0.0 (el-state-w st))]
-                  [h (if (text-driven-size? like 'h) 0.0 (el-state-h st))])]))
+                  [w (if w? 0.0 (el-state-w st))]
+                  [h (if h? 0.0 (el-state-h st))])]))
 
 (define (derived-by-fitting? ch)
   (memq (property-head (first ch)) '(size line-spacing)))
@@ -796,10 +820,26 @@
     [(string=? (el-state-text d) (el-state-text b)) '()]
     [else
      (define was (group-text-entries (el-state-text b)))
-     (for/list ([now (in-list (group-text-entries (el-state-text d)))]
-                #:when (let ([old (assoc (car now) was)])
-                         (and old (not (string=? (cdr old) (cdr now))))))
-       (sync-action 'retext (car now) index (cdr now) #f))]))
+     (define now (group-text-entries (el-state-text d)))
+     (append
+      (for/list ([e (in-list now)]
+                 #:when (let ([old (assoc (car e) was)])
+                          (and old (not (string=? (cdr old) (cdr e))))))
+        (sync-action 'retext (car e) index (cdr e) #f))
+      ;; And one the group no longer holds. Deleting a shape inside a group is
+      ;; an ordinary thing to do in an editor, and the `at` form that drew it is
+      ;; there in the source to be taken out -- the group itself is not deleted,
+      ;; so nothing else about the slide changes.
+      (for/list ([e (in-list was)] #:unless (assoc (car e) now))
+        (sync-action 'removed (car e) index (el-geometry b) #f))
+      ;; One it holds that the program does not draw. Writing that means adding
+      ;; a form inside the group's own form, which is a restructuring rather
+      ;; than a literal edit -- so it is said and not done.
+      (for/list ([e (in-list now)] #:unless (assoc (car e) was))
+        (sync-action 'noted (car e) index
+                     (string-append "it was drawn inside a group, and a shape cannot be"
+                                    " added to a group from here")
+                     #f)))]))
 
 (define DRAWN-BY-CODE
   (string-append "the program draws this rather than placing it with an `at` form,"
@@ -2987,16 +3027,29 @@
             (let ([d (sync-action-detail a)])
               (and (list? d) (>= (length d) 2) (second d))))
           (define canvas-here (canvas-forms (slide-site-scope ss) all-sites))
+          ;; A form this same save deletes is no anchor. Its comma goes with it,
+          ;; and an insertion written against that comma left the canvas holding
+          ;; two arguments with no separator between them -- a program that does
+          ;; not parse, which the rollback then threw away along with every
+          ;; other edit in the save. With none left to lean on, the insertion
+          ;; goes where the canvas ends, which brings its own comma.
+          (define doomed
+            (for/list ([b (in-list actions)]
+                       #:when (and (eq? 'removed (sync-action-kind b))
+                                   (= (sync-action-slide b) (sync-action-slide a))))
+              (sync-action-tag b)))
+          (define surviving
+            (filter (lambda (st) (not (member (at-site-tag st) doomed))) canvas-here))
           ;; Drawn over something the canvas does not hold itself -- a shape
           ;; inside a group -- it goes at the end of the slide instead. The
           ;; program cannot say "above one member of a group" without joining
           ;; the group, which is not what the editor was asked for.
           (define after
             (let ([st (and under (site-for-tag a under))])
-              (and st (memq st canvas-here) st)))
+              (and st (memq st surviving) st)))
           (define first-form
-            (and (pair? canvas-here)
-                 (argmin (lambda (st) (rng-start (at-site-whole st))) canvas-here)))
+            (and (pair? surviving)
+                 (argmin (lambda (st) (rng-start (at-site-whole st))) surviving)))
           (cond
             [(and after (at-site-whole after))
              (define at (rng-end (at-site-whole after)))

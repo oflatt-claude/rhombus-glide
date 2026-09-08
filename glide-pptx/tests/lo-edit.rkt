@@ -77,6 +77,26 @@ Function ShapeOf(slide As Integer, name As String) As Object
   ShapeOf = ShapeIn(gDoc.DrawPages.getByIndex(slide - 1), name)
 End Function
 
+' What holds the shape, which is the page or the group it is in: a child is
+' removed from its group, and asking the page to remove it does nothing at all.
+Function HolderOf(where As Object, name As String) As Object
+  Dim i As Integer, sh As Object, inner As Object
+  For i = 0 To where.Count - 1
+    sh = where.getByIndex(i)
+    If sh.Name = name Or sh.Description = "glide-pptx:" & name Then
+      HolderOf = where
+      Exit Function
+    End If
+    If sh.supportsService("com.sun.star.drawing.GroupShape") Then
+      inner = HolderOf(sh, name)
+      If Not IsNull(inner) Then
+        HolderOf = inner
+        Exit Function
+      End If
+    End If
+  Next i
+End Function
+
 Function ShapeIn(where As Object, name As String) As Object
   Dim i As Integer, sh As Object, inner As Object
   For i = 0 To where.Count - 1
@@ -143,9 +163,9 @@ Sub Do1(sLine As String)
       sz.Height = CLng(f(4))
       sh.setSize(sz)
     Case "delete"
-      pg = gDoc.DrawPages.getByIndex(CInt(f(1)) - 1)
+      pg = HolderOf(gDoc.DrawPages.getByIndex(CInt(f(1)) - 1), f(2))
       sh = ShapeOf(CInt(f(1)), f(2))
-      If IsNull(sh) Then
+      If IsNull(sh) Or IsNull(pg) Then
         Note("no shape <" & f(2) & "> on slide " & f(1))
         Exit Sub
       End If
@@ -346,7 +366,23 @@ BASIC
                            (not (string=? "" (el-state-text e)))
                            (el-state-tag e)))
       (el-state-tag e)))
-  (define (has-words? i tag) (and (member tag (words-on i)) #t))
+  ;; Including the words inside a group. A group is one element to drag and its
+  ;; children are still text somebody can click into and retype, so the tags
+  ;; the group's own state carries are targets too -- and `04-pictures-groups`,
+  ;; whose only text is in a group, was the fixture this test skipped.
+  (define (group-words-on i)
+    (for/list ([st (in-list states)] #:when (= i (slide-state-index st))
+               #:when #t
+               [e (in-list (slide-state-elements st))]
+               #:when (eq? 'group (el-state-kind e))
+               #:when #t
+               [entry (in-list (group-text-entries (el-state-text e)))]
+               ;; The ones with words in them: a group's digest names everything
+               ;; it holds, and a plain oval has nothing to retype.
+               #:when (not (string=? "" (cdr entry))))
+      (car entry)))
+  (define (has-words? i tag)
+    (and (or (member tag (words-on i)) (member tag (group-words-on i))) #t))
   (define (fills-on i)
     (for/list ([st (in-list states)] #:when (= i (slide-state-index st))
                #:when #t
