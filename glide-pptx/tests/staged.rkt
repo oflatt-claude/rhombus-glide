@@ -472,6 +472,70 @@
                       "to the `at` form the layer holds")
   (set-stage-slides! #f))
 
+;; -------------------------------------- a slide a helper builds, added to
+;;
+;; Half the slides of a real talk are built by helpers: `divider(0)` composes
+;; over a canvas of its own, `in_section(1, s)` wraps a slide in a header. The
+;; canvas is inside the helper, so there is no `slide_canvas(...)` in the
+;; program to put another `at` form in -- and a box drawn on such a slide used
+;; to be refused, which under the rule that a save lands whole or not at all
+;; took every other edit in the save with it.
+;;
+;; A canvas over the slide is what a talk's own helpers do to a slide when they
+;; add a header to it, and it is what gets written. Not the slide inside a
+;; canvas: `at` holds a still picture, so a slide that animates could not go in
+;; one, and a slide that does not would become a single flattened element with
+;; everything it holds buried inside.
+(let ()
+  (define program (build-path work "helper-slide.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          "def canvas = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  at(20.0, 20.0, ~tag: \"Box\","
+          "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))))"
+          "fun divider():"
+          "  pc.Pict.from_handle(canvas)"
+          "def all_slides = [divider()]")
+    "\n")
+   program #:exists 'replace)
+  (define deck (build-path work "helper-slide.pptx"))
+  (define w (build-path work "helper-slide-work"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (define-values (sites scopes slide-sites layout) (find-program-sites program))
+  (check-equal? scopes '(#f) "the slide names no canvas of its own")
+  (check-equal? (add-shape-to-deck! deck 1 "Drawn over" #:x 40.0 #:y 200.0
+                                    #:width 60.0 #:height 20.0)
+                "Drawn over"
+                "a shape is drawn on it")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(added)
+                "and written")
+  (check-regexp-match #rx"over[(]divider[(][)]," (file->string program)
+                      "as a canvas laid over the slide")
+  (check-equal? (for/first ([st (in-list (program-slide-states program))]) 
+                  (for/list ([e (in-list (slide-state-elements st))]) (el-state-tag e)))
+                '("Box" "Drawn over")
+                "the slide now holds it, and still holds what it held")
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "the deck written from the program has nothing to merge")
+  ;; And it can be dragged, like anything else with a tag and an `at`.
+  (check-true (drag-in-deck! deck 1 "Drawn over" 100.0 120.0) "it is dragged")
+  (check-equal? (map sync-action-kind
+                     (sync-report-applied (sync-once program deck #:workdir w #:atomic? #t)))
+                '(moved)
+                "and the drag is written")
+  (check-regexp-match #rx"at[(]100[.]0, 120[.]0, ~tag: \"Drawn over\""
+                      (file->string program)
+                      "to the `at` form the layer holds"))
+
 (printf "staged tests done\n")
 
 (module+ main (void (test-log #:display? #t #:exit? #t)))

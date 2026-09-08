@@ -910,10 +910,18 @@
 ;; source. The staging itself is `settle.rhm`'s: rhombus/pict is loaded on
 ;; demand, because a deck that does not animate should not pay for it.
 (define (from-stage stage slide elems)
-  (define over (dynamic-require '(lib "glide-pptx/settle.rhm") 'over_from))
-  (over stage slide
-        (lambda (w h)
-          (apply slide-canvas #:width w #:height h #:background #f elems))))
+  (cond
+    ;; A slide written as a function of no arguments is built when it is shown
+    ;; rather than when the program loads -- which is how a talk starts part way
+    ;; through without paying for the slides it skipped. Wrapped, it stays a
+    ;; function, or the wrapping would build every slide in the deck.
+    [(and (procedure? slide) (procedure-arity-includes? slide 0))
+     (lambda () (from-stage stage (slide) elems))]
+    [else
+     (define over (dynamic-require '(lib "glide-pptx/settle.rhm") 'over_from))
+     (over stage slide
+           (lambda (w h)
+             (apply slide-canvas #:width w #:height h #:background #f elems)))]))
 
 (define (slide-canvas #:width w #:height h #:background [bg (solid-fill white)]
                       #:hidden? [hidden? #f]

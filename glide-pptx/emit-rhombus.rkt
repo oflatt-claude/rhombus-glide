@@ -70,15 +70,23 @@
 ;; text a fresh emit would have written for it, at the indentation it will sit
 ;; at. `font` is the deck font, which decides whether a run has to name its
 ;; typeface at all.
-(define (rhombus-element-source e ind #:media-names [names (hash)] #:font [font #f])
+(define (rhombus-element-source e ind
+                               #:media-names [names (hash)] #:font [font #f]
+                               ;; One line, when the caller has nowhere to put a
+                               ;; second: a form written around an entry that
+                               ;; shares its line with the next one cannot
+                               ;; continue below it, because the indentation
+                               ;; that would mean is the next entry's.
+                               #:width [width LINE-WIDTH]
+                               #:comment? [comment? #t])
   (parameterize ([current-media-names names]
                  [current-deck-font (or font (current-deck-font))])
     (define head
-      (if (string=? "" (element-name e))
+      (if (or (not comment?) (string=? "" (element-name e)))
           '()
           (list (string-append (make-string (max 0 ind) #\space)
                                (format "// ~a (id ~a)" (element-name e) (element-id e))))))
-    (string-join (append head (render-lines (element->value e) rhombus-flavor ind LINE-WIDTH))
+    (string-join (append head (render-lines (element->value e) rhombus-flavor ind width))
                  "\n")))
 
 ;; One slide definition, as `emit-rhombus-deck` writes it -- factored out because

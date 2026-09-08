@@ -17,6 +17,7 @@ import:
 export:
   slide_canvas
   from_stage
+  over
   at
   shape_pict
   textbox
@@ -136,6 +137,16 @@ fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
 // still picture, and the staging is applied to it from outside.
 fun from_stage(stage, slide, & elems):
   rt.#{from-stage}(stage, slide, to_rkt_list(elems))
+
+// A slide with `elems` laid over it, from the start.
+//
+// For a slide a helper builds: the canvas is inside the helper, so there is no
+// `slide_canvas(...)` here to put another `at` form in -- and the slide cannot
+// go inside a canvas either, since `at` holds a still picture and a slide that
+// animates is not one. Over it, then, which is what a talk's own helpers do to
+// a slide when they add a header to it.
+fun over(slide, & elems):
+  rt.#{from-stage}(1, slide, to_rkt_list(elems))
 
 // --------------------------------------------------------------------- leaves
 

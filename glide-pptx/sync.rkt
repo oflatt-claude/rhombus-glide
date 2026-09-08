@@ -2684,6 +2684,10 @@
            (add1 (length (for/list ([k (in-list (take origins (sub1 i)))]
                                     #:when (= k j))
                            k))))))
+  ;; What the slide's `at` forms are written in, whether or not the slide has a
+  ;; canvas call of its own.
+  (define (scope-for-slide i)
+    (and scopes (<= 1 i (length scopes)) (list-ref scopes (sub1 i))))
   ;; Where this slide's entry in `all_slides` is, which is what an edit written
   ;; around a slide is written around.
   (define (entry-range-for i)
@@ -3117,15 +3121,36 @@
        (define ss (slide-site-for a))
        (define e (added-element d (sync-action-slide a) (sync-action-tag a) (added-z a)))
        (define srcs (if e (element-media e) '()))
+       (define stage (stage-of (sync-action-slide a)))
+       (define entry (entry-range-for (sync-action-slide a)))
+       ;; Laid over the slide rather than put inside its canvas. Two reasons to
+       ;; do that, and they are the same reason twice: the canvas is not where
+       ;; this can be said.
+       ;;
+       ;;   * The slide has no canvas call of its own. A helper built it --
+       ;;     `divider(0)` composes over `section_canvas()`, `in_section(1, s)`
+       ;;     wraps a slide in a header -- so the canvas is inside the helper
+       ;;     and there is no `slide_canvas(...)` in this program to add a form
+       ;;     to. Wrapping the slide *in* a canvas instead would be wrong twice
+       ;;     over: `at` holds a still picture, so a slide that animates cannot
+       ;;     go in one at all, and a slide that does not would become a single
+       ;;     flattened element with everything it holds buried inside it.
+       ;;
+       ;;   * It belongs to a stage after the first, which a canvas cannot say.
+       ;;
+       ;; A canvas over the slide is what the talk's own helpers do -- `staged`
+       ;; builds its reveals with `overlay` and `fade_in` -- and it leaves the
+       ;; slide exactly as it was.
+       (define over? (and entry opens-runtime?
+                          (or (not ss) (and stage (> stage 1)))))
        (cond
-         [(not ss)
-          ;; A slide a helper builds -- `divider(0)`, `in_section(1, s)` -- has
-          ;; no canvas of its own for a form to go into, and adding one means
-          ;; restructuring the helper rather than writing a literal. That is a
-          ;; fact about the program and not a failure to be retried, so it does
-          ;; not hold up the rest of the save: a box drawn on each of sixteen
-          ;; slides landed on none of them, because eight of those slides are
-          ;; built by helpers and one refusal took the whole save with it.
+         [(and (not ss) (not over?))
+          ;; No canvas, and no name in this program to lay one over the slide
+          ;; with either. A fact about the program and not a failure to be
+          ;; retried, so it does not hold up the rest of the save: a box drawn
+          ;; on each of sixteen slides landed on none of them, because eight of
+          ;; those slides are built by helpers and one refusal took the whole
+          ;; save with it.
           (mark-unwritable! a)
           (set! skipped (cons (cons a "no `slide-canvas` call to add it to") skipped))]
          [(not e)
@@ -3151,22 +3176,29 @@
           ;; Duplicating a shape in the editor gives two of them one name, and
           ;; two `at` forms under one tag is a program a sync cannot read -- so
           ;; a name already spoken for in this slide gets a fresh one.
+          (define home-scope (or (and ss (slide-site-scope ss))
+                                 (scope-for-slide (sync-action-slide a))))
           (define taken
             (append (for/list ([st (in-list all-sites)]
-                               #:when (equal? (slide-site-scope ss) (at-site-scope st)))
+                               ;; With no scope to go by -- a slide built by a
+                               ;; helper -- every tag in the file is taken: the
+                               ;; one that is written has to be found again, and
+                               ;; a tag found file-wide is what finds it.
+                               #:when (or (not home-scope)
+                                          (equal? home-scope (at-site-scope st))))
                       (at-site-tag st))
-                    (hash-ref claimed (slide-site-scope ss) '())))
+                    (hash-ref claimed home-scope '())))
           (define named
             (let loop ([n 2] [name (element-name e)])
               (cond
                 [(not (member name taken)) (element-with-name e name)]
                 [(> n 99) (element-with-name e name)]
                 [else (loop (add1 n) (format "~a (~a)" (element-name e) n))])))
-          (hash-update! claimed (slide-site-scope ss)
+          (hash-update! claimed home-scope
                         (lambda (ns) (cons (element-name named) ns)) '())
           (define src-text
             (rhombus-element-source
-             named (slide-site-indent ss)
+             named (if ss (slide-site-indent ss) 2)
              #:media-names media-names
              #:font (and d (dominant-font d))))
           ;; Drawn on a stage after the first: written as a layer over that
@@ -3177,15 +3209,14 @@
           ;; so the `at` form goes inside a `from_stage` wrapped around the
           ;; slide's own entry in `all_slides`. It keeps its tag there, so the
           ;; next drag finds it like any other.
-          (define stage (stage-of (sync-action-slide a)))
-          (define entry (entry-range-for (sync-action-slide a)))
           ;; After the form it is drawn over, or before the first of them when
           ;; it is drawn under everything. A slide whose forms cannot be found
           ;; takes it last, which is where the editor usually put it anyway.
           (define under
             (let ([d (sync-action-detail a)])
               (and (list? d) (>= (length d) 2) (second d))))
-          (define canvas-here (canvas-forms (slide-site-scope ss) all-sites))
+          (define canvas-here
+            (if ss (canvas-forms (slide-site-scope ss) all-sites) '()))
           ;; A form this same save deletes is no anchor. Its comma goes with it,
           ;; and an insertion written against that comma left the canvas holding
           ;; two arguments with no separator between them -- a program that does
@@ -3210,21 +3241,44 @@
             (and (pair? surviving)
                  (argmin (lambda (st) (rng-start (at-site-whole st))) surviving)))
           (cond
-            [(and stage (> stage 1) entry opens-runtime?)
+            [over?
+             ;; `over` for a slide that has no canvas of its own, `from_stage`
+             ;; for a stage after the first: the same layer, and the second one
+             ;; waits.
+             (define call
+               (if (and stage (> stage 1)) (format "from_stage(~a, " stage) "over("))
+             ;; Written below the call where the entry has its line to itself,
+             ;; and on the one line where it does not: an entry can share a line
+             ;; with the next one -- `in_section(0, slide_2), in_section(0,
+             ;; slide_12),` is how a talk writes its list -- and then there is
+             ;; no indentation a continuation could take that is not the next
+             ;; entry's, which is a program that does not parse.
              (define col (- (rng-start entry)
                             (line-start source-text (rng-start entry))))
-             ;; Lined up under the first argument, which is how every call this
-             ;; writes is laid out -- and shrubbery reads the indentation.
+             (define alone?
+               (and (regexp-match? #px"^[ \t]*$"
+                                   (substring source-text
+                                              (line-start source-text (rng-start entry))
+                                              (rng-start entry)))
+                    (regexp-match? #px"^[ \t]*[,\\]]?[ \t]*(\n|$)"
+                                   (substring source-text (rng-end entry)
+                                              (min (string-length source-text)
+                                                   (+ (rng-end entry) 40))))))
              (define layer
-               (rhombus-element-source named (+ col (string-length "from_stage("))
-                                       #:media-names media-names
-                                       #:font (and d (dominant-font d))))
-             (define wrapper
-               (format "from_stage(~a, ~a,\n~a)"
-                       stage
-                       (substring source-text (rng-start entry) (rng-end entry))
-                       layer))
-             (edit! entry wrapper)]
+               (if alone?
+                   (rhombus-element-source named (+ col (string-length call))
+                                           #:media-names media-names
+                                           #:font (and d (dominant-font d)))
+                   (rhombus-element-source named 0
+                                           #:media-names media-names
+                                           #:font (and d (dominant-font d))
+                                           #:width +inf.0
+                                           #:comment? #f)))
+             (edit! entry
+                    (format (if alone? "~a~a,\n~a)" "~a~a, ~a)")
+                            call
+                            (substring source-text (rng-start entry) (rng-end entry))
+                            layer))]
             [(and after (at-site-whole after))
              (define at (rng-end (at-site-whole after)))
              (edit! (rng at at) (string-append ",\n" src-text))]
@@ -3235,15 +3289,16 @@
              (edit! (rng (slide-site-insert-at ss) (slide-site-insert-at ss))
                     (string-append ",\n" src-text))])
           ;; And on every frame after this one, since a build only ever adds.
-          (for ([ss2 (in-list (later-frames a))])
-            (edit! (rng (slide-site-insert-at ss2) (slide-site-insert-at ss2))
-                   (string-append ",\n" src-text)))
+          (unless over?
+            (for ([ss2 (in-list (later-frames a))])
+              (edit! (rng (slide-site-insert-at ss2) (slide-site-insert-at ss2))
+                     (string-append ",\n" src-text))))
           ;; A slide with stages is built from one canvas, and this went into
           ;; that canvas -- so it is there from the first stage, not from the
           ;; stage it was drawn on. Which stage a shape appears on is the code's
           ;; to say, and there is no literal here to write it in.
           (when (and (staged-slide? (sync-action-slide a))
-                     (not (and stage (> stage 1) entry opens-runtime?)))
+                     (not (and over? stage (> stage 1))))
             (set! notes (cons (cons a STAGE-WIDE) notes)))
           (set! applied (cons a applied))])]
       ;; Deleted in the editor: the `at` form goes, and nothing else.
