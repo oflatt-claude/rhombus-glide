@@ -2978,6 +2978,14 @@
        (define srcs (if e (element-media e) '()))
        (cond
          [(not ss)
+          ;; A slide a helper builds -- `divider(0)`, `in_section(1, s)` -- has
+          ;; no canvas of its own for a form to go into, and adding one means
+          ;; restructuring the helper rather than writing a literal. That is a
+          ;; fact about the program and not a failure to be retried, so it does
+          ;; not hold up the rest of the save: a box drawn on each of sixteen
+          ;; slides landed on none of them, because eight of those slides are
+          ;; built by helpers and one refusal took the whole save with it.
+          (mark-unwritable! a)
           (set! skipped (cons (cons a "no `slide-canvas` call to add it to") skipped))]
          [(not e)
           ;; A kind the translator has no source for -- a group, a chart. There

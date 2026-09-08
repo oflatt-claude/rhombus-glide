@@ -342,6 +342,13 @@ BASIC
       [(or (not i) (> (hash-ref shared (cons (at-site-scope s) (at-site-tag s)) 0) 1)) h]
       [else (hash-update h i (lambda (l) (append l (list s))) '())])))
 
+;; A tag the job file can carry. LibreOffice Basic reads the file it is given in
+;; the system encoding, so a name with an ellipsis or an accent in it arrives as
+;; something else and names no shape at all. That is this test's limit, not the
+;; merge's -- `retype-all` retypes those through the XML.
+(define (nameable? st)
+  (for/and ([c (in-string (at-site-tag st))]) (char<=? c #\~)))
+
 (define (applied-kinds r)
   (for/list ([a (in-list (sync-report-applied r))]) (sync-action-kind a)))
 
@@ -393,15 +400,17 @@ BASIC
   (define slide
     (for/or ([i (in-list (sort (hash-keys by-slide) <))])
       (define ss (hash-ref by-slide i))
-      (and (>= (length ss) 2)
-           (ormap (lambda (st) (has-words? i (at-site-tag st))) ss)
+      (and (>= (length (filter nameable? ss)) 2)
+           (ormap (lambda (st) (and (nameable? st) (has-words? i (at-site-tag st)))) ss)
            i)))
   (cond
     [(not slide) (printf "  ~a: no slide with a tagged element holding words\n" name)]
     [else
      (define ss (hash-ref by-slide slide))
-     (define texty (findf (lambda (st) (has-words? slide (at-site-tag st))) ss))
-     (define others (remq texty ss))
+     (define texty (findf (lambda (st) (and (nameable? st)
+                                            (has-words? slide (at-site-tag st))))
+                          ss))
+     (define others (filter nameable? (remq texty ss)))
      (define to-move (if (pair? others) (first others) texty))
      (define to-delete (and (> (length others) 1) (last others)))
      ;; Recoloured: the editor's colour picker is one of the first things
@@ -542,6 +551,68 @@ BASIC
                    (format "~a: the deck written from the program has nothing to merge"
                            name))]))
 
+;; A text box drawn on every slide, in one save. "Does it work on every slide?"
+;; is a different question from "does it work": a slide the program builds in a
+;; helper, a slide whose canvas is not a literal `slide_canvas` call, a slide
+;; that is hidden -- each of those is a place a new box may have nowhere to go,
+;; and one save that lands on fifteen slides and refuses the sixteenth says so
+;; where fifteen separate saves would not.
+(define (added-everywhere name program dir)
+  (define pptx (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (define slides (length (load-program-picts program)))
+  (picts->pptx (load-program-picts program) pptx)
+  (void (sync-once program pptx #:workdir w))
+  (define (typed i) (format "Drawn on slide ~a" i))
+  (printf "  ~a: a text box on each of ~a slides\n" name slides)
+  (check-true
+   (libreoffice-edit!
+    pptx
+    (for/list ([i (in-range 1 (add1 slides))])
+      (list "addtext" i (mm100 60) (mm100 60) (mm100 220) (mm100 40) (typed i))))
+   (format "~a: LibreOffice saved the deck it was given" name))
+  (define r (sync-once program pptx #:workdir w #:atomic? #t))
+  (define adds
+    (for/list ([a (in-list (sync-report-applied r))]
+               #:when (eq? 'added (sync-action-kind a)))
+      (sync-action-slide a)))
+  (for ([sk (in-list (sync-report-skipped r))])
+    (printf "     refused ~a ~s on slide ~a: ~a\n" (sync-action-kind (car sk))
+            (sync-action-tag (car sk)) (sync-action-slide (car sk)) (cdr sk)))
+  (define text (file->string program))
+  (define missing
+    (for/list ([i (in-range 1 (add1 slides))]
+               #:unless (string-contains? text (typed i)))
+      i))
+  ;; A slide a helper builds has no canvas of its own to add a form to, and says
+  ;; so. That is the program's shape, not a failure -- so what is asked is that
+  ;; every slide either takes the box or says why it cannot, and that the ones
+  ;; that cannot do not take the rest of the save down with them.
+  (define no-canvas
+    (for/list ([sk (in-list (sync-report-skipped r))]
+               #:when (regexp-match? #rx"slide-canvas" (cdr sk)))
+      (sync-action-slide (car sk))))
+  (printf "     ~a of ~a landed~a\n" (- slides (length missing)) slides
+          (if (null? missing)
+              ""
+              (format ", not on slide~a ~a~a" (if (= 1 (length missing)) "" "s")
+                      (string-join (map number->string missing) ", ")
+                      (if (null? no-canvas) ""
+                          " -- no `slide_canvas` of their own"))))
+  (check-equal? (sort missing <) (sort (remove-duplicates no-canvas) <)
+                (format "~a: a box lands on every slide that has a canvas to hold it" name))
+  (check-equal? (sort (remove-duplicates (append adds no-canvas)) <)
+                (for/list ([i (in-range 1 (add1 slides))]) i)
+                (format "~a: and every slide either takes it or says why not" name))
+  ;; And the deck written back from the program holds all of them.
+  (picts->pptx (load-program-picts program) pptx)
+  (define settled (sync-once program pptx #:workdir w #:atomic? #t))
+  (for ([a (in-list (sync-report-actions settled))])
+    (printf "     unsettled: ~a ~s on slide ~a\n" (sync-action-kind a)
+            (sync-action-tag a) (sync-action-slide a)))
+  (check-equal? (length (sync-report-actions settled)) 0
+                (format "~a: the deck written from the program has nothing to merge" name)))
+
 (define fixtures
   (let ([only (getenv "GLIDE_LO_DECKS")])
     (for/list ([f (in-list (sort (map path->string (directory-list decks-dir)) string<?))]
@@ -573,6 +644,35 @@ BASIC
      (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
                            #:workdir (build-path dir "u")))
      (write-rhombus-deck d program #:source-name (string-append name ".pptx"))
-     (copied-in-libreoffice name program dir))])
+     (copied-in-libreoffice name program dir))
+   (printf "drawing a text box on every slide:\n")
+   (for ([name (in-list fixtures)])
+     (define dir (build-path work (string-append name "-every")))
+     (make-directory* dir)
+     (define program (build-path dir "p.rhm"))
+     (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
+                           #:workdir (build-path dir "u")))
+     (write-rhombus-deck d program #:source-name (string-append name ".pptx"))
+     (added-everywhere name program dir))
+   ;; And a talk of one's own, which is where the slides are built by hand and
+   ;; the answer is not obvious. `GLIDE_LO_PROGRAM` names it.
+   (let ([mine (getenv "GLIDE_LO_PROGRAM")])
+     (when mine
+       (define from (path-only (path->complete-path mine)))
+       (define dir (build-path work "local"))
+       (make-directory* dir)
+       ;; Everything beside it, except the scratch: `.glide` holds a base
+       ;; written for the program where it came from, and the merge refuses one
+       ;; of those rather than merging somebody else's agreed state -- rightly.
+       (for ([f (in-list (directory-list from))]
+             #:unless (equal? (path->string f) ".glide"))
+         (define src (build-path from f))
+         (if (directory-exists? src)
+             (copy-directory/files src (build-path dir f) #:keep-modify-seconds? #t)
+             (copy-file src (build-path dir f) #t)))
+       (define program (build-path dir (file-name-from-path mine)))
+       (printf "your own program:\n")
+       (added-everywhere (path->string (file-name-from-path mine)) program dir)
+       (edited-in-libreoffice (path->string (file-name-from-path mine)) program dir)))])
 
 (module+ main (void (test-log #:display? #t #:exit? #t)))
