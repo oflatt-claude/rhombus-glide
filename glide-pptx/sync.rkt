@@ -1431,12 +1431,13 @@
             (with-indents (rhombus-slide-sites groups text) (reverse sites) text)
             (program-layout (rhombus-name-list groups text)
                             (rhombus-export-block groups text)
-                            (rhombus-global-colours groups)))))
+                            (rhombus-global-colours groups)
+                            (rhombus-slide-entries groups)))))
 
 ;; Where a slide can be added, and where its name has to be entered for the
 ;; addition to mean anything. A `def slide_N` nobody lists in `all_slides` is
 ;; dead code, so the two edits go together.
-(struct program-layout (slide-list exports globals) #:transparent)
+(struct program-layout (slide-list exports globals entries) #:transparent)
 
 ;; `def all_slides = [slide_1, slide_2]` -- the brackets, and each name in them.
 (struct name-list (open close items) #:transparent)
@@ -1685,6 +1686,54 @@
 ;; it every tag has to be unique across the whole file, which no deck's tags
 ;; are -- "Group" and "Rectangle (2)" are on half the slides -- and every merge
 ;; is refused.
+;; The `[...]` of `all_slides`, in either shape the definition can take: on the
+;; `=`, or in the block that follows a `:`.
+(define (all-slides-brackets groups)
+  (for/or ([g (in-list groups)])
+    (define l (let ([e (syntax-e g)]) (and (list? e) e)))
+    (and l (>= (length l) 4) (eq? 'group (syntax-e* (first l)))
+         (eq? 'def (syntax-e* (second l)))
+         (memq (syntax-e* (third l)) '(all_slides all-slides))
+         (let ([tail (list-tail l 3)])
+           (for/or ([piece (in-list tail)])
+             (define e (let ([v (syntax-e piece)]) (and (list? v) v)))
+             (cond
+               [(not e) #f]
+               [(eq? 'brackets (syntax-e* (car e))) e]
+               [(eq? 'block (syntax-e* (car e)))
+                (for/or ([grp (in-list (cdr e))])
+                  (define ge (let ([v (syntax-e grp)]) (and (list? v) v)))
+                  (and ge (>= (length ge) 2)
+                       (let ([inner (let ([v (syntax-e (second ge))]) (and (list? v) v))])
+                         (and inner (eq? 'brackets (syntax-e* (car inner))) inner))))]
+               [else #f]))))))
+
+;; How far each entry of `all_slides` reaches, in order. A slide is edited by
+;; its position in that list, and an edit that has to be written *around* a
+;; slide -- something that appears from one of its stages on -- is written
+;; around its entry, whatever shape the entry has: a name, or a call like
+;; `in_section(0, slide_2)`.
+(define (rhombus-slide-entries groups)
+  (define b (all-slides-brackets groups))
+  (and b (for/list ([grp (in-list (cdr b))]) (group-range grp))))
+
+;; A group's whole extent: groups carry no position of their own, so it is the
+;; span from the earliest term in it to the furthest.
+(define (group-range g)
+  (define lo #f)
+  (define hi #f)
+  (let walk ([e g])
+    (cond
+      [(syntax? e)
+       (define r (range-of e))
+       (when r
+         (when (or (not lo) (< (rng-start r) lo)) (set! lo (rng-start r)))
+         (when (or (not hi) (> (rng-end r) hi)) (set! hi (rng-end r))))
+       (walk (syntax-e e))]
+      [(pair? e) (walk (car e)) (walk (cdr e))]
+      [else (void)]))
+  (and lo hi (rng lo hi)))
+
 (define (rhombus-slide-scopes groups site-scopes)
   (define known (for/hash ([s (in-list site-scopes)] #:when s) (values s #t)))
   ;; What each top-level definition is defined as, so that a name in
@@ -2627,6 +2676,28 @@
     (and (<= 1 i (length origins))
          (let ([j (list-ref origins (sub1 i))])
            (> (length (filter (lambda (k) (= k j)) origins)) 1))))
+  ;; Which stage of its slide this slide of the deck is, counting from one.
+  (define (stage-of i)
+    (define origins (unbox slide-origins))
+    (and (<= 1 i (length origins))
+         (let ([j (list-ref origins (sub1 i))])
+           (add1 (length (for/list ([k (in-list (take origins (sub1 i)))]
+                                    #:when (= k j))
+                           k))))))
+  ;; Where this slide's entry in `all_slides` is, which is what an edit written
+  ;; around a slide is written around.
+  (define (entry-range-for i)
+    (define origins (unbox slide-origins))
+    (define entries (and layout (program-layout-entries layout)))
+    (and entries (<= 1 i (length origins))
+         (let ([j (list-ref origins (sub1 i))])
+           (and (<= 1 j (length entries)) (list-ref entries (sub1 j))))))
+  ;; Whether the program can see the runtime's own names without a prefix. What
+  ;; is written has to be a name the program has: a generated program opens the
+  ;; runtime, and so does a talk grown from one.
+  (define opens-runtime?
+    (regexp-match? #px"lib\\(\"glide-pptx/(runtime|show)\\.rhm\"\\)\\s+open"
+                   (file->string program-path)))
   (define spread? (box (let ([origins (unbox slide-origins)])
                          (and (pair? origins)
                               (not (= (length origins)
@@ -3098,6 +3169,16 @@
              named (slide-site-indent ss)
              #:media-names media-names
              #:font (and d (dominant-font d))))
+          ;; Drawn on a stage after the first: written as a layer over that
+          ;; slide, which appears from that stage on.
+          ;;
+          ;; The slide's canvas cannot say when something appears -- a canvas is
+          ;; one still picture, and the staging is applied to it from outside --
+          ;; so the `at` form goes inside a `from_stage` wrapped around the
+          ;; slide's own entry in `all_slides`. It keeps its tag there, so the
+          ;; next drag finds it like any other.
+          (define stage (stage-of (sync-action-slide a)))
+          (define entry (entry-range-for (sync-action-slide a)))
           ;; After the form it is drawn over, or before the first of them when
           ;; it is drawn under everything. A slide whose forms cannot be found
           ;; takes it last, which is where the editor usually put it anyway.
@@ -3129,6 +3210,21 @@
             (and (pair? surviving)
                  (argmin (lambda (st) (rng-start (at-site-whole st))) surviving)))
           (cond
+            [(and stage (> stage 1) entry opens-runtime?)
+             (define col (- (rng-start entry)
+                            (line-start source-text (rng-start entry))))
+             ;; Lined up under the first argument, which is how every call this
+             ;; writes is laid out -- and shrubbery reads the indentation.
+             (define layer
+               (rhombus-element-source named (+ col (string-length "from_stage("))
+                                       #:media-names media-names
+                                       #:font (and d (dominant-font d))))
+             (define wrapper
+               (format "from_stage(~a, ~a,\n~a)"
+                       stage
+                       (substring source-text (rng-start entry) (rng-end entry))
+                       layer))
+             (edit! entry wrapper)]
             [(and after (at-site-whole after))
              (define at (rng-end (at-site-whole after)))
              (edit! (rng at at) (string-append ",\n" src-text))]
@@ -3146,7 +3242,8 @@
           ;; that canvas -- so it is there from the first stage, not from the
           ;; stage it was drawn on. Which stage a shape appears on is the code's
           ;; to say, and there is no literal here to write it in.
-          (when (staged-slide? (sync-action-slide a))
+          (when (and (staged-slide? (sync-action-slide a))
+                     (not (and stage (> stage 1) entry opens-runtime?)))
             (set! notes (cons (cons a STAGE-WIDE) notes)))
           (set! applied (cons a applied))])]
       ;; Deleted in the editor: the `at` form goes, and nothing else.
@@ -3158,6 +3255,12 @@
          [(not whole)
           (set! skipped (cons (cons a "its `at` form has no source extent") skipped))]
          [else (edit! (deletion-range (file->string program-path) whole) "")
+               ;; One form draws the shape on every stage of its slide, so
+               ;; taking the form out takes it off all of them -- not only the
+               ;; stage it was deleted on. Which stage a shape stops appearing
+               ;; on is the code's to say.
+               (when (staged-slide? (sync-action-slide a))
+                 (set! notes (cons (cons a STAGES-ALL) notes)))
                (set! applied (cons a applied))])]
       ;; Appearance: written where the source states it as a literal, and
       ;; reported by name where it does not.
@@ -3549,6 +3652,10 @@
 (define STAGE-WIDE
   (string-append "the slide is built from one canvas, so this is on it from the first"
                  " stage rather than the one it was drawn on"))
+
+(define STAGES-ALL
+  (string-append "one `at` form draws it on every stage of the slide, so it is gone"
+                 " from all of them and not only the stage it was deleted on"))
 
 ;; Whether the deck's rotation or mirroring differs from what the source says.
 ;; The source's own value is what it was exported with, so the base is not

@@ -20,6 +20,7 @@ import: pict as pc
 export:
   settle_frames
   stage_frames
+  over_from
 
 fun settle_frames(s):
   if s is_a pc.Pict
@@ -40,3 +41,26 @@ fun stage_frames(s):
   | for List (i in 0 .. math.max(1, s.duration)):
       s.snapshot(i, 1.0).handle
   | [s]
+
+// A layer laid over a slide that animates, appearing from one stage on.
+//
+// A shape drawn on the third stage of a slide is a shape that appears there and
+// not before, and the slide's own canvas cannot say so: a canvas is one still
+// picture, and the staging is applied to it from outside. So the shape goes
+// over the top, in a layer of its own that starts when it should -- built by
+// `make_layer`, which is handed the slide's own size, so the layer is a canvas
+// like any other and what it holds keeps its tag.
+//
+// `delay` is `time_clip` and `time_pad` together: nothing before the stage, and
+// from there on whatever the layer draws.
+fun over_from(stage, slide, make_layer):
+  def a :~ pc.Pict = as_pict(slide)
+  def layer :~ pc.Pict = as_pict(make_layer(a.width, a.height))
+  // `concurrent` gives the two the same duration and hands them back as they
+  // now stand; putting one over the other is a separate step, and it is left
+  // and top so a layer the size of the slide lands where the slide is.
+  def both = pc.concurrent(a, layer.delay(math.max(0, stage - 1)))
+  pc.overlay(~horiz: #'left, ~vert: #'top, both[0], both[1])
+
+fun as_pict(v) :~ pc.Pict:
+  if v is_a pc.Pict | v | pc.Pict.from_handle(v)

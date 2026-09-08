@@ -11,7 +11,7 @@
          set-slide-numbers! slide-numbers? slide-numbers-on? number-on
          forget-bitmaps!
          ;; composition
-         (struct-out placed) at slide-canvas pin-placed placed-position
+         (struct-out placed) at slide-canvas from-stage pin-placed placed-position
          ;; structure carried on the pict, for export
          (all-from-out "tagged.rkt")
          ;; leaves
@@ -903,6 +903,18 @@
 ;; deck: nothing is drawn differently for it and it is not written back to the
 ;; .pptx, because the transitions a deck can hold and the ones `staged.rhm`
 ;; performs are not the same set.
+;; A slide with something laid over it from one stage on.
+;;
+;; `elems` are `at` forms like any others, so the shape keeps its tag and can be
+;; dragged again afterwards -- which is the whole point of writing an edit as
+;; source. The staging itself is `settle.rhm`'s: rhombus/pict is loaded on
+;; demand, because a deck that does not animate should not pay for it.
+(define (from-stage stage slide elems)
+  (define over (dynamic-require '(lib "glide-pptx/settle.rhm") 'over_from))
+  (over stage slide
+        (lambda (w h)
+          (apply slide-canvas #:width w #:height h #:background #f elems))))
+
 (define (slide-canvas #:width w #:height h #:background [bg (solid-fill white)]
                       #:hidden? [hidden? #f]
                       #:build [build #f]

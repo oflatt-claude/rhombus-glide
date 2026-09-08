@@ -310,8 +310,12 @@
                             #:workdir (build-path dir "w")
                             #:interval 0.05 #:ticks 400)))))
   ;; Startup unzips, merges and regenerates, which is slower than any sleep
-  ;; worth writing -- so wait for it to say it wrote the deck.
-  (wait! "the loop to finish starting" (lambda () (said? #rx"slides written")))
+  ;; worth writing -- so wait for it to say it is watching. Not for the deck to
+  ;; be written: that is said before the program is read, which takes seconds,
+  ;; and a deck edited inside that window is one the loop never sees change.
+  ;; "watching for changes" is said after the reading and before the first hash
+  ;; is taken, which is what makes it the thing to wait for.
+  (wait! "the loop to finish starting" (lambda () (said? #rx"watching for changes")))
   (sleep 0.3)
   ;; Two edits in one save, one of which cannot be written: the resize can be,
   ;; and recolouring one of the two shapes that share `brand` cannot. So the

@@ -16,6 +16,7 @@ import:
 
 export:
   slide_canvas
+  from_stage
   at
   shape_pict
   textbox
@@ -128,6 +129,13 @@ fun transition_of(s):
 
 fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
   rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~nudge: to_rkt_list(nudge))
+
+// A slide with `elems` laid over it from `stage` on, counting the first stage
+// as 1. A shape drawn on the third stage of a slide in the editor appears
+// there and not before, and this is what says so: the slide's own canvas is one
+// still picture, and the staging is applied to it from outside.
+fun from_stage(stage, slide, & elems):
+  rt.#{from-stage}(stage, slide, to_rkt_list(elems))
 
 // --------------------------------------------------------------------- leaves
 

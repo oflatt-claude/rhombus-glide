@@ -410,6 +410,68 @@
                 "after which there is nothing left to merge")
   (set-stage-slides! #f))
 
+;; ------------------------------------------ a shape drawn on a later stage
+;;
+;; Drawing a box on the third stage of a slide means a box that appears there
+;; and not before. The slide's canvas cannot say that -- a canvas is one still
+;; picture, and the staging is applied to it from outside -- so what is written
+;; is a layer over the slide, in a `from_stage` wrapped around its entry in
+;; `all_slides`. The `at` form inside it keeps its tag, which is what makes the
+;; next drag land: a shape this wrote is a shape like any other.
+(let ()
+  (define program (build-path work "stage-add.rhm"))
+  (define (fresh!)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "  pict as pc"
+            "export: all_slides"
+            "def canvas = slide_canvas("
+            "  ~width: 320.0, ~height: 240.0,"
+            "  at(20.0, 20.0, ~tag: \"Box\","
+            "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))))"
+            "def staged:"
+            "  def base = pc.Pict.from_handle(canvas)"
+            "  pc.switch(base, pc.animate(fun (t): base.alpha(t)))"
+            "def all_slides = [staged]")
+      "\n")
+     program #:exists 'replace))
+  (fresh!)
+  (set-stage-slides! #t)
+  (define deck (build-path work "stage-add.pptx"))
+  (define w (build-path work "stage-add-work"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (check-equal? (add-shape-to-deck! deck 2 "Drawn late" #:x 40.0 #:y 200.0
+                                    #:width 60.0 #:height 20.0)
+                "Drawn late"
+                "a shape is drawn on the second stage")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(added)
+                "and written")
+  (check-regexp-match #rx"from_stage[(]2, staged," (file->string program)
+                      "as a layer over the slide, appearing from that stage")
+  (define (tags-on i)
+    (for/first ([st (in-list (program-slide-states program))]
+                #:when (= i (slide-state-index st)))
+      (for/list ([e (in-list (slide-state-elements st))]) (el-state-tag e))))
+  (check-equal? (tags-on 1) '("Box") "the first stage does not hold it")
+  (check-equal? (tags-on 2) '("Box" "Drawn late") "and the second does")
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "the deck written from the program has nothing to merge")
+  ;; And it can be dragged, like anything else with a tag and an `at`.
+  (check-true (drag-in-deck! deck 2 "Drawn late" 90.0 150.0) "it is dragged")
+  (define r2 (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r2)) '(moved)
+                "and the drag is written")
+  (check-regexp-match #rx"at[(]90[.]0, 150[.]0, ~tag: \"Drawn late\""
+                      (file->string program)
+                      "to the `at` form the layer holds")
+  (set-stage-slides! #f))
+
 (printf "staged tests done\n")
 
 (module+ main (void (test-log #:display? #t #:exit? #t)))
