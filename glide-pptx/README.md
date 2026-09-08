@@ -367,6 +367,53 @@ Two of those pages come out pixel-identical. The carrier is a `pict` subtype, so
 it survives every pict combinator except `launder`; anything without a
 descriptor still exports through the flattened path.
 
+### A helper that says what can be edited
+
+A talk draws things with helpers of its own: a bubble pinned to a token in a
+code listing, a callout with a spike, a header built from a section list. What
+those draw has nothing in the source an edit could be written into -- the
+position is measured from the thing it points at, and the words are arguments
+the helper lays out itself:
+
+```rhombus
+def (rx, ry) = pc.Find.right(token).in(code)
+callout(~on: layer, ~at: pc.Find.abs(rx, ry), ~spike: #'w,
+        prose([["Write ", #'plain], ["x", #'bold]]))
+```
+
+Drag that in the editor and there is no number to rewrite. So the call says
+what it offers, by carrying the same two arguments an `at` carries:
+
+```rhombus
+callout(~on: layer, ~at: pc.Find.abs(rx, ry), ~spike: #'w,
+        ~tag: "why x", ~nudge: [0.0, 0.0],
+        prose([["Write ", #'plain], ["x", #'bold]]))
+```
+
+* `~tag:` makes what the helper draws one element with a name. The helper
+  passes it on to the `at` it builds, so the element on the slide answers to
+  the same name -- that is the whole of the helper's side of the bargain, along
+  with taking `~nudge:` and passing it on too, or a correction would be written
+  and never drawn.
+* `~nudge:` is where a drag is recorded: `~nudge: [12.0, -8.0]`. The helper
+  keeps working out where the bubble goes, and the correction says how far off
+  that was -- which is what a hand adjustment to a pinned bubble is. It is one
+  argument rather than a wrapper, so a second drag replaces those two numbers
+  instead of stacking another correction on top.
+* The strings the call holds are its runs, in the order they are written, so
+  retyping a word rewrites the string it came from. A retyping that runs across
+  two of them is refused, the way it is anywhere else -- which of them it
+  belonged to is a guess.
+* `~width:` and `~height:`, where the helper takes them, are written by a
+  resize.
+
+Deleting is not offered: the call may be named and drawn somewhere else, so
+taking it out is a change to what the program does rather than to a literal in
+it. That is said rather than done.
+
+The helper's own `at` is not a site -- its arguments are variables -- which is
+exactly why the call has to be one.
+
 ## Keeping a program and a deck in step
 
 `watch` is the parent process for the whole loop:

@@ -2055,6 +2055,73 @@
   (check-equal? (sync-report-actions (sync!)) '()
                 "and the program is still one a sync can read"))
 
+;; ------------------------------------ a helper that says what can be edited
+;;
+;; A talk draws things with helpers of its own -- a bubble pinned to a token, a
+;; callout with a spike -- and what they draw has nothing in the source an edit
+;; could be written into: the position is measured from the thing it points at,
+;; and the words are arguments the helper lays out itself. So the call says what
+;; it offers. `~tag:` makes what it draws one element with a name; `~nudge:` is
+;; where a drag is recorded, leaving the measured position alone; and the
+;; strings it holds are its runs.
+;;
+;; The helper's own `at` is not a site -- its arguments are variables -- which
+;; is exactly why the call has to be one.
+(let ()
+  (define dir (build-path work "helper"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export: all_slides"
+          "fun bubble(words, ~x: x, ~y: y, ~tag: tag = #false, ~nudge: nudge = #false):"
+          "  at(x, y, ~tag: tag, ~nudge: nudge,"
+          "     textbox(~width: 120.0, ~height: 30.0, ~wrap: #false, para(run(words))))"
+          "def anchor = 30.0"
+          "def slide_1 = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  at(20.0, 20.0, ~tag: \"Box\","
+          "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))),"
+          "  bubble(\"hello there\", ~x: anchor * 4, ~y: anchor * 5,"
+          "         ~tag: \"why\", ~nudge: [0.0, 0.0]))"
+          "def all_slides = [slide_1]")
+    "\n")
+   program #:exists 'replace)
+  (define-values (sites scopes slide-sites layout) (find-program-sites program))
+  (define why (findf (lambda (s) (equal? "why" (at-site-tag s))) sites))
+  (check-true (and why #t) "the call is a site")
+  (check-false (at-site-x why) "with no position of its own to write")
+  (check-true (and (at-site-nudge why) #t) "a correction that can be written")
+  (check-equal? (length (first (at-site-texts why))) 1 "and one run, which is its words")
+
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  ;; Dragged: the measured position stays, and the drag is the correction.
+  (check-true (drag-in-deck! deck 1 "why" 200.0 150.0) "the bubble is dragged")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                "which is written")
+  (check-regexp-match #rx"~x: anchor [*] 4" (file->string program)
+                      "the helper keeps working out where it goes")
+  (check-regexp-match #rx"~nudge: [[]80[.]0, 0[.]0[]]" (file->string program)
+                      "and the drag is recorded as how far off that was")
+  ;; Retyped: the words are the call's own string.
+  (check-true (retext-in-deck! deck 1 "why" "hello world") "the bubble is retyped")
+  (define r2 (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r2)) '(retext)
+                "which is written too")
+  (check-regexp-match #rx"bubble[(]\"hello world\"" (file->string program)
+                      "into the string the helper was handed")
+  ;; And it settles: the program draws what the deck holds.
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "and there is nothing left to merge"))
+
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
 ;; says so; required by a suite, the suite says it once at the end.

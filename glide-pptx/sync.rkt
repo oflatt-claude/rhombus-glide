@@ -1416,12 +1416,20 @@
         (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
         (when l
           (define call (rhombus-call l))
-          (when (and call (eq? 'at (car call)))
-            (define site (parse-rhombus-at (cdr call) (local-leaf-defs g)))
+          (when call
+            (define at? (eq? 'at (car call)))
+            (define site
+              (if at?
+                  (parse-rhombus-at (cdr call) (local-leaf-defs g))
+                  ;; A helper the program calls to draw something, which says by
+                  ;; carrying a `~tag:` that what it draws is one element. See
+                  ;; `parse-rhombus-tagged-call`.
+                  (parse-rhombus-tagged-call (cdr call))))
             (when site
               (set! sites (cons (struct-copy at-site site
                                              [scope scope]
-                                             [whole (rhombus-call-extent text (second l))])
+                                             [whole (and at?
+                                                         (rhombus-call-extent text (second l)))])
                                 sites))))
           (for-each walk l))
         (void))))
@@ -1915,6 +1923,63 @@
                   (rhombus-child-flag child '#:flip_v)
                   (rhombus-child-insert child)
                   (style-sites child)))))
+
+;; Any call that carries a literal `~tag:` is a site, not only `at`.
+;;
+;; A talk draws things with helpers of its own -- a bubble pinned to a token, a
+;; callout with a spike -- and what those draw is an element on the slide with
+;; nothing in the source an edit could be written into: the position is
+;; measured from the thing it points at, and the words are arguments the helper
+;; lays out itself. Writing `~tag:` on the call says "what this draws is one
+;; element, and it is called this", which is what makes an edit to it something
+;; that can be found and written. The helper passes the tag on to the `at` it
+;; builds, so the element on the slide answers to the same name.
+;;
+;; What can be written is what the call states as a literal: the words, one run
+;; per string, and a `~nudge:` for the position -- the helper keeps whatever it
+;; computes and the correction says how far off it was, which is what a hand
+;; adjustment to a pinned bubble is. A helper that offers this has to take
+;; `~nudge:` and pass it on, or the correction would be written and never
+;; drawn.
+;;
+;; `whole` is #f: the call is not a form this can delete on its own, because the
+;; program may name it and draw it somewhere else -- and that also keeps it out
+;; of the anchors a newly drawn shape is written next to.
+(define (parse-rhombus-tagged-call args)
+  (define kws (for/hash ([g (in-list args)] #:when (rhombus-kw-name g))
+                (values (rhombus-kw-name g) (rhombus-kw-value g))))
+  (define tag-stx (hash-ref kws '#:tag #f))
+  (define tag (and tag-stx (string? (syntax-e* tag-stx)) (syntax-e* tag-stx)))
+  (and tag
+       (let ([after-tag (let ([r (range-of tag-stx)]) (and r (rng-end r)))]
+             [words (call-string-ranges args (range-of tag-stx))])
+         (at-site tag #f #f
+                  (literal-range (hash-ref kws '#:rotate #f) real?)
+                  (literal-range (hash-ref kws '#:width #f) real?)
+                  (literal-range (hash-ref kws '#:height #f) real?)
+                  (if (null? words) '() (list words))
+                  (rhombus-nudge (hash-ref kws '#:nudge #f))
+                  after-tag
+                  #f #f #f #f #f '()))))
+
+;; Every string the call holds, in the order they are written, less the tag
+;; itself: the words a helper draws are its arguments, and one string is one run
+;; -- so retyping a word rewrites the string it came from, and a retyping that
+;; runs across two of them is refused the way it is anywhere else.
+(define (call-string-ranges args skip)
+  (define acc '())
+  (for ([g (in-list args)])
+    (let walk ([s g])
+      (cond
+        [(syntax? s)
+         (when (string? (syntax-e s))
+           (define r (range-of s))
+           (when (and r (not (and skip (= (rng-start r) (rng-start skip)))))
+             (set! acc (cons r acc))))
+         (walk (syntax-e s))]
+        [(pair? s) (walk (car s)) (walk (cdr s))]
+        [else (void)])))
+  (sort acc < #:key rng-start))
 
 ;; `~nudge: [12.0, -4.0]` -> (list range dx dy).
 ;; The text being read, so an extent that syntax cannot give can be found in it.
@@ -3308,7 +3373,11 @@
          [(not site) (begin (mark-unwritable! a)
                  (set! skipped (cons (cons a NO-AT-FORM) skipped)))]
          [(not whole)
-          (set! skipped (cons (cons a "its `at` form has no source extent") skipped))]
+          ;; A helper's call is a site to adjust, not a form to delete: the
+          ;; program may name it and draw it elsewhere, so taking it out is a
+          ;; change to what the program does rather than to a literal in it.
+          (mark-unwritable! a)
+          (set! skipped (cons (cons a "no form here can be deleted on its own") skipped))]
          [else (edit! (deletion-range (file->string program-path) whole) "")
                ;; One form draws the shape on every stage of its slide, so
                ;; taking the form out takes it off all of them -- not only the
