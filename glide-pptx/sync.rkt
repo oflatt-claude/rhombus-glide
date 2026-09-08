@@ -676,10 +676,18 @@
     (for*/hash ([d (in-list groupings)]
                 [k (in-list (hash-ref group-children (el-state-tag d)))])
       (values k #t)))
+  ;; What the program drew without an `at` form of its own: the shapes a helper
+  ;; draws, the pieces of a diagram built in code. They have no tag on either
+  ;; side, so they are compared one to one -- bucketed under #f instead, a slide
+  ;; with thirty of them read as one family of thirty that had not all moved the
+  ;; same way, and the report said `ambiguous` once and named nothing.
+  (define-values (tagged-pairs drawn-pairs)
+    (partition (lambda (p) (or (el-state-tag (cdr p)) (el-state-tag (car p))))
+               deck-pairs))
   ;; Pairs grouped by tag, so a family is decided once rather than per element.
   ;; In the order the tags first appear, so the report reads down the slide.
   (define groups
-    (let loop ([ps deck-pairs] [order '()] [h (hash)])
+    (let loop ([ps tagged-pairs] [order '()] [h (hash)])
       (cond
         [(null? ps) (for/list ([tag (in-list (reverse order))])
                       (list tag (reverse (hash-ref h tag))))]
@@ -690,6 +698,15 @@
                (if (hash-has-key? h tag) order (cons tag order))
                (hash-update h tag (lambda (v) (cons pair v)) '()))])))
   (append
+   ;; Said rather than written, and said with the name the deck gives it. There
+   ;; is no `at` form holding this shape's position -- the code decides where it
+   ;; goes -- so a drag on it is something to know about and not something the
+   ;; source could be made to say. A note, so that it neither refuses the save
+   ;; nor disappears without a word.
+   (for/list ([p (in-list drawn-pairs)]
+              #:when (or (not (el-geometry-same? (car p) (cdr p)))
+                         (not (string=? (el-state-text (car p)) (el-state-text (cdr p))))))
+     (sync-action 'noted (or (el-state-name (car p)) "(unnamed)") index DRAWN-BY-CODE #f))
    (append*
     (for/list ([g (in-list groups)])
       (define tag (first g))
@@ -723,17 +740,23 @@
      ;; With where it sits in the drawing order, which is the only handle on a
      ;; shape the editor made itself: LibreOffice writes a new text box with no
      ;; name, and a name is how every other action finds its element.
-     (sync-action 'added (or (el-state-tag d) "(unnamed)") index
+     (sync-action 'added (or (el-state-tag d) (el-state-name d) "(unnamed)") index
                   (list (el-geometry d) (drawn-under d deck-pairs) (el-state-z d)) #f))
    (for/list ([b (in-list deck-removed)] #:unless (hash-ref into-a-group (el-state-tag b) #f))
      (define tag (el-state-tag b))
-     ;; One of a family deleted: the others are still drawn by the same `at`.
-     (if (and tag (> (prog-count tag) 1))
-         (sync-action 'ambiguous tag index
-                      (format "~a elements share this tag, and deleting one of them is not something the code can say"
-                              (prog-count tag))
-                      #f)
-         (sync-action 'removed (or tag "(unnamed)") index (el-geometry b) #f)))))
+     (cond
+       ;; One of a family deleted: the others are still drawn by the same `at`.
+       [(and tag (> (prog-count tag) 1))
+        (sync-action 'ambiguous tag index
+                     (format "~a elements share this tag, and deleting one of them is not something the code can say"
+                             (prog-count tag))
+                     #f)]
+       ;; Nothing placed it, so nothing can stop placing it: the code draws it,
+       ;; and what the code draws is the code's to decide. Said with the name
+       ;; the deck gave it, and not as a deletion the merge failed to write.
+       [(not tag)
+        (sync-action 'noted (or (el-state-name b) "(unnamed)") index DRAWN-BY-CODE #f)]
+       [else (sync-action 'removed tag index (el-geometry b) #f)]))))
 
 ;; Every element under one tag, which one `at` drew.
 (define (family-actions tag index pairs prog-elements)
@@ -777,6 +800,10 @@
                 #:when (let ([old (assoc (car now) was)])
                          (and old (not (string=? (cdr old) (cdr now))))))
        (sync-action 'retext (car now) index (cdr now) #f))]))
+
+(define DRAWN-BY-CODE
+  (string-append "the program draws this rather than placing it with an `at` form,"
+                 " so there is no position in the source to write"))
 
 (define (single-actions tag index pair p)
   (define d (car pair)) (define b (cdr pair))
@@ -2343,17 +2370,17 @@
                             #:when (= index (slide-index s)))
                   s)])
          (and s
-              (or (let loop ([es (slide-elements s)])
+              ;; Where the state said it was drawn, which is exact -- and a
+              ;; shape the editor made itself may have no name at all, or a name
+              ;; another element on the slide already has.
+              (or (and z (< z (length (slide-elements s)))
+                       (list-ref (slide-elements s) z))
+                  (let loop ([es (slide-elements s)])
                     (for/or ([e (in-list es)])
                       (cond
                         [(group? e) (loop (group-children e))]
                         [(equal? tag (element-name e)) e]
-                        [else #f])))
-                  ;; A shape the editor made itself has no name to find it by --
-                  ;; so it is found where the state said it was drawn, which is
-                  ;; its position among the slide's own elements.
-                  (and z (< z (length (slide-elements s)))
-                       (list-ref (slide-elements s) z)))))))
+                        [else #f]))))))))
 
 ;; Where an `added` action's element sits in the deck's drawing order.
 (define (added-z a)
@@ -3347,11 +3374,16 @@
       ;; A difference that is not an assertion: said, and nothing more.
       [(noted)
        (set! notes
-             (cons (cons a (string-join
-                            (for/list ([ch (in-list (sync-action-detail a))])
-                              (format "~a is ~s here and ~s in the deck, which is what a deck says when it says nothing"
-                                      (property-name (first ch)) (second ch) (third ch)))
-                            "; "))
+             (cons (cons a
+                         (if (string? (sync-action-detail a))
+                             ;; Already in words: a shape the code draws, which
+                             ;; there is no `at` form to write to.
+                             (sync-action-detail a)
+                             (string-join
+                              (for/list ([ch (in-list (sync-action-detail a))])
+                                (format "~a is ~s here and ~s in the deck, which is what a deck says when it says nothing"
+                                        (property-name (first ch)) (second ch) (third ch)))
+                              "; ")))
                    notes))]
       [(ambiguous)
        (set! skipped (cons (cons a (sync-action-detail a)) skipped))]
@@ -4069,6 +4101,28 @@
                             #:deck (path->string (path->complete-path pptx-path)))
            (done! (sync-report actions applied skipped notes #t behind?))])])]))
 
+;; (action . why) pairs by why, in the order the reasons first appear, each
+;; carrying the names of the elements it was said about. A deck can have thirty
+;; shapes refused for one structural reason, and thirty identical lines bury the
+;; edits that did apply.
+(define (by-reason pairs)
+  (let loop ([ps pairs] [order '()] [h (hash)])
+    (cond
+      [(null? ps) (for/list ([why (in-list (reverse order))])
+                    (cons why (reverse (hash-ref h why))))]
+      [else
+       (define why (cdr (car ps)))
+       (loop (cdr ps)
+             (if (hash-has-key? h why) order (cons why order))
+             (hash-update h why (lambda (v) (cons (sync-action-tag (car (car ps))) v)) '()))])))
+
+;; Four of them and a count of the rest, which is as much as a line holds.
+(define (named tags)
+  (format "~a~a"
+          (string-join (map (lambda (t) (format "~s" t)) (take tags (min 4 (length tags))))
+                       ", ")
+          (if (> (length tags) 4) (format " and ~a more" (- (length tags) 4)) "")))
+
 (define (format-sync-report r)
   (define o (open-output-string))
   (define as (sync-report-actions r))
@@ -4085,44 +4139,32 @@
                               (~r (first g) #:precision 1) (~r (second g) #:precision 1)
                               (~r (third g) #:precision 1) (~r (fourth g) #:precision 1)))
                     "")))
-     ;; Grouped by reason. A deck can have thirty shapes the merge refuses for
-     ;; one structural reason, and thirty identical lines bury the edits that
-     ;; did apply.
-     (define by-reason
-       (let loop ([sks (sync-report-skipped r)] [order '()] [h (hash)])
-         (cond
-           [(null? sks) (for/list ([why (in-list (reverse order))])
-                          (cons why (reverse (hash-ref h why))))]
-           [else
-            (define why (cdr (car sks)))
-            (loop (cdr sks)
-                  (if (hash-has-key? h why) order (cons why order))
-                  (hash-update h why (lambda (v) (cons (sync-action-tag (car (car sks))) v))
-                               '()))])))
-     (for ([g (in-list by-reason)])
+     (for ([g (in-list (by-reason (sync-report-skipped r)))])
        (define tags (cdr g))
        (cond
          [(= 1 (length tags))
           (fprintf o "    not applied: ~s -- ~a\n" (first tags) (car g))]
          [else
           (fprintf o "    not applied, ~a of them -- ~a\n" (length tags) (car g))
-          (fprintf o "      ~a~a\n"
-                   (string-join (map (lambda (t) (format "~s" t)) (take tags (min 4 (length tags))))
-                                ", ")
-                   (if (> (length tags) 4)
-                       (format " and ~a more" (- (length tags) 4))
-                       ""))]))
-     ;; Notes, once each. A terse editor can leave the same note on every text
-     ;; box on the slide, and they are not things to do -- only things to know.
+          (fprintf o "      ~a\n" (named tags))]))
+     ;; Notes, grouped by reason and named. A terse editor can leave the same
+     ;; note on every text box on a slide, and a slide can have thirty shapes
+     ;; the code draws rather than places -- so one line a reason, and the names
+     ;; under it, because the one thing to do about a note is know which shape
+     ;; it is about.
      (define notes (sync-report-notes r))
      (unless (null? notes)
-       (define kinds (remove-duplicates (map cdr notes)))
-       (fprintf o "  ~a element~a the deck describes differently, not merged:\n"
+       (define groups (by-reason notes))
+       (fprintf o "  ~a element~a not merged:\n"
                 (length notes) (if (= 1 (length notes)) "" "s"))
-       (for ([why (in-list (take kinds (min 3 (length kinds))))])
-         (fprintf o "    ~a\n" why))
-       (when (> (length kinds) 3)
-         (fprintf o "    and ~a more like it\n" (- (length kinds) 3))))
+       (for ([g (in-list (take groups (min 3 (length groups))))])
+         (define tags (cdr g))
+         (cond
+           [(= 1 (length tags)) (fprintf o "    ~s -- ~a\n" (first tags) (car g))]
+           [else (fprintf o "    ~a of them -- ~a\n" (length tags) (car g))
+                 (fprintf o "      ~a\n" (named tags))]))
+       (when (> (length groups) 3)
+         (fprintf o "    and ~a more like it\n" (- (length groups) 3))))
      ;; The notes are their own actions rather than a subset of these, so they
      ;; are counted and not subtracted -- doing both reported "-1 reported" on a
      ;; pass that applied one edit and noted one thing.

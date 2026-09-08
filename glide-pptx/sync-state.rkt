@@ -12,13 +12,19 @@
          nth-property group-text-entries body-text
          write-sync-base read-sync-base write-atomically)
 
+;; `name` is what the deck calls it, which is not the same question as `tag`:
+;; only our own alt text makes a tag, and a shape the program drew without an
+;; `at` form of its own has none. It still has a name -- ours if we wrote the
+;; deck, the editor's if the editor made it -- and a report that cannot name the
+;; thing that moved is a report nobody can act on. #f on the program's side of
+;; the sync, which has no names to give.
 ;; `kind` is 'shape, 'text, 'picture or 'other. `text` is the element's visible
 ;; text, flattened, which is the strongest signal for recognizing it again.
 ;; `paint` is a short digest of its fill, and `z` its position in paint order.
 ;; `flip-h?`/`flip-v?` are here because dragging a line's endpoint past the
 ;; other end mirrors the shape rather than moving it: without them that edit was
 ;; invisible to a merge.
-(struct el-state (tag kind x y w h rot flip-h? flip-v? text paint style z) #:prefab)
+(struct el-state (tag name kind x y w h rot flip-h? flip-v? text paint style z) #:prefab)
 ;; `background` is the slide's own paint, as a colour, "gradient", or #f for
 ;; none: the canvas states it, and an editor can change it without touching a
 ;; single element.
@@ -98,7 +104,7 @@
   ;; can say it does not have, so a side that leaves it out is read as a fill
   ;; the editor added rather than as a side that did not say -- and a rectangle
   ;; drawn from a bare pict reported its own colour as an edit on every sync.
-  (el-state #f
+  (el-state #f #f
             (cond [(it:text? i) 'text]
                   [(it:image? i) 'picture]
                   [(or (it:rect? i) (it:ellipse? i) (it:path? i)) 'shape]
@@ -202,7 +208,7 @@
 (define (item->el-state i z)
   (cond
     [(it:preset? i)
-     (el-state (it:preset-tag i) 'shape (it:preset-x i) (it:preset-y i)
+     (el-state (it:preset-tag i) #f 'shape (it:preset-x i) (it:preset-y i)
                (it:preset-w i) (it:preset-h i) (it:preset-rot i)
                (it:preset-flip-h? i) (it:preset-flip-v? i)
                (body-text (it:preset-body i)) (fill-digest (it:preset-fill i))
@@ -210,12 +216,12 @@
                        (body-style (it:preset-body i)))
                z)]
     [(it:textbox? i)
-     (el-state (it:textbox-tag i) 'text (it:textbox-x i) (it:textbox-y i)
+     (el-state (it:textbox-tag i) #f 'text (it:textbox-x i) (it:textbox-y i)
                (it:textbox-w i) (it:textbox-h i) (it:textbox-rot i) #f #f
                (body-text (it:textbox-body i)) ""
                (body-style (it:textbox-body i)) z)]
     [(it:picture? i)
-     (el-state (it:picture-tag i) 'picture (it:picture-x i) (it:picture-y i)
+     (el-state (it:picture-tag i) #f 'picture (it:picture-x i) (it:picture-y i)
                (it:picture-w i) (it:picture-h i) (it:picture-rot i)
                (it:picture-flip-h? i) (it:picture-flip-v? i)
                "" (format "~a" (it:picture-src i))
@@ -232,7 +238,7 @@
     ;; A flattened element is a picture on both sides of the sync, so it is
     ;; described as one here too and the signature matcher agrees.
     [(it:image? i)
-     (el-state (it:image-tag i) 'picture (it:image-x i) (it:image-y i)
+     (el-state (it:image-tag i) #f 'picture (it:image-x i) (it:image-y i)
                (it:image-w i) (it:image-h i) (it:image-rot i) #f #f
                "" "flattened" '() z)]
     ;; A group is one element to drag, whatever it holds -- but what it holds can
@@ -242,13 +248,13 @@
        (contents-box (list (it:group-x i) (it:group-y i) (it:group-w i) (it:group-h i))
                      (map item-box (it:group-items i))
                      (it:group-rot i) (it:group-flip-h? i) (it:group-flip-v? i)))
-     (el-state (it:group-tag i) 'group
+     (el-state (it:group-tag i) #f 'group
                (first box) (second box) (third box) (fourth box) (it:group-rot i)
                (it:group-flip-h? i) (it:group-flip-v? i)
                (group-text-digest (item-text-pairs (it:group-items i))) "group" '() z)]
     [(it:shape-path? i)
      (define-values (x y w h) (apply values (it:shape-path-box i)))
-     (el-state (it:shape-path-tag i) 'shape x y w h (it:shape-path-rot i)
+     (el-state (it:shape-path-tag i) #f 'shape x y w h (it:shape-path-rot i)
                (it:shape-path-flip-h? i) (it:shape-path-flip-v? i)
                (body-text (it:shape-path-body i))
                (fill-digest (it:shape-path-fill i))
@@ -262,7 +268,7 @@
     ;; had no branch at all, and a program with a table in it could not be
     ;; synced: the merge raised on the way to its first comparison.
     [(it:table? i)
-     (el-state (it:table-tag i) 'table (it:table-x i) (it:table-y i)
+     (el-state (it:table-tag i) #f 'table (it:table-x i) (it:table-y i)
                (it:table-w i) (it:table-h i) (it:table-rot i) #f #f "" "" '() z)]
     ;; Not a fall-through: a new kind of semantic item should say so here rather
     ;; than be read as whatever the last branch happened to be. This branch used
@@ -590,7 +596,8 @@
                                (bbox-rot b) (bbox-flip-h? b) (bbox-flip-v? b))
                  (list (bbox-x b) (bbox-y b) (bbox-w b) (bbox-h b))))
            (set! acc
-                 (cons (el-state tag
+                 (cons (el-state tag (let ([n (element-name e)])
+                                       (and (not (string=? "" n)) n))
                                  (cond [(group? e) 'group]
                                        [(tbl? e) 'table]
                                        [(picture? e) 'picture]
@@ -702,7 +709,7 @@
 ;; Bumped whenever a state carries something it did not before. A base written
 ;; by an older version is not read: resyncing from scratch is what it says to do
 ;; when the base is unusable, and it is cheap.
-(define BASE-VERSION 3)
+(define BASE-VERSION 4)
 
 ;; Written beside the file and renamed over it, rather than into it. A write
 ;; that stops halfway -- a Ctrl-C, a full disk, the machine going down -- leaves
