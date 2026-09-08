@@ -117,12 +117,27 @@
 (define (slide-value s)
   (if (and (procedure? s) (procedure-arity-includes? s 0)) (s) s))
 
-;; Whether a deck holds one slide per stage. Off, because a deck is what an
-;; editor edits and an edit has to have one place to go: a slide that appears
-;; four times is a shape dragged on one of them and three that disagree. A deck
-;; to hand out or to step through is another matter, and `--stages` asks for it.
+;; Whether a deck holds one slide per stage.
 (define stage-slides? (box #f))
 (define (set-stage-slides! [on? #t]) (set-box! stage-slides? (and on? #t)))
+
+;; Which slide of the program each slide of the deck came from, 1-based, as the
+;; last read left it. Without stages that is 1, 2, 3 ...; with them, a slide
+;; given three stages is three slides of the deck and all three of them are that
+;; one slide of the program -- which is what says where an edit made on the
+;; third of them is to be written.
+(define slide-origins (box '()))
+
+;; The scope for each slide of the deck. One `all_slides` entry is one scope,
+;; and with stages one entry is several slides; everything that writes an edit
+;; finds its scope by the slide's position, so stretching this one list is what
+;; carries stages through all of it.
+(define (scopes-by-deck-slide scopes)
+  (define origins (unbox slide-origins))
+  (cond
+    [(or (not scopes) (null? origins)) scopes]
+    [else (for/list ([j (in-list origins)])
+            (and (<= 1 j (length scopes)) (list-ref scopes (sub1 j))))]))
 
 ;; And whether to draw the number in the corner whatever the program said. The
 ;; program's own `set_slide_numbers` is a call in its body, which a talk may
@@ -144,16 +159,21 @@
 ;; before slideshow makes a page of each epoch.
 (define (numbered vs)
   (define want? (or (unbox slide-numbers?) (unbox numbers-asked?)))
-  (append*
-   (for/list ([v (in-list vs)] [n (in-naturals 1)])
-     (define pages
-       (cond
-         [(not (unbox stage-slides?)) (list (force-slide v))]
-         [else (let ([frames (stage-frames (slide-value v))])
-                 ;; A slide that animates nothing has no epochs to expand, and
-                 ;; a value `stage_frames` cannot read is settled as before.
-                 (if (null? frames) (list (force-slide v)) frames))]))
-     (if want? (for/list ([p (in-list pages)]) (number-on p n)) pages))))
+  (define origins '())
+  (define out
+    (append*
+     (for/list ([v (in-list vs)] [n (in-naturals 1)])
+       (define pages
+         (cond
+           [(not (unbox stage-slides?)) (list (force-slide v))]
+           [else (let ([frames (stage-frames (slide-value v))])
+                   ;; A slide that animates nothing has no epochs to expand, and
+                   ;; a value `stage_frames` cannot read is settled as before.
+                   (if (null? frames) (list (force-slide v)) frames))]))
+       (set! origins (append origins (for/list ([_ (in-list pages)]) n)))
+       (if want? (for/list ([p (in-list pages)]) (number-on p n)) pages))))
+  (set-box! slide-origins origins)
+  out)
 
 ;; Can this namespace hand its racket/gui/base to another one? Declared is not
 ;; enough: expansion loads the module without running it, and only an
@@ -258,7 +278,7 @@
         ;; A Rhombus `[...]` is a treelist, which is what a talk's `all_slides`
         ;; is -- so this branch is the one a hand-written talk takes.
         [(treelist? v) (numbered (treelist->list v))]
-        [else (force-slide v)])))
+        [else (set-box! slide-origins '(1)) (force-slide v)])))
      keep-gui-namespace!))
   (cond
     [(list? found) found]
@@ -1008,7 +1028,7 @@
     (define-values (all-sites scopes slide-sites layout) (find-program-sites program-path))
     (and scopes
          (let ([held (for/list ([ss (in-list slide-sites)]) (slide-site-scope ss))])
-           (for/set ([scope (in-list scopes)] [i (in-naturals 1)]
+           (for/set ([scope (in-list (scopes-by-deck-slide scopes))] [i (in-naturals 1)]
                      #:when (memq scope held))
              i)))))
 
@@ -1667,6 +1687,16 @@
 ;; is refused.
 (define (rhombus-slide-scopes groups site-scopes)
   (define known (for/hash ([s (in-list site-scopes)] #:when s) (values s #t)))
+  ;; What each top-level definition is defined as, so that a name in
+  ;; `all_slides` which is not itself a scope can be followed to one.
+  (define bodies
+    (for/hash ([g (in-list groups)]
+               #:when (let ([e (syntax-e g)])
+                        (and (list? e) (>= (length e) 3)
+                             (eq? 'group (syntax-e* (first e)))
+                             (eq? 'def (syntax-e* (second e)))
+                             (symbol? (syntax-e* (third e))))))
+      (values (syntax-e* (third (syntax-e g))) g)))
   (define (scope-in stx)
     (let walk ([e stx])
       (cond
@@ -1674,9 +1704,30 @@
         [(symbol? e) (and (hash-ref known e #f) e)]
         [(pair? e) (or (walk (car e)) (walk (cdr e)))]
         [else #f])))
+  ;; A slide given stages is not a canvas: it is an animated pict built from
+  ;; one, and `all_slides` names the animation rather than the canvas -- so the
+  ;; entry holds no scope and the slide has no `at` forms as far as anything can
+  ;; tell. Followed one definition further, it does: `def s = switch(base, ...)`
+  ;; where `base` came from a canvas is that canvas's slide.
+  ;;
+  ;; Only with one slide of the deck per stage. Settled into a single slide, a
+  ;; staged slide is several canvases drawn over each other and nothing can say
+  ;; which of them an element came from; a stage is one of them, and they line
+  ;; up.
+  (define (scope-through stx)
+    (or (scope-in stx)
+        (and (unbox stage-slides?)
+             (let ([names (let walk ([e stx] [acc '()])
+                            (cond
+                              [(syntax? e) (walk (syntax-e e) acc)]
+                              [(symbol? e) (if (hash-ref bodies e #f) (cons e acc) acc)]
+                              [(pair? e) (walk (car e) (walk (cdr e) acc))]
+                              [else acc]))])
+               (for/or ([n (in-list names)])
+                 (scope-in (hash-ref bodies n)))))))
   (define (entries-of b)
     (and b (eq? 'brackets (syntax-e* (car b)))
-         (let ([names (map scope-in (cdr b))])
+         (let ([names (map scope-through (cdr b))])
            (and (pair? names) names))))
   (for/or ([g (in-list groups)])
     (define l (let ([e (syntax-e g)]) (and (list? e) e)))
@@ -2553,14 +2604,33 @@
     (copy-file from to #t)))
 
 (define (apply-actions! program-path actions #:deck [d #f] #:atomic? [atomic? #f])
-  (define-values (all-sites scopes slide-sites layout) (find-program-sites program-path))
+  (define-values (all-sites scopes* slide-sites layout) (find-program-sites program-path))
+  ;; One entry of `all_slides` may be several slides of the deck: see
+  ;; `scopes-by-deck-slide`.
+  (define scopes (scopes-by-deck-slide scopes*))
   ;; The source text, for the sites that describe a value rather than carry it:
   ;; whether a `~rotate:` says zero, whether a `~flip_h:` says true.
   (define source-text (file->string program-path))
   ;; Set when an edit was carried to frames of a build other than the one it
   ;; names. The deck still holds the old value on those frames, and only the
   ;; caller can put that right, by writing the deck again from the program.
-  (define spread? (box #f))
+  ;;
+  ;; A deck holding one slide per stage is that situation by construction: one
+  ;; `at` form draws the shape on every stage of its slide, so an edit made on
+  ;; the third stage is written once and the other stages still show what they
+  ;; showed. Without the deck being written again they would report the same
+  ;; difference back on the next save, over and over.
+  ;; Whether this slide of the deck is one stage of a slide that has more than
+  ;; one.
+  (define (staged-slide? i)
+    (define origins (unbox slide-origins))
+    (and (<= 1 i (length origins))
+         (let ([j (list-ref origins (sub1 i))])
+           (> (length (filter (lambda (k) (= k j)) origins)) 1))))
+  (define spread? (box (let ([origins (unbox slide-origins)])
+                         (and (pair? origins)
+                              (not (= (length origins)
+                                      (length (remove-duplicates origins))))))))
   ;; The actions the source has no place for at all: an element it does not
   ;; draw with an `at` form, a property it does not hold as a literal. They are
   ;; reported like any other refusal, but they do not refuse the save.
@@ -3072,6 +3142,12 @@
           (for ([ss2 (in-list (later-frames a))])
             (edit! (rng (slide-site-insert-at ss2) (slide-site-insert-at ss2))
                    (string-append ",\n" src-text)))
+          ;; A slide with stages is built from one canvas, and this went into
+          ;; that canvas -- so it is there from the first stage, not from the
+          ;; stage it was drawn on. Which stage a shape appears on is the code's
+          ;; to say, and there is no literal here to write it in.
+          (when (staged-slide? (sync-action-slide a))
+            (set! notes (cons (cons a STAGE-WIDE) notes)))
           (set! applied (cons a applied))])]
       ;; Deleted in the editor: the `at` form goes, and nothing else.
       [(removed)
@@ -3469,6 +3545,10 @@
 ;; Said in one place because it is also read back: a skip under this reason is
 ;; one the source has no place for.
 (define NO-AT-FORM "no tagged `at` form in the source")
+
+(define STAGE-WIDE
+  (string-append "the slide is built from one canvas, so this is on it from the first"
+                 " stage rather than the one it was drawn on"))
 
 ;; Whether the deck's rotation or mirroring differs from what the source says.
 ;; The source's own value is what it was exported with, so the base is not
@@ -4213,19 +4293,25 @@
      ;; the code draws rather than places -- so one line a reason, and the names
      ;; under it, because the one thing to do about a note is know which shape
      ;; it is about.
-     (define notes (sync-report-notes r))
-     (unless (null? notes)
-       (define groups (by-reason notes))
-       (fprintf o "  ~a element~a not merged:\n"
-                (length notes) (if (= 1 (length notes)) "" "s"))
-       (for ([g (in-list (take groups (min 3 (length groups))))])
-         (define tags (cdr g))
-         (cond
-           [(= 1 (length tags)) (fprintf o "    ~s -- ~a\n" (first tags) (car g))]
-           [else (fprintf o "    ~a of them -- ~a\n" (length tags) (car g))
-                 (fprintf o "      ~a\n" (named tags))]))
-       (when (> (length groups) 3)
-         (fprintf o "    and ~a more like it\n" (- (length groups) 3))))
+     (define-values (with-caveat not-merged)
+       (partition (lambda (n) (and (memq (car n) (sync-report-applied r)) #t))
+                  (sync-report-notes r)))
+     (define (say-notes notes heading)
+       (unless (null? notes)
+         (define groups (by-reason notes))
+         (fprintf o "  ~a element~a ~a:\n"
+                  (length notes) (if (= 1 (length notes)) "" "s") heading)
+         (for ([g (in-list (take groups (min 3 (length groups))))])
+           (define tags (cdr g))
+           (cond
+             [(= 1 (length tags)) (fprintf o "    ~s -- ~a\n" (first tags) (car g))]
+             [else (fprintf o "    ~a of them -- ~a\n" (length tags) (car g))
+                   (fprintf o "      ~a\n" (named tags))]))
+         (when (> (length groups) 3)
+           (fprintf o "    and ~a more like it\n" (- (length groups) 3)))))
+     (say-notes not-merged "not merged")
+     ;; Written, and not quite as the editor showed it.
+     (say-notes with-caveat "written, and worth knowing")
      ;; The notes are their own actions rather than a subset of these, so they
      ;; are counted and not subtracted -- doing both reported "-1 reported" on a
      ;; pass that applied one edit and noted one thing.
@@ -4233,5 +4319,6 @@
      (fprintf o "  ~a applied, ~a reported~a\n"
               (length (sync-report-applied r))
               (max 0 (- (length acted) (length (sync-report-applied r))))
-              (if (null? notes) "" (format ", ~a noted" (length notes))))])
+              (let ([notes (sync-report-notes r)])
+                (if (null? notes) "" (format ", ~a noted" (length notes)))))])
   (get-output-string o))

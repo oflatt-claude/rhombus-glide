@@ -343,7 +343,13 @@
         ;; asks for them on both sides of the session at once, which is what
         ;; keeps them from reading as an element somebody added.
         [("--numbers") ,(lambda (_) (ask-slide-numbers! #t))
-                       ("Draw the slide number in the corner, as the show does")]))
+                       ("Draw the slide number in the corner, as the show does")]
+        ;; One slide per stage in the deck being edited, so that a shape can be
+        ;; put where it belongs on the stage it appears on. An edit still goes
+        ;; to the one `at` form that draws it, and the deck is written again
+        ;; from the program afterwards so the other stages follow.
+        [("--stages") ,(lambda (_) (set-stage-slides! #t))
+                      ("One slide per stage of a slide that animates")]))
      (lambda (_ program) (list program))
      '("program.rhm")))
   (define program (first files))

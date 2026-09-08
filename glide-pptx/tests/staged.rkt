@@ -13,7 +13,8 @@
 (require rackunit/log)
 (require rackunit racket/file racket/list racket/path racket/system racket/port
          racket/string racket/runtime-path
-         glide-pptx/sync glide-pptx/sync-state)
+         glide-pptx/sync glide-pptx/sync-state glide-pptx/export
+         "deck-edit.rkt")
 
 (define-runtime-path here ".")
 
@@ -348,6 +349,66 @@
   (ask-slide-numbers! #f)
   (set-stage-slides! #f)
   (check-equal? numbered '(2 2 2) "each page gains the number in its corner"))
+
+;; ------------------------------------------- editing a slide stage by stage
+;;
+;; With one slide of the deck per stage, a shape can be put where it belongs on
+;; the stage it appears on. Three things have to hold for that to be worth
+;; anything:
+;;
+;;   * the deck has a slide per stage, and each of them can be read;
+;;   * an edit made on the third stage is written to the one `at` form that
+;;     draws the shape -- `all_slides` names the animation, not the canvas it
+;;     was built from, so the scope is found one definition further in;
+;;   * the deck is written again from the program afterwards. One form draws the
+;;     shape on every stage, so the stages that were not edited still show what
+;;     they showed, and without that they report the same difference back for
+;;     ever.
+(let ()
+  (define program (build-path work "stage-edit.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          "def canvas = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  at(20.0, 20.0, ~tag: \"Box\","
+          "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))),"
+          "  at(120.0, 120.0, ~tag: \"Later\","
+          "     shape_pict(~width: 50.0, ~height: 30.0, ~fill: hex(\"ED7D31\"))))"
+          "def staged:"
+          "  def base = pc.Pict.from_handle(canvas)"
+          "  pc.switch(base, pc.animate(fun (t): base.alpha(t)))"
+          "def all_slides = [staged]")
+    "\n")
+   program #:exists 'replace)
+  (set-stage-slides! #t)
+  (define picts (load-program-picts program))
+  (check-equal? (length picts) 2 "a slide of two stages is two slides of the deck")
+  (define-values (sites scopes slide-sites layout) (find-program-sites program))
+  (check-equal? scopes '(canvas)
+                "and `all_slides` is followed through the animation to the canvas")
+  (define deck (build-path work "stage-edit.pptx"))
+  (define w (build-path work "stage-edit-work"))
+  (picts->pptx picts deck)
+  (void (sync-once program deck #:workdir w))
+  (check-true (drag-in-deck! deck 2 "Later" 200.0 60.0)
+              "something is dragged on the second stage")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                "the drag is written")
+  (check-regexp-match #rx"at[(]200[.]0, 60[.]0, ~tag: \"Later\""
+                      (file->string program)
+                      "to the one `at` form that draws it")
+  (check-true (sync-report-deck-behind? r)
+              "and the deck is behind, so the other stages are written again")
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "after which there is nothing left to merge")
+  (set-stage-slides! #f))
 
 (printf "staged tests done\n")
 
