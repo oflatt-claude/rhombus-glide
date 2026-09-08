@@ -2482,6 +2482,14 @@
                 st)))
     (define kin (append (twins-of a primary) others))
     (when (pair? others) (set-box! spread? #t))
+    ;; And one form drawing an element on several slides is the same situation
+    ;; as one drawing several frames of a build: the others in the deck still
+    ;; hold the old value, and only a deck written again from the program puts
+    ;; them in step. Without this the next pass reads them as fresh edits and
+    ;; writes the shared form again with another slide's delta, which never
+    ;; settles -- it reported the same drag on slide 3, then slide 5, then slide
+    ;; 3 again, for as long as anyone let it.
+    (when (> (hash-ref tag-count tag 0) 1) (set-box! spread? #t))
     (cons primary kin))
 
   ;; The frames of this build that come after the one an action names. A shape

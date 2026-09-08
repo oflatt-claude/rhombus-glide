@@ -326,6 +326,72 @@
                 '()
                 "and the program and the deck agree afterwards"))
 
+;; One `at` drawing an element on two slides, and a drag on one of them.
+;;
+;; Writing the shared form moves both, so the deck's other slide is left holding
+;; the old value -- and read as a fresh edit it gets written again with that
+;; slide's delta, which moves the first one back. It reported the same drag on
+;; slide 3, then slide 5, then slide 3 again, for as long as anyone let it, and
+;; a Ctrl-C in the middle applied it once more on the way out.
+;;
+;; The answer is the one a build already had: say the deck is behind, so the
+;; loop writes it again from the program and every instance is in step.
+(let ()
+  (define dir (build-path work "shared-across-slides"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define deck (build-path dir "deck.pptx"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          ""
+          "fun with_icon():"
+          "  group_pict(~width: 480.0, ~height: 270.0,"
+          "             at(300.0, 40.0, ~tag: \"Badge\","
+          "                textbox(~width: 120.0, ~height: 30.0, ~wrap: #false,"
+          "                        para(run(\"new\", ~size: 12.0)))))"
+          ""
+          "fun a_slide(label):"
+          "  def base:"
+          "    slide_canvas(~width: 480.0, ~height: 270.0,"
+          "                 at(20.0, 20.0, ~tag: \"Title\","
+          "                    textbox(~width: 200.0, ~height: 30.0, ~wrap: #false,"
+          "                            para(run(label, ~size: 14.0)))))"
+          "  pc.overlay(~horiz: #'left, ~vert: #'top,"
+          "             pc.Pict.from_handle(base),"
+          "             pc.Pict.from_handle(with_icon()))"
+          ""
+          "fun one(): a_slide(\"one\")"
+          "fun two(): a_slide(\"two\")"
+          "def all_slides = [one, two]")
+    "\n")
+   program #:exists 'replace)
+  (define base (base-path-for program))
+  (when (file-exists? base) (delete-file base))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir (build-path dir "w")))
+  (check-true (and (drag-in-deck! deck 1 "Badge" 111.0 222.0) #t)
+              "the badge was dragged on the first slide")
+  (define first-pass (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (length (sync-report-applied first-pass)) 1 "the drag was written")
+  (check-true (sync-report-deck-behind? first-pass)
+              "and the deck is behind, because the other slide holds the old value")
+  ;; Which is what the loop does about it.
+  (picts->pptx (load-program-picts program) deck)
+  ;; Twice, because an oscillation takes two passes to show itself: the first
+  ;; would report the other slide, and the second would report this one again.
+  (for ([pass (in-list '(1 2))])
+    (define r (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+    (check-equal? (for/list ([a (in-list (sync-report-actions r))])
+                    (format "~a ~s on slide ~a" (sync-action-kind a)
+                            (sync-action-tag a) (sync-action-slide a)))
+                  '()
+                  (format "and it has settled (pass ~a)" pass))))
+
 (printf "scenario tests done; artifacts under ~a\n" work)
 
 ;; A check that fails prints and carries on, which is what makes a whole run
