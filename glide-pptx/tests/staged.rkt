@@ -11,8 +11,9 @@
 ;;
 ;; The show needs a display; the PDF does not, and is checked either way.
 (require rackunit/log)
-(require rackunit racket/file racket/path racket/system racket/port racket/string
-         racket/runtime-path)
+(require rackunit racket/file racket/list racket/path racket/system racket/port
+         racket/string racket/runtime-path
+         glide-pptx/sync glide-pptx/sync-state)
 
 (define-runtime-path here ".")
 
@@ -293,6 +294,60 @@
    (check-regexp-match #rx"first 1" (get-output-string out) "the first load found the slide")
    (check-regexp-match #rx"second 1" (get-output-string out)
                        "and so did the second, in the same process")])
+
+;; --------------------------------------------- one slide per stage, on request
+;;
+;; A slide given stages is one page per stage in the show -- slideshow's own
+;; doing -- and a deck that holds one flattened picture of it cannot be stepped
+;; through at all. `--stages` asks for the pages instead, and what arrives has
+;; to be slides with shapes on them: `export --slideshow` already produced one
+;; picture per advance, which is a deck nobody can edit or print sharply.
+;;
+;; Off by default, and it has to stay off for the deck a session keeps: an edit
+;; has to have one place to go, and a slide that appears four times is a shape
+;; dragged on one of them and three that disagree.
+(let ()
+  (define program (build-path work "stages.rhm"))
+  (display-to-file
+   (string-append
+    PROLOGUE
+    (string-join
+     (list "export: all_slides"
+           "def one = glide.slide_canvas("
+           "  ~width: w, ~height: h,"
+           "  glide.at(20.0, 20.0, ~tag: \"Box\","
+           "           glide.shape_pict(~width: 60.0, ~height: 40.0,"
+           "                            ~fill: glide.hex(\"4472C4\"))))"
+           "def two:"
+           "  def base = Pict.from_handle(one)"
+           "  switch(base, animate(fun (t): base.alpha(t)))"
+           "def all_slides = [one, two]")
+     "
+"))
+   program #:exists 'replace)
+  (define tags
+    (for/list ([st (in-list (program-slide-states program))])
+      (for/list ([e (in-list (slide-state-elements st))]) (el-state-tag e))))
+  (check-equal? tags '(("Box") ("Box"))
+                "settled, a staged slide is one slide")
+  (set-stage-slides! #t)
+  (define staged
+    (for/list ([st (in-list (program-slide-states program))])
+      (for/list ([e (in-list (slide-state-elements st))]) (el-state-tag e))))
+  (set-stage-slides! #f)
+  (check-equal? staged '(("Box") ("Box") ("Box"))
+                "with stages, it is one slide per stage -- with its shapes, not a picture of them")
+  ;; And the number every page of one slide carries is that slide's own, which
+  ;; is what the show draws: the number is composed before slideshow makes a
+  ;; page of each stage.
+  (set-stage-slides! #t)
+  (ask-slide-numbers! #t)
+  (define numbered
+    (for/list ([st (in-list (program-slide-states program))])
+      (length (slide-state-elements st))))
+  (ask-slide-numbers! #f)
+  (set-stage-slides! #f)
+  (check-equal? numbered '(2 2 2) "each page gains the number in its corner"))
 
 (printf "staged tests done\n")
 

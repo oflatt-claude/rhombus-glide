@@ -23,6 +23,7 @@
          (only-in "emit-rhombus.rkt" rhombus-element-source rhombus-slide-source))
 (provide (struct-out sync-action) (struct-out sync-report)
          program-slide-states deck-slide-states load-program-picts
+         set-stage-slides! ask-slide-numbers!
          match-elements merge-states
          apply-actions! sync-once
          find-at-sites find-program-sites
@@ -77,6 +78,13 @@
 ;; "is this an animated slide" would answer no about every slide, silently, and
 ;; nothing would be settled at all. Loaded on demand, because a deck that does
 ;; not animate should not pay for rhombus/pict.
+;; The pages an animated slide becomes, rather than the one it comes to rest on.
+;; See `stage_frames`.
+(define (stage-frames v)
+  (define f (dynamic-require '(lib "glide-pptx/settle.rhm") 'stage_frames))
+  (define l (f v))
+  (filter pict? (if (list? l) l (treelist->list l))))
+
 (define (settle-frames v)
   (define f (dynamic-require '(lib "glide-pptx/settle.rhm") 'settle_frames))
   (define l (f v))
@@ -101,8 +109,27 @@
 ;; pict: settling it gives back a pict, with the canvases it was built from
 ;; still inside. See `settle.rhm`.
 (define (force-slide s)
-  (define v (if (and (procedure? s) (procedure-arity-includes? s 0)) (s) s))
+  (define v (slide-value s))
   (if (pict? v) v (settle v)))
+
+;; A slide as the program hands it over: called if it is a function, and not
+;; settled -- a stage expansion needs the animation itself.
+(define (slide-value s)
+  (if (and (procedure? s) (procedure-arity-includes? s 0)) (s) s))
+
+;; Whether a deck holds one slide per stage. Off, because a deck is what an
+;; editor edits and an edit has to have one place to go: a slide that appears
+;; four times is a shape dragged on one of them and three that disagree. A deck
+;; to hand out or to step through is another matter, and `--stages` asks for it.
+(define stage-slides? (box #f))
+(define (set-stage-slides! [on? #t]) (set-box! stage-slides? (and on? #t)))
+
+;; And whether to draw the number in the corner whatever the program said. The
+;; program's own `set_slide_numbers` is a call in its body, which a talk may
+;; make inside `module main` -- where the show runs it and nothing else does --
+;; so the command line can ask for the same thing.
+(define numbers-asked? (box #f))
+(define (ask-slide-numbers! [on? #t]) (set-box! numbers-asked? (and on? #t)))
 
 ;; The number in each slide's corner, when the program asked for one. Put on
 ;; after forcing and settling, because it is drawn as an ordinary pict and
@@ -112,10 +139,21 @@
 ;; By position in the whole list, including the slides a canvas says to skip:
 ;; those are exported, with `show="0"`, and the show counts them too, so a
 ;; number that skipped them would differ on the two sides.
-(define (numbered ps)
-  (if (unbox slide-numbers?)
-      (for/list ([p (in-list ps)] [n (in-naturals 1)]) (number-on p n))
-      ps))
+;; Numbered by slide and not by page: every page of one animated slide carries
+;; the same number in the show, because the number is composed onto the slide
+;; before slideshow makes a page of each epoch.
+(define (numbered vs)
+  (define want? (or (unbox slide-numbers?) (unbox numbers-asked?)))
+  (append*
+   (for/list ([v (in-list vs)] [n (in-naturals 1)])
+     (define pages
+       (cond
+         [(not (unbox stage-slides?)) (list (force-slide v))]
+         [else (let ([frames (stage-frames (slide-value v))])
+                 ;; A slide that animates nothing has no epochs to expand, and
+                 ;; a value `stage_frames` cannot read is settled as before.
+                 (if (null? frames) (list (force-slide v)) frames))]))
+     (if want? (for/list ([p (in-list pages)]) (number-on p n)) pages))))
 
 ;; Can this namespace hand its racket/gui/base to another one? Declared is not
 ;; enough: expansion loads the module without running it, and only an
@@ -216,10 +254,10 @@
         ;; By position in the whole list, including the slides a canvas says to
         ;; skip: those are exported, with `show="0"`, and the show counts them
         ;; too, so a number that skipped them would differ on the two sides.
-        [(list? v) (numbered (map force-slide v))]
+        [(list? v) (numbered v)]
         ;; A Rhombus `[...]` is a treelist, which is what a talk's `all_slides`
         ;; is -- so this branch is the one a hand-written talk takes.
-        [(treelist? v) (numbered (map force-slide (treelist->list v)))]
+        [(treelist? v) (numbered (treelist->list v))]
         [else (force-slide v)])))
      keep-gui-namespace!))
   (cond

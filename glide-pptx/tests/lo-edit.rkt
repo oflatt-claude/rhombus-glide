@@ -110,8 +110,10 @@ Sub Do1(sLine As String)
   cmd = f(0)
   Select Case cmd
     Case "open"
+      ' Not hidden: copy and paste go through the document's own controller,
+      ' and a hidden document has none. Headless, there is no window either way.
       op(0).Name = "Hidden"
-      op(0).Value = True
+      op(0).Value = False
       gDoc = StarDesktop.loadComponentFromURL(ConvertToURL(f(1)), "_blank", 0, op())
     Case "list"
       h = Freefile
@@ -167,6 +169,22 @@ Sub Do1(sLine As String)
       End If
       sh.FillStyle = com.sun.star.drawing.FillStyle.SOLID
       sh.FillColor = CLng(f(3))
+    Case "copy"
+      sh = ShapeOf(CInt(f(1)), f(2))
+      If IsNull(sh) Then
+        Note("no shape <" & f(2) & "> on slide " & f(1))
+        Exit Sub
+      End If
+      Dim ctrl As Object, disp As Object
+      ctrl = gDoc.CurrentController
+      If IsNull(ctrl) Then
+        Note("no controller to copy through")
+        Exit Sub
+      End If
+      ctrl.select(sh)
+      disp = createUnoService("com.sun.star.frame.DispatchHelper")
+      disp.executeDispatch(ctrl.Frame, ".uno:Copy", "", 0, Array())
+      disp.executeDispatch(ctrl.Frame, ".uno:Paste", "", 0, Array())
     Case "retext"
       sh = ShapeOf(CInt(f(1)), f(2))
       If IsNull(sh) Then
@@ -438,6 +456,56 @@ BASIC
                    (format "~a: the deck written from the program has nothing to merge"
                            name))]))
 
+;; Copying an element, which is the first thing anybody does with a shape they
+;; like. The copy has to become an element of its own -- its own `at` form, its
+;; own tag -- and the shape it was copied from has to be left alone. Two `at`
+;; forms under one tag is a program no later sync can read, and a talk that
+;; cannot copy a shape is a talk written the hard way.
+;;
+;; LibreOffice names the copy after the shape it numbered last, which in a deck
+;; translated from PowerPoint is very often the name of another element already
+;; on the slide. So this is also the test that says a copy is not whatever it
+;; happens to be called.
+(define (copied-in-libreoffice name program dir)
+  (define pptx (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) pptx)
+  (void (sync-once program pptx #:workdir w))
+  (define by-slide (slide-tags program))
+  (define slide (and (pair? (hash-keys by-slide)) (first (sort (hash-keys by-slide) <))))
+  (define to-copy (and slide (first (hash-ref by-slide slide))))
+  (cond
+    [(not to-copy) (printf "  ~a: nothing tagged to copy\n" name)]
+    [else
+     (printf "  ~a: slide ~a -- copying ~s\n" name slide (at-site-tag to-copy))
+     (check-true
+      (libreoffice-edit! pptx (list (list "copy" slide (at-site-tag to-copy))))
+      (format "~a: LibreOffice saved the deck it was given" name))
+     (define r (sync-once program pptx #:workdir w #:atomic? #t))
+     (for ([sk (in-list (sync-report-skipped r))])
+       (printf "     refused ~a ~s: ~a\n" (sync-action-kind (car sk))
+               (sync-action-tag (car sk)) (cdr sk)))
+     (printf "     applied: ~a\n"
+             (string-join (map symbol->string (applied-kinds r)) ", "))
+     (check-equal? (applied-kinds r) '(added)
+                   (format "~a: the copy is one element added, and nothing else" name))
+     ;; The tags stay distinct, which is what makes the next edit possible.
+     (define after (slide-tags program))
+     (define tags (for/list ([st (in-list (hash-ref after slide '()))]) (at-site-tag st)))
+     (check-equal? (length tags) (length (remove-duplicates tags))
+                   (format "~a: and every `at` form on that slide still has its own tag"
+                           name))
+     (check-equal? (length tags) (add1 (length (hash-ref by-slide slide)))
+                   (format "~a: the slide has one more `at` form than it had" name))
+     ;; And it settles: the deck written from the program holds both of them.
+     (picts->pptx (load-program-picts program) pptx)
+     (define settled (sync-once program pptx #:workdir w #:atomic? #t))
+     (for ([a (in-list (sync-report-actions settled))])
+       (printf "     unsettled: ~a ~s\n" (sync-action-kind a) (sync-action-tag a)))
+     (check-equal? (length (sync-report-actions settled)) 0
+                   (format "~a: the deck written from the program has nothing to merge"
+                           name))]))
+
 (define fixtures
   (let ([only (getenv "GLIDE_LO_DECKS")])
     (for/list ([f (in-list (sort (map path->string (directory-list decks-dir)) string<?))]
@@ -460,6 +528,15 @@ BASIC
      (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
                            #:workdir (build-path dir "u")))
      (write-rhombus-deck d program #:source-name (string-append name ".pptx"))
-     (edited-in-libreoffice name program dir))])
+     (edited-in-libreoffice name program dir))
+   (printf "copying in LibreOffice:\n")
+   (for ([name (in-list fixtures)])
+     (define dir (build-path work (string-append name "-copy")))
+     (make-directory* dir)
+     (define program (build-path dir "p.rhm"))
+     (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
+                           #:workdir (build-path dir "u")))
+     (write-rhombus-deck d program #:source-name (string-append name ".pptx"))
+     (copied-in-libreoffice name program dir))])
 
 (module+ main (void (test-log #:display? #t #:exit? #t)))

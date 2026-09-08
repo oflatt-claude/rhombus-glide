@@ -183,6 +183,10 @@
                       ("Name of the provided list of picts" "id")]
         [("--slideshow") ,(lambda (_) (set-box! slideshow? #t))
                          ("Run as a slideshow program: one slide per advance")]
+        [("--stages") ,(lambda (_) (set-stage-slides! #t))
+                      ("One slide per stage of a slide that animates")]
+        [("--numbers") ,(lambda (_) (ask-slide-numbers! #t))
+                       ("Draw the slide number in the corner, as the show does")]
         [("--no-flatten") ,(lambda (_) (set-box! flatten? #f))
                           ("Keep unsyncable elements as separate shapes")]))
      (lambda (_ . fs) fs)
@@ -332,7 +336,14 @@
         [("--height") ,(lambda (_ v) (set-box! height (string->number v)))
                       ("Slide height in points" "pt")]
         [("--once") ,(lambda (_) (set-box! once #t))
-                         ("Regenerate once and exit, without watching")]))
+                         ("Regenerate once and exit, without watching")]
+        ;; A talk that numbers its own slides usually calls `set_slide_numbers`
+        ;; inside `module main`, where the show runs it and nothing else does --
+        ;; so the deck in the editor carries no numbers and the show does. This
+        ;; asks for them on both sides of the session at once, which is what
+        ;; keeps them from reading as an element somebody added.
+        [("--numbers") ,(lambda (_) (ask-slide-numbers! #t))
+                       ("Draw the slide number in the corner, as the show does")]))
      (lambda (_ program) (list program))
      '("program.rhm")))
   (define program (first files))

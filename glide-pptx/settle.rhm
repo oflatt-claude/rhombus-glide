@@ -17,11 +17,26 @@
 // that reads a slide is Racket, and calls this.
 import: pict as pc
 
-export: settle_frames
+export:
+  settle_frames
+  stage_frames
 
 fun settle_frames(s):
   if s is_a pc.Pict
   | List.append(
       & (for List (i in 0 .. math.max(1, s.duration)):
            [s.snapshot(i, 1.0).handle, s.snapshot(i, 0.0).handle]))
+  | [s]
+
+// The pages a slide becomes in the show, in order.
+//
+// slideshow makes one page per epoch of an animated `Pict` -- `staged.rhm` says
+// why: `s` steps a whole slide rather than an animation frame -- and each of
+// those pages comes to rest at the end of its epoch. So a deck that steps the
+// way the show steps holds one slide per epoch, and a slide that does not
+// animate holds one.
+fun stage_frames(s):
+  if s is_a pc.Pict
+  | for List (i in 0 .. math.max(1, s.duration)):
+      s.snapshot(i, 1.0).handle
   | [s]
