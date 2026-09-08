@@ -7,9 +7,21 @@
 ;; the properties. Every property the merge knows about is compared here, so a
 ;; value that does not survive being written out fails where it happens rather
 ;; than turning up in someone's talk.
-(require racket/list racket/format racket/string racket/path
-         glide-pptx/ir glide-pptx/sync glide-pptx/sync-state)
-(provide element-diffs ir-diffs slide-diffs disagreements)
+(require racket/list racket/format racket/string racket/path racket/file
+         glide-pptx/ir glide-pptx/parse glide-pptx/sync glide-pptx/sync-state)
+(provide element-diffs ir-diffs slide-diffs disagreements deck-states-by-name)
+
+;; The deck as the file describes it, the names it gives its shapes included.
+;;
+;; `deck-slide-states` asks the stricter question a merge has to ask -- is this
+;; element one the program placed? -- and only our own alt text answers it. So a
+;; box the editor drew, or a slide pasted out of somebody else's deck, comes
+;; back from that with no tag at all, which is right for a merge and wrong for a
+;; comparison: here the name is the identity, and "the same elements, in order"
+;; is a statement about a file.
+(define (deck-states-by-name deck [workdir #f])
+  (deck->slide-states
+   (pptx->deck deck #:workdir (or workdir (make-temporary-file "cmp~a" 'directory)))))
 
 ;; A slide's own properties, which belong to no element on it.
 (define (slide-diffs a b)
@@ -305,7 +317,7 @@
 
 (define (disagreements program deck)
   (define ps (program-slide-states program))
-  (define ds (deck-slide-states deck))
+  (define ds (deck-states-by-name deck))
   (if (= (length ps) (length ds))
       (append* (for/list ([p (in-list ps)] [d (in-list ds)]) (slide-disagreements p d)))
       (list (format "~a slides in the program, ~a in the deck" (length ps) (length ds)))))

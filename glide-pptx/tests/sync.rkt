@@ -11,6 +11,7 @@
          glide-pptx/ir glide-pptx/parse glide-pptx/emit-rhombus
          glide-pptx/export
          glide-pptx/sync glide-pptx/sync-state glide-pptx/runtime "deck-edit.rkt"
+         (only-in "ir-diff.rkt" deck-states-by-name)
          (only-in glide-pptx/watch program-picts)
          ;; What `raco glide --new` writes.
          (only-in glide-pptx/main starter-deck))
@@ -383,8 +384,7 @@
     (for/list ([s (in-list (program-slide-states program))])
       (map el-state-tag (slide-state-elements s))))
   (define deck-tags
-    (for/list ([s (in-list (deck-slide-states exported
-                                              #:workdir (build-path dir "cmp")))])
+    (for/list ([s (in-list (deck-states-by-name exported (build-path dir "cmp")))])
       (map el-state-tag (slide-state-elements s))))
   (check-equal? prog-tags deck-tags "program and deck hold the same elements, in order")
 
@@ -442,7 +442,7 @@
 ;; and the deck it came from has to survive a re-export unchanged, which is the
 ;; whole point of the round trip.
 (define (deck-shape pptx dir tag)
-  (for/list ([s (in-list (deck-slide-states pptx #:workdir (build-path dir tag)))])
+  (for/list ([s (in-list (deck-states-by-name pptx (build-path dir tag)))])
     (map el-state-tag (slide-state-elements s))))
 
 (let ()
@@ -605,7 +605,7 @@
     (map shape-of (slide-state-elements s))))
 
 (define (deck-shape-of pptx dir tag)
-  (for/list ([s (in-list (deck-slide-states pptx #:workdir (build-path dir tag)))])
+  (for/list ([s (in-list (deck-states-by-name pptx (build-path dir tag)))])
     (map shape-of (slide-state-elements s))))
 
 ;; One round: apply `edit!` to the deck, merge, and check that the program now
