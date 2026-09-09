@@ -119,7 +119,15 @@
                ;; A picture the deck holds has a crop and an opacity, whether or
                ;; not it uses them. Ours are neither cropped nor washed out.
                (list (cons 'opacity 1.0) (cons 'crop #f))]
-              [else (append (fill-style fill) (pen-style pen))])
+              [else (append (cond
+                              ;; Named the way the writer writes them, so the
+                              ;; two sides say the same thing about a rectangle
+                              ;; drawn from a bare pict.
+                              [(it:rect? i) (list (cons 'shape "rect"))]
+                              [(it:ellipse? i) (list (cons 'shape "ellipse"))]
+                              [(it:path? i) (list (cons 'shape "path"))]
+                              [else '()])
+                            (fill-style fill) (pen-style pen))])
             z))
 
 ;; A paint as one value: the colour it is, "gradient" for one, or #f for none.
@@ -215,7 +223,8 @@
                (it:preset-w i) (it:preset-h i) (it:preset-rot i)
                (it:preset-flip-h? i) (it:preset-flip-v? i)
                (body-text (it:preset-body i)) (fill-digest (it:preset-fill i))
-               (append (fill-style (it:preset-fill i)) (pen-style (it:preset-pen i))
+               (append (list (cons 'shape (it:preset-name i)))
+                       (fill-style (it:preset-fill i)) (pen-style (it:preset-pen i))
                        (body-style (it:preset-body i)))
                z)]
     [(it:textbox? i)
@@ -268,7 +277,8 @@
                (it:shape-path-flip-h? i) (it:shape-path-flip-v? i)
                (body-text (it:shape-path-body i))
                (fill-digest (it:shape-path-fill i))
-               (append (fill-style (it:shape-path-fill i))
+               (append (list (cons 'shape "path"))
+                       (fill-style (it:shape-path-fill i))
                        (pen-style (it:shape-path-pen i))
                        (body-style (it:shape-path-body i)))
                z)]
@@ -300,6 +310,22 @@
         (for/list ([p (in-list (text-body-paras body))])
           (apply string-append (for/list ([r (in-list (para-runs p))]) (trun-text r))))
         "\n"))))
+
+;; The geometry a shape is drawn with, named. Changing a shape in the editor --
+;; a rounded box into an ellipse -- changes nothing else about it, so without
+;; this the two sides agreed about every property they compared and the change
+;; was reported nowhere, written nowhere, and thrown away by the next deck the
+;; program wrote.
+;;
+;; A preset is its own name, `prst="roundRect"` on one side and `~shape:` or
+;; `~geom: preset_geom(...)` on the other. Anything drawn from a path is "path":
+;; the two sides do describe the path itself, but not in terms the other could
+;; be rewritten in, and an ellipse becoming a freeform is worth saying even so.
+(define (geom-name g)
+  (cond
+    [(preset-geom? g) (preset-geom-name g)]
+    [(custom-geom? g) "path"]
+    [else #f]))
 
 (define (fill-digest f)
   (cond
@@ -673,6 +699,10 @@
                         (cons 'tail (end-style (stroke-tail l)))))
           '())))
   (define text (if (shape? e) (body-style (shape-body e)) '()))
+  ;; The shape it is drawn as: see `geom-name`.
+  (define geom
+    (let ([n (and (shape? e) (geom-name (shape-geom e)))])
+      (if n (list (cons 'shape n)) '())))
   (define opacity
     (if (picture? e)
         (list (cons 'opacity (round-to (picture-opacity e) 100.0))
@@ -680,7 +710,7 @@
               (cons 'image (bytes-of (and media-dir (picture-src e)
                                           (build-path media-dir (picture-src e))))))
         '()))
-  (append fill line text opacity))
+  (append geom fill line text opacity))
 
 (define (ir-fill-digest f)
   (cond
@@ -719,7 +749,7 @@
 ;; Bumped whenever a state carries something it did not before. A base written
 ;; by an older version is not read: resyncing from scratch is what it says to do
 ;; when the base is unusable, and it is cheap.
-(define BASE-VERSION 4)
+(define BASE-VERSION 5)
 
 ;; Written beside the file and renamed over it, rather than into it. A write
 ;; that stops halfway -- a Ctrl-C, a full disk, the machine going down -- leaves

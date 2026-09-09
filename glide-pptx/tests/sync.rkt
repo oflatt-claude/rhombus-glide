@@ -2122,6 +2122,57 @@
   (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
                 "and there is nothing left to merge"))
 
+;; ---------------------------------------- the shape a shape is drawn as
+;;
+;; Making a rounded box an ellipse in the editor changes nothing else about it:
+;; same place, same size, same fill, same words. Compared on everything but the
+;; geometry, the two sides agreed and the change was reported nowhere, written
+;; nowhere, and thrown away by the next deck the program wrote.
+;;
+;; Written where the source says it. A shape with adjustments states its
+;; geometry as `~geom: preset_geom("roundRect", ...)` and a plain one as
+;; `~shape: "roundRect"`, and the name inside whichever it is gets rewritten.
+(let ()
+  (define dir (build-path work "shape"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export: all_slides"
+          "def slide_1 = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  at(20.0, 20.0, ~tag: \"Plain\","
+          "     shape_pict(~width: 80.0, ~height: 40.0, ~shape: \"roundRect\","
+          "                ~fill: hex(\"4472C4\"))),"
+          "  at(140.0, 20.0, ~tag: \"Adjusted\","
+          "     shape_pict(~width: 80.0, ~height: 40.0,"
+          "                ~geom: preset_geom(\"roundRect\", [pair(\"adj\", \"val 33878\")]),"
+          "                ~fill: hex(\"ED7D31\"))))"
+          "def all_slides = [slide_1]")
+    "\n")
+   program #:exists 'replace)
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (check-true (edit-after-tag! deck 1 "Plain" #px"prst=\"roundRect\"" "prst=\"ellipse\"")
+              "the plain one is made an ellipse in the editor")
+  (check-true (edit-after-tag! deck 1 "Adjusted" #px"prst=\"roundRect\"" "prst=\"ellipse\"")
+              "and so is the one with adjustments")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(restyle restyle)
+                "both are seen and written")
+  (define src (file->string program))
+  (check-regexp-match #rx"~shape: \"ellipse\"" src "the plain one says so")
+  (check-regexp-match #rx"preset_geom[(]\"ellipse\"" src
+                      "and the adjusted one says so inside its own geometry")
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "and there is nothing left to merge"))
+
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
 ;; says so; required by a suite, the suite says it once at the end.

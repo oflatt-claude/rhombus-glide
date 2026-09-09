@@ -2277,6 +2277,19 @@
   ;; `beside` still draws the shape the editor is dragging. So an argument is
   ;; only ever added to a call known to take it: adding `~crop:` to a `vstack`
   ;; is a program that no longer runs.
+  ;; The shape it is drawn as. Written where the source says it: the name inside
+  ;; `~geom: preset_geom("roundRect", ...)` when the shape carries adjustments,
+  ;; and `~shape: "roundRect"` when it does not -- `~geom:` wins in the runtime,
+  ;; so that is the one to rewrite when both could be there. A shape drawn from
+  ;; a path has a name on neither side that the other could be rewritten in, so
+  ;; changing one of those into a preset is reported and not written.
+  (define (shape-site child)
+    (define geom-stx (kw-value-stx child '#:geom))
+    (cond
+      [geom-stx
+       (let ([r (call-string-range geom-stx 'preset_geom)])
+         (and r (style-site 'shape r #f #f #f #f)))]
+      [else (kw-site 'shape (leaf-taking 'shape_pict) '#:shape string?)]))
   (define leaf-name (let ([n (call-name child)]) (and n (syntax-e* n))))
   (define (leaf-taking . names) (and leaf-name (memq leaf-name names) child))
   ;; The colour argument, however the source states it: a `hex(...)` to rewrite,
@@ -2364,7 +2377,8 @@
    (filter values run-sites)
    (filter values para-sites)
    (filter values
-          (list (paint-site 'fill '#:fill fill-stx (leaf-taking 'shape_pict))
+          (list (shape-site child)
+                (paint-site 'fill '#:fill fill-stx (leaf-taking 'shape_pict))
                 opacity
                 (paint-site 'line '#:line stroke-stx
                             (leaf-taking 'shape_pict 'image_pict))
@@ -4189,7 +4203,9 @@
   (case property
     [(fill line text-color) (format "~s" value)]
     [(size line-width fill-opacity) (num->source value)]
-    [(font) (format "~s" value)]
+    ;; The shape it is drawn as, and the typeface it is set in: both names, both
+    ;; written as the strings the source states them as.
+    [(shape font) (format "~s" value)]
     [(bold italic) (if value "#true" "#false")]
     ;; A level is a whole number of steps, and `1.0` is not the number the
     ;; parser reads back out of `lvl="1"`.
