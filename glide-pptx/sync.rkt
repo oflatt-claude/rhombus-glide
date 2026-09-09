@@ -3183,15 +3183,27 @@
        (cond
          [(not site) (begin (mark-unwritable! a)
                  (set! skipped (cons (cons a NO-AT-FORM) skipped)))]
+         ;; The words are the program's own: a helper works them out, or shares
+         ;; one string between the several elements it draws with it. There is
+         ;; no literal here to rewrite and nothing a person could go and fix, so
+         ;; this is said and the rest of the save still lands -- a retyping of
+         ;; an e-graph node's operator, which one `chain_nodes` decides for the
+         ;; three `update`s, used to take every other edit in the save with it.
          [(or (not paras) (null? paras))
-          (set! skipped (cons (cons a "its text is not written as literals here") skipped))]
+          (mark-unwritable! a)
+          (set! skipped (cons (cons a NOT-LITERAL-TEXT) skipped))]
+         ;; Which run a retyping that runs across two of them belongs to is a
+         ;; guess, and this one does hold up the save: retyping the one word
+         ;; instead is something a person can do, and the edits already in the
+         ;; deck are worth keeping until they do.
          [(eq? 'crosses hit)
           (set! skipped
                 (cons (cons a (string-append "the retyping crosses runs or paragraphs,"
                                              " so which of them it belongs to is a guess"))
                       skipped))]
          [(not hit)
-          (set! skipped (cons (cons a "its text is not written as literals here") skipped))]
+          (mark-unwritable! a)
+          (set! skipped (cons (cons a NOT-LITERAL-TEXT) skipped))]
          [else (edit! (car hit) (format "~s" (cdr hit)))
                (set! applied (cons a applied))])]
       ;; A shape added in the editor is written into the slide it was added to,
@@ -3790,6 +3802,10 @@
 (define STAGE-WIDE
   (string-append "the slide is built from one canvas, so this is on it from the first"
                  " stage rather than the one it was drawn on"))
+
+(define NOT-LITERAL-TEXT
+  (string-append "its words are not literals here -- the program works them out,"
+                 " or shares them with everything else it draws with them"))
 
 (define STAGES-ALL
   (string-append "one `at` form draws it on every stage of the slide, so it is gone"

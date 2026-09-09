@@ -2173,6 +2173,53 @@
   (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
                 "and there is nothing left to merge"))
 
+;; ------------------------------- words the program works out, and a drag beside
+;;
+;; A helper's words can be computed, or shared between everything it draws with
+;; them: an e-graph's `update` nodes are three elements with one word between
+;; them. Retyping one of those is not something the source can be made to say --
+;; there is no literal to rewrite and nothing a person could go and fix -- so it
+;; is said and the rest of the save still lands. It used to take every other
+;; edit in the save with it, which is a drag lost for asking a question.
+(let ()
+  (define dir (build-path work "computed-words"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "export: all_slides"
+          "def shared = \"update\""
+          "fun word(x, y, ~tag: tag :: String, ~nudge: nudge = #false):"
+          "  at(x, y, ~tag: tag, ~nudge: nudge,"
+          "     textbox(~width: 90.0, ~height: 20.0, ~wrap: #false, para(run(shared))))"
+          "def slide_1 = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  at(20.0, 20.0, ~tag: \"Box\","
+          "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))),"
+          "  word(40.0, 120.0, ~tag: \"One\"), word(40.0, 160.0, ~tag: \"Two\"))"
+          "def all_slides = [slide_1]")
+    "\n")
+   program #:exists 'replace)
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (check-true (retext-in-deck! deck 1 "One" "combine") "one of them is retyped")
+  (check-true (drag-in-deck! deck 1 "Box" 200.0 150.0) "and something else is dragged")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                "the drag lands")
+  (check-regexp-match #rx"at[(]200[.]0, 150[.]0, ~tag: \"Box\"" (file->string program)
+                      "in the program")
+  (check-equal? (length (sync-report-skipped r)) 1 "and the retyping is reported")
+  (check-regexp-match #rx"not literals here" (cdr (first (sync-report-skipped r)))
+                      "as words the program works out")
+  (check-true (sync-report-base-written? r)
+              "the save landed, rather than being refused whole"))
+
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
 ;; says so; required by a suite, the suite says it once at the end.
