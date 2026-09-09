@@ -183,6 +183,62 @@
     (namespace-attach-module ns 'racket/gui/base (make-base-empty-namespace))
     #t))
 
+;; The program, read with a name written in for every element it does not name
+;; itself.
+;;
+;; A name is what the deck carries and what an edit is found by, and a program
+;; should not have to write one for every shape it draws to be editable. So the
+;; source is rewritten in memory -- `~tag: "Shape 3"` added to each `at` that
+;; has none -- and that is what is read. Nothing is written to the file: the
+;; names are worked out from the file again on the next read, and only an edit
+;; that needs one to stay put writes it down.
+;;
+;; Through the source rather than by counting at run time. The names go into the
+;; very calls the sites were read from, so which `at` drew which element is not
+;; a guess -- and a loop, a conditional or a spliced list, where drawing order
+;; and source order part company, cannot put an edit in the wrong place. One
+;; `at` in a loop draws several elements under one name, which is the same
+;; situation as a tag written by hand for several, and is refused the same way.
+(define (auto-tagged-source full)
+  (with-handlers ([exn:fail? (lambda (_e) #f)])
+    (and (regexp-match? #rx"[.]rhm$" (path->string full))
+         (let-values ([(sites _scopes _slides _layout) (find-program-sites full)])
+           (define auto (filter at-site-auto sites))
+           (and (pair? auto)
+                (let ([text (file->string full)])
+                  (splice-string
+                   text
+                   (for/list ([s (in-list auto)]
+                              #:when (at-site-whole s))
+                     ;; Just inside the closing parenthesis of the `at` call it
+                     ;; names, where an argument can always be added.
+                     (let ([at (sub1 (rng-end (at-site-whole s)))])
+                       (cons (rng at at)
+                             (format ", ~~tag: ~s" (at-site-tag s))))))))))))
+
+;; Reads the program, from that rewrite when there is one. Declared under a name
+;; of its own with the file as its source, so that `"slidehelpers.rhm"` next
+;; door still resolves and nothing has to be written beside it.
+(define (require-program full name)
+  (define text (auto-tagged-source full))
+  (cond
+    [(not text) (dynamic-require `(file ,(path->string full)) name (lambda () #f))]
+    [else
+     (define stx
+       (parameterize ([read-accept-reader #t] [read-accept-lang #t]
+                      [current-directory (or (path-only full) (current-directory))])
+         (with-input-from-string text (lambda () (read-syntax full)))))
+     (define declared (string->symbol (format "glide-named-~a" (equal-hash-code text))))
+     ;; `module` has to be bound for a module form to be declared, and the
+     ;; namespace a program is read into has racket/base attached but not
+     ;; required -- deliberately, since a program is a module and takes its
+     ;; bindings from its own language rather than from around it. The instance
+     ;; is the attached one, so this shares rather than starting a second.
+     (namespace-require 'racket/base)
+     (parameterize ([current-module-declare-name (make-resolved-module-path declared)])
+       (eval stx))
+     (dynamic-require `',declared name (lambda () #f))]))
+
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
   (define ns (make-base-empty-namespace))
@@ -264,7 +320,7 @@
                    ;; command's, not the program's.
                    [current-command-line-arguments (vector)])
       (define v (for/or ([name (in-list names)])
-                  (dynamic-require `(file ,(path->string full)) name (lambda () #f))))
+                  (require-program full name)))
       ;; Settled here, inside the program's namespace, for the reason
       ;; `settle-frames` gives.
       (cond
@@ -1188,8 +1244,15 @@
 ;; site remembers the top-level definition it sits in, and `all-slides` says
 ;; which definition is which slide -- without that, dragging the title on slide 3
 ;; would rewrite slide 1's coordinates.
+;; `auto` is set when the tag is ours rather than the file's: the program drew
+;; this element without naming it, and glide named it so that the deck could
+;; carry it and an edit to it could be found. Before a program is read it is
+;; rewritten in memory with those names written in -- see `auto-tagged-source`
+;; -- so the element on the slide answers to the same name the site does, with
+;; no guessing about which `at` drew which element and nothing written into the
+;; file until an edit asks for it.
 (struct at-site (tag x y rot width height texts nudge insert-at scope whole
-                 flip-h flip-v leaf-at styles) #:transparent)
+                 flip-h flip-v leaf-at styles auto) #:transparent)
 
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
@@ -1426,17 +1489,32 @@
                   ;; `parse-rhombus-tagged-call`.
                   (parse-rhombus-tagged-call (cdr call))))
             (when site
-              (set! sites (cons (struct-copy at-site site
-                                             [scope scope]
-                                             [whole (and at?
-                                                         (rhombus-call-extent text (second l)))])
-                                sites))))
+              (define extent (rhombus-call-extent text (second l)))
+              (define whole (and at? extent))
+              (set! sites
+                    (cons (struct-copy at-site site
+                                       [scope scope]
+                                       [whole whole]
+                                       ;; An `at` the program did not name takes
+                                       ;; its added arguments -- the name itself,
+                                       ;; and a correction -- just inside the
+                                       ;; parenthesis that closes it.
+                                       [insert-at (or (at-site-insert-at site)
+                                                      (and extent
+                                                           (sub1 (rng-end extent))))])
+                          sites))))
           (for-each walk l))
         (void))))
+  ;; Named, where the program did not. A name is what the deck carries and what
+  ;; an edit is found by, and one per element is all it takes -- so an `at` with
+  ;; no `~tag:` gets "Shape 3" or "TextBox 5", counted per kind within its own
+  ;; slide, the way an editor numbers what somebody draws. A name the file
+  ;; already uses in that slide is stepped over rather than taken twice.
+  (define named-sites (name-untagged (reverse sites)))
   (parameterize ([current-range-offset after-lang])
-    (values (reverse sites)
-            (rhombus-slide-scopes groups (map at-site-scope (reverse sites)))
-            (with-indents (rhombus-slide-sites groups text) (reverse sites) text)
+    (values named-sites
+            (rhombus-slide-scopes groups (map at-site-scope named-sites))
+            (with-indents (rhombus-slide-sites groups text) named-sites text)
             (program-layout (rhombus-name-list groups text)
                             (rhombus-export-block groups text)
                             (rhombus-global-colours groups)
@@ -1901,9 +1979,18 @@
   (define positional (filter (lambda (g) (not (rhombus-kw-name g))) args))
   (define kws (for/hash ([g (in-list args)] #:when (rhombus-kw-name g))
                 (values (rhombus-kw-name g) (rhombus-kw-value g))))
-  (define tag-stx (hash-ref kws '#:tag #f))
+  ;; `~tag: "Box"` on the `at`, or `tag(p, "Box")` around what it places: the
+  ;; same name either way, and the second is the one that also works where a
+  ;; canvas is not doing the placing.
+  (define kw-tag-stx (hash-ref kws '#:tag #f))
+  (define tag-stx (or kw-tag-stx (tag-call-name-stx args)))
   (define tag (and tag-stx (string? (syntax-e* tag-stx)) (syntax-e* tag-stx)))
-  (and tag (>= (length positional) 3)
+  ;; A tag the program states but does not spell out -- `~tag: tag` inside a
+  ;; helper -- is neither a name an edit can be written to nor an `at` glide may
+  ;; name itself: a second `~tag:` in one call is a program that does not
+  ;; compile. Those are left alone, as they were before glide named anything.
+  (and (or tag (not tag-stx))
+       (>= (length positional) 3)
        (let* ([written (last positional)]
               [named (let ([v (rhombus-group-value written)])
                        (and v (symbol? (syntax-e* v))
@@ -1917,12 +2004,56 @@
                   (rhombus-child-size child 'height)
                   (rhombus-child-paragraph-texts child)
                   (rhombus-nudge (hash-ref kws '#:nudge #f))
-                  (let ([r (range-of tag-stx)]) (and r (rng-end r)))
+                  ;; Where an argument can be added: after `~tag:`, where the
+                  ;; program wrote one. A name from `tag(p, "name")` sits in a
+                  ;; call of its own, and so does no name at all -- both take
+                  ;; the place the walk works out, just inside the parenthesis
+                  ;; that closes this call.
+                  (and kw-tag-stx
+                       (let ([r (range-of kw-tag-stx)]) (and r (rng-end r))))
                   #f #f
                   (rhombus-child-flag child '#:flip_h)
                   (rhombus-child-flag child '#:flip_v)
                   (rhombus-child-insert child)
-                  (style-sites child)))))
+                  (style-sites child)
+                  ;; What was drawn, for naming it if the program did not: the
+                  ;; leaf's own call says whether this is a shape, a text box, a
+                  ;; picture or a group, which is how PowerPoint names them too.
+                  (and (not tag-stx) (leaf-kind-name child))))))
+
+;; The sites in source order, with a name given to every one the program did not
+;; name. Counted per kind and per slide, and never a name the file already uses
+;; there: two elements answering to one name is a name no edit can be traced
+;; back to.
+(define (name-untagged sites)
+  (define taken
+    (for/fold ([h (hash)]) ([s (in-list sites)] #:when (at-site-tag s))
+      (hash-update h (at-site-scope s)
+                   (lambda (ts) (cons (at-site-tag s) ts)) '())))
+  (define counts (make-hash))
+  (for/list ([s (in-list sites)])
+    (cond
+      [(at-site-tag s) s]
+      [else
+       (define kind (or (at-site-auto s) "Shape"))
+       (define scope (at-site-scope s))
+       (define here (hash-ref taken scope '()))
+       (define name
+         (let loop ()
+           (define n (add1 (hash-ref counts (cons scope kind) 0)))
+           (hash-set! counts (cons scope kind) n)
+           (define candidate (format "~a ~a" kind n))
+           (if (member candidate here) (loop) candidate)))
+       (struct-copy at-site s [tag name] [auto #t])])))
+
+;; What to call a kind of leaf, the way an editor names one.
+(define (leaf-kind-name child)
+  (case (let ([n (call-name child)]) (and n (syntax-e* n)))
+    [(textbox text_box) "TextBox"]
+    [(image_pict) "Picture"]
+    [(group_pict) "Group"]
+    [(table_pict) "Table"]
+    [else "Shape"]))
 
 ;; Any call that carries a literal `~tag:` is a site, not only `at`.
 ;;
@@ -1948,10 +2079,15 @@
 (define (parse-rhombus-tagged-call args)
   (define kws (for/hash ([g (in-list args)] #:when (rhombus-kw-name g))
                 (values (rhombus-kw-name g) (rhombus-kw-value g))))
-  (define tag-stx (hash-ref kws '#:tag #f))
+  ;; `~tag: "name"` on the call, or a `tag(p, "name")` among its arguments: the
+  ;; second is how a pict something other than a canvas places gets a name, and
+  ;; the call that places it is where an edit to it can be written.
+  (define kw-tag-stx (hash-ref kws '#:tag #f))
+  (define tag-stx (or kw-tag-stx (tag-call-name-stx args)))
   (define tag (and tag-stx (string? (syntax-e* tag-stx)) (syntax-e* tag-stx)))
   (and tag
-       (let ([after-tag (let ([r (range-of tag-stx)]) (and r (rng-end r)))]
+       (let ([after-tag (and kw-tag-stx
+                             (let ([r (range-of kw-tag-stx)]) (and r (rng-end r))))]
              [words (call-string-ranges args (range-of tag-stx))])
          (at-site tag #f #f
                   (literal-range (hash-ref kws '#:rotate #f) real?)
@@ -1960,7 +2096,28 @@
                   (if (null? words) '() (list words))
                   (rhombus-nudge (hash-ref kws '#:nudge #f))
                   after-tag
-                  #f #f #f #f #f '()))))
+                  #f #f #f #f #f '() #f))))
+
+;; The name a `tag(p, "name")` among these arguments gives, as the syntax of the
+;; string itself so that its extent is known. The first one only: a call that
+;; names two picts places two elements, and which of them an edit belongs to is
+;; not something one call can say.
+(define (tag-call-name-stx args)
+  (define found (box #f))
+  (for ([g (in-list args)])
+    (let walk ([s g])
+      (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+      (when (and l (not (unbox found)))
+        (for ([a (in-list l)] [b (in-list (cdr l))])
+          (when (and (not (unbox found)) (eq? 'tag (syntax-e* a))
+                     (rhombus-head? b 'parens))
+            (define inner (cdr (syntax-e b)))
+            ;; `tag(p, "name")`: the name is the second argument.
+            (when (>= (length inner) 2)
+              (define v (rhombus-group-value (second inner)))
+              (when (and v (string? (syntax-e* v))) (set-box! found v)))))
+        (unless (unbox found) (for-each walk l)))))
+  (unbox found))
 
 ;; Every string the call holds, in the order they are written, less the tag
 ;; itself: the words a helper draws are its arguments, and one string is one run

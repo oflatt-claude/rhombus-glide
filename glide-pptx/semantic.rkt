@@ -128,13 +128,17 @@
   (define (has-layer? p)
     (and (pict? p)
          (let ([d (pict-desc p)])
-           (or (slide-desc? d) (group-desc? d)
+           (or (slide-desc? d) (group-desc? d) (name-desc? d)
                (for/or ([c (in-list (pict-children p))]) (has-layer? (child-pict c)))))))
   (let walk ([p p] [t (xf 0.0 0.0 1.0 1.0)] [acc '()])
     (define d (and (pict? p) (pict-desc p)))
     (cond
       [(not (pict? p)) acc]
       [(or (slide-desc? d) (group-desc? d)) (cons (list 'layer d t) acc)]
+      ;; A pict with a name of its own: read as one piece, and what it draws
+      ;; answers to that name. Left inside a larger drawing it would be read
+      ;; back with everything else around it and answer to nothing.
+      [(name-desc? d) (cons (list 'named p t) acc)]
       [(draws-nothing? p) acc]
       ;; Nothing addressable in here, so what it draws is what it is.
       [(not (has-layer? p)) (cons (list 'drawn p t) acc)]
@@ -171,6 +175,25 @@
          (append* (for/list ([pl (in-list (slide-desc-placeds d))])
                     (placed-items pl t width height)))
          (group-items d (xf-ox t) (xf-oy t) t width height))]
+    [(eq? 'named kind)
+     (define p (second entry))
+     (define name (name-desc-name (pict-desc p)))
+     ;; What it holds, read the way anything else is -- a shape it describes
+     ;; stays a shape, and a picture built from nothing but drawing is read back
+     ;; from that drawing -- and then given the name.
+     (define inner
+       (let ([kid (let ([cs (pict-children p)]) (and (pair? cs) (child-pict (car cs))))])
+         (cond
+           [(and kid (shape-desc? (pict-desc kid)))
+            (shape-items (pict-desc kid) (xf-x t 0.0) (xf-y t 0.0) 0.0 t (xf-factor t) name)]
+           [else
+            (define q (if (and (= 1.0 (xf-sx t)) (= 1.0 (xf-sy t)))
+                          p
+                          (scale p (xf-sx t) (xf-sy t))))
+            (display-page-items
+             (pict->display-page (lambda (dc) (draw-pict q dc (xf-ox t) (xf-oy t)))
+                                 width height))])))
+     (for/list ([i (in-list inner)]) (item-with-tag i name))]
     [else
      (define p (second entry))
      (define q (if (and (= 1.0 (xf-sx t)) (= 1.0 (xf-sy t)))
@@ -263,14 +286,22 @@
              (placed-items pl (xf 0.0 0.0 1.0 1.0) width height))))
 
 (define (placed-items pl t page-w page-h)
-  (define p (placed-pict pl))
+  ;; A pict named where it was built rather than where it was placed: the name
+  ;; is the placement's if it has one, and otherwise the pict's own, and what is
+  ;; inside the wrapper is read exactly as it would have been without it.
+  (define p0 (placed-pict pl))
+  (define named
+    (and (name-desc? (pict-desc p0))
+         (let ([cs (pict-children p0)]) (and (pair? cs) (child-pict (car cs))))))
+  (define p (or named p0))
   (define d (pict-desc p))
   (define-values (local-x local-y) (placed-position pl))
   (define x (xf-x t local-x))
   (define y (xf-y t local-y))
   (define rot (placed-rot pl))
   (define f (xf-factor t))
-  (define tag (placed-tag pl))
+  (define tag (or (placed-tag pl)
+                  (and (name-desc? (pict-desc p0)) (name-desc-name (pict-desc p0)))))
   (cond
     [(shape-desc? d) (shape-items d x y rot t f tag)]
     [(text-desc? d)

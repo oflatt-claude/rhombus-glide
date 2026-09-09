@@ -18,6 +18,7 @@ export:
   slide_canvas
   from_stage
   over
+  tag
   at
   shape_pict
   textbox
@@ -130,6 +131,15 @@ fun transition_of(s):
 
 fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
   rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~nudge: to_rkt_list(nudge))
+
+// What to call what this pict draws, wherever it ends up.
+//
+// `at`'s `~tag:` names what a canvas places. This names the pict itself, which
+// is what a pict placed by something else needs -- a helper composing a picture
+// of its own, a blob laid over a slide with a `put` of the talk's own. The name
+// travels with the pict, so the element on the slide answers to it and an edit
+// to it can be found.
+fun tag(p, name :: String): rt.#{tag-pict}(p, name)
 
 // A slide with `elems` laid over it from `stage` on, counting the first stage
 // as 1. A shape drawn on the third stage of a slide in the editor appears

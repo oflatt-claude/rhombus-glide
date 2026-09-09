@@ -13,7 +13,8 @@
 (require pict)
 (provide (struct-out desc-pict) with-desc pict-desc
          (struct-out slide-desc) (struct-out shape-desc) (struct-out text-desc)
-         (struct-out image-desc) (struct-out group-desc) (struct-out table-desc))
+         (struct-out image-desc) (struct-out group-desc) (struct-out table-desc)
+         (struct-out name-desc))
 
 (struct desc-pict pict (desc) #:transparent)
 
@@ -40,3 +41,12 @@
                     flip-h? flip-v?)
   #:transparent)
 (struct table-desc (width height col-widths row-heights cells) #:transparent)
+
+;; A name for what one pict draws, wherever that pict ends up.
+;;
+;; A tag reaches an element through the `at` that placed it, which is fine until
+;; something else does the placing: a helper composing a picture of its own, a
+;; blob laid over a slide with `put`. Then the element is on the slide with no
+;; name, and nothing an editor does to it can be traced back. This is the name
+;; on the pict itself, so it travels with what it names.
+(struct name-desc (name) #:transparent)

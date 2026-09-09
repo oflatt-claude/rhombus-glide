@@ -92,6 +92,22 @@
       (and (it:image? i) (it:image-tag i) #t)))
 
 ;; The element name an item carries, or #f.
+;; The same item, under a name. Only the kinds that carry one: what a bare pict
+;; draws -- a line, a glyph, a path read back from drawing -- has nowhere to
+;; keep a name, in the format or here, and nothing an editor does to one of
+;; those could be written back to a program anyway.
+(define (item-with-tag i tag)
+  (cond
+    [(not tag) i]
+    [(it:preset? i) (struct-copy it:preset i [tag tag])]
+    [(it:textbox? i) (struct-copy it:textbox i [tag tag])]
+    [(it:shape-path? i) (struct-copy it:shape-path i [tag tag])]
+    [(it:picture? i) (struct-copy it:picture i [tag tag])]
+    [(it:image? i) (struct-copy it:image i [tag tag])]
+    [(it:group? i) (struct-copy it:group i [tag tag])]
+    [(it:table? i) (struct-copy it:table i [tag tag])]
+    [else i]))
+
 (define (item-tag i)
   (cond
     [(it:preset? i) (it:preset-tag i)]

@@ -11,7 +11,8 @@
          set-slide-numbers! slide-numbers? slide-numbers-on? number-on
          forget-bitmaps!
          ;; composition
-         (struct-out placed) at slide-canvas from-stage pin-placed placed-position
+         (struct-out placed) at tag-pict slide-canvas from-stage pin-placed
+         placed-position
          ;; structure carried on the pict, for export
          (all-from-out "tagged.rkt")
          ;; leaves
@@ -866,6 +867,11 @@
 
 (define (at x y p #:rotate [rot 0.0] #:tag [tag #f] #:nudge [nudge #f])
   (placed x y rot p tag nudge))
+
+;; The same name, put on the pict rather than on the placement, for a pict
+;; something other than a canvas will place: see `name-desc`.
+(define (tag-pict p name)
+  (if (and (pict? p) (string? name)) (with-desc p (name-desc name)) p))
 
 ;; The position an element actually draws at.
 (define (placed-position pl)

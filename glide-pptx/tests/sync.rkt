@@ -2220,6 +2220,67 @@
   (check-true (sync-report-base-written? r)
               "the save landed, rather than being refused whole"))
 
+;; --------------------------------- a name on the pict, wherever it is placed
+;;
+;; `at`'s `~tag:` names what a canvas places, which leaves out everything placed
+;; some other way: a helper composing a picture of its own, a blob laid over a
+;; slide with a `put` of the program's own. Those arrived on the slide with no
+;; name, and nothing an editor did to one could be traced back -- a talk's
+;; e-class regions, drawn exactly that way, were 14 elements nobody could move.
+;;
+;; `tag(p, "name")` puts the name on the pict, so it travels with what it names.
+;; The call that places it is where an edit to it is written, and the position
+;; is that call's own business, so a drag is recorded as a correction.
+(let ()
+  (define dir (build-path work "named-pict"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          "fun put(base, p, x, y, ~nudge: nudge = #false):"
+          "  def [dx, dy] = if nudge | nudge | [0.0, 0.0]"
+          "  pc.overlay(~horiz: #'left, ~vert: #'top, pc.Pict.from_handle(base),"
+          "             pc.Pict.from_handle(p).pad(~left: x + dx, ~top: y + dy))"
+          "def blob:"
+          "  shape_pict(~width: 90.0, ~height: 50.0,"
+          "             ~geom: preset_geom(\"roundRect\", [pair(\"adj\", \"val 33878\")]),"
+          "             ~fill: hex(\"929292\", ~alpha: 0.3))"
+          "def slide_1:"
+          "  def canvas = slide_canvas("
+          "    ~width: 320.0, ~height: 240.0,"
+          "    at(20.0, 20.0, tag(shape_pict(~width: 60.0, ~height: 40.0,"
+          "                                  ~fill: hex(\"4472C4\")), \"Box\")))"
+          "  put(canvas, tag(blob, \"root class\"), 150.0, 120.0)"
+          "def all_slides = [slide_1]")
+    "\n")
+   program #:exists 'replace)
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (for*/list ([st (in-list (deck-states-by-name deck (build-path dir "cmp")))]
+                            [e (in-list (slide-state-elements st))])
+                  (list (el-state-tag e) (el-state-kind e)))
+                '(("Box" shape) ("root class" shape))
+                "both are named elements, and both are still shapes")
+  (void (sync-once program deck #:workdir w))
+  (check-true (drag-in-deck! deck 1 "root class" 40.0 60.0) "the blob is dragged")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                "which is written")
+  (check-regexp-match #rx"put[(]canvas, tag[(]blob, \"root class\"[)], 150[.]0, 120[.]0,"
+                      (file->string program)
+                      "leaving the program's own placement alone")
+  (check-regexp-match #rx"~nudge: [[]-110[.]0, -60[.]0[]]" (file->string program)
+                      "with the drag recorded as a correction on the call that placed it")
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "and there is nothing left to merge"))
+
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this
 ;; says so; required by a suite, the suite says it once at the end.
