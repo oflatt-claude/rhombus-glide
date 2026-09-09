@@ -89,11 +89,17 @@ The talk exports two decks, and which one an edit needs is part of the answer:
 
 ## Open, and the biggest one
 
-**Moving something inside a group is not seen at all.** A group is compared by
-its box and by the words it holds, so a child dragged or resized inside one
-leaves both sides agreeing and the save says there is nothing to merge. Every
-icon on slide 3, the rules group on slide 4 and the bar charts on slides 8-9 are
-groups, so this is a large part of the talk.
+**Moving something inside a group is not seen at all**, and worse, a child that
+moves out of the group's own box reads as the *group* moving -- which, on a
+slide whose group the merge can find, would move the whole group. On this talk
+it is refused instead, because `with_icon`'s groups share their names with slide
+3's; renaming them would expose the wrong edit, so that rename is deliberately
+not made until this is fixed.
+
+A group is compared by its box and by the words it holds, so a child dragged or
+resized inside one leaves both sides agreeing and the save says there is nothing
+to merge. Every icon on slide 3, the rules group on slide 4 and the bar charts
+on slides 8-9 are groups, so this is a large part of the talk.
 
 The way in is clear -- a group's `at` form holds an `at` for each child, which is
 where such an edit belongs, and `group-retexts` already writes a child's *words*
