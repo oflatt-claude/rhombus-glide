@@ -462,6 +462,46 @@
                       "to the `at` form the layer holds")
   (set-stage-slides! #f))
 
+;; ------------------------------------------ which frame of a build settles
+;;
+;; Without stages a deck holds one slide per slide of the program, and the frame
+;; it holds is the one that shows the most of that slide. "The most" counts
+;; everything an edit could be written back to, the picts the program names
+;; among them -- and a talk that draws named things over its canvas as it goes
+;; has frames whose canvases are identical. Counting only the canvas tags made
+;; every frame a tie, the earliest won, and the eggcc talk's e-class regions --
+;; named picts, laid over the slide from the second frame on -- were absent from
+;; the deck altogether, so none of them could be edited.
+(let ()
+  (define program (build-path work "settle-named.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          "def canvas = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  at(20.0, 20.0, ~tag: \"Box\","
+          "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))))"
+          "def blob:"
+          "  tag(shape_pict(~width: 40.0, ~height: 30.0,"
+          "                 ~fill: hex(\"929292\", ~alpha: 0.3)), \"late\")"
+          "def slide_1:"
+          "  def base = pc.Pict.from_handle(canvas)"
+          "  def with_blob:"
+          "    pc.overlay(~horiz: #'left, ~vert: #'top, base,"
+          "               pc.Pict.from_handle(blob).pad(~left: 150.0, ~top: 100.0))"
+          "  pc.switch(base, with_blob)"
+          "def all_slides = [slide_1]")
+    "\n")
+   program #:exists 'replace)
+  (check-equal? (for/list ([st (in-list (program-slide-states program))])
+                  (for/list ([e (in-list (slide-state-elements st))]) (el-state-tag e)))
+                '(("Box" "late"))
+                "the frame that shows the named pict is the one that settles"))
+
 ;; -------------------------------------- a slide a helper builds, added to
 ;;
 ;; Half the slides of a real talk are built by helpers: `divider(0)` composes

@@ -224,6 +224,7 @@
                (it:preset-flip-h? i) (it:preset-flip-v? i)
                (body-text (it:preset-body i)) (fill-digest (it:preset-fill i))
                (append (list (cons 'shape (it:preset-name i)))
+                       (adjust-style (adjust-digest (it:preset-adjust i)))
                        (fill-style (it:preset-fill i)) (pen-style (it:preset-pen i))
                        (body-style (it:preset-body i)))
                z)]
@@ -326,6 +327,20 @@
     [(preset-geom? g) (preset-geom-name g)]
     [(custom-geom? g) "path"]
     [else #f]))
+
+;; A preset shape's adjustments -- what the handle on a rounded rectangle moves
+;; -- as one string, so that dragging it is a difference the merge sees.
+(define (adjust-digest pairs)
+  (string-join (for/list ([a (in-list pairs)]) (format "~a=~a" (car a) (cdr a))) ";"))
+
+(define (geom-adjust g)
+  (if (preset-geom? g) (adjust-digest (preset-geom-adjust g)) ""))
+
+;; Stating none means the preset's own defaults, which a deck writes out and a
+;; program leaves to the shape -- so an empty list is no property at all, and
+;; the two sides agree about a shape neither of them reshaped.
+(define (adjust-style digest)
+  (if (string=? "" digest) '() (list (cons 'shape-adjust digest))))
 
 (define (fill-digest f)
   (cond
@@ -699,10 +714,12 @@
                         (cons 'tail (end-style (stroke-tail l)))))
           '())))
   (define text (if (shape? e) (body-style (shape-body e)) '()))
-  ;; The shape it is drawn as: see `geom-name`.
+  ;; The shape it is drawn as, and what its own handles say about it.
   (define geom
     (let ([n (and (shape? e) (geom-name (shape-geom e)))])
-      (if n (list (cons 'shape n)) '())))
+      (if n
+          (cons (cons 'shape n) (adjust-style (geom-adjust (shape-geom e))))
+          '())))
   (define opacity
     (if (picture? e)
         (list (cons 'opacity (round-to (picture-opacity e) 100.0))
@@ -749,7 +766,7 @@
 ;; Bumped whenever a state carries something it did not before. A base written
 ;; by an older version is not read: resyncing from scratch is what it says to do
 ;; when the base is unusable, and it is cheap.
-(define BASE-VERSION 5)
+(define BASE-VERSION 6)
 
 ;; Written beside the file and renamed over it, rather than into it. A write
 ;; that stops halfway -- a Ctrl-C, a full disk, the machine going down -- leaves

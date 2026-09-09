@@ -2173,6 +2173,69 @@
   (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
                 "and there is nothing left to merge"))
 
+;; ------------------------------------------- the shape's own handles
+;;
+;; A rounded rectangle's roundness is not its name: dragging the yellow handle
+;; leaves the preset called "roundRect" and changes the adjustment inside it. The
+;; compared state held the name alone, so a shape reshaped in the editor was a
+;; save with nothing in it -- no edit written and nothing reported either, which
+;; is the one failure a person cannot see.
+(let ()
+  (define dir (build-path work "shape-handles"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define (fresh!)
+    (delete-directory/files (build-path dir ".glide") #:must-exist? #f)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "export: all_slides"
+            "def slide_1 = slide_canvas("
+            "  ~width: 320.0, ~height: 240.0,"
+            "  at(20.0, 20.0, ~tag: \"Blob\","
+            "     shape_pict(~width: 80.0, ~height: 40.0,"
+            "                ~geom: preset_geom(\"roundRect\", [pair(\"adj\", \"val 17500\")]),"
+            "                ~fill: hex(\"ED7D31\"))),"
+            "  at(140.0, 20.0, ~tag: \"Plain\","
+            "     shape_pict(~width: 80.0, ~height: 40.0, ~shape: \"roundRect\","
+            "                ~fill: hex(\"4472C4\"))))"
+            "def all_slides = [slide_1]")
+      "\n")
+     program #:exists 'replace))
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (fresh!)
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (check-true (edit-after-tag! deck 1 "Blob" #px"val 17500" "val 30000")
+              "the handle is dragged in the editor")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(restyle)
+                "which is seen and written")
+  (check-regexp-match #rx"preset_geom[(]\"roundRect\", [[]pair[(]\"adj\", \"val 30000\"[)][]][)]"
+                      (file->string program)
+                      "into the list the source states them in")
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "and there is nothing left to merge")
+
+  ;; A shape named with `~shape:` states no adjustments at all, and stating none
+  ;; means the preset's own defaults -- which a deck writes out in full. So an
+  ;; adjustment the source does not state cannot be told from the defaults
+  ;; written out, and reshaping that one is not a difference either side can
+  ;; see. Pinned here because it is the edge of what the comparison can say.
+  (fresh!)
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (check-true (edit-after-tag! deck 1 "Plain" #px"<a:avLst></a:avLst>"
+                               "<a:avLst><a:gd name=\"adj\" fmla=\"val 30000\"/></a:avLst>")
+              "the plain one is reshaped in the editor")
+  (define r2 (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (sync-report-actions r2) '()
+                "which the merge does not see, the source stating no adjustment"))
+
 ;; ------------------------------- words the program works out, and a drag beside
 ;;
 ;; A helper's words can be computed, or shared between everything it draws with
@@ -2280,6 +2343,329 @@
   (picts->pptx (load-program-picts program) deck)
   (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
                 "and there is nothing left to merge"))
+
+;; A call is a site wherever it sits, not only at the head of its group. A
+;; program that draws a row of things binds each step -- `let p = region(p, ...,
+;; ~tag: "class 1")` -- and the call that placed the thing is still where a drag
+;; on it belongs.
+(let ()
+  (define dir (build-path work "bound-call"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          "fun as_p(v): if v is_a pc.Pict | v | pc.Pict.from_handle(v)"
+          "fun put(base, p, x, y, ~nudge: nudge = #false):"
+          "  def [dx, dy] = if nudge | nudge | [0.0, 0.0]"
+          "  pc.overlay(~horiz: #'left, ~vert: #'top, as_p(base),"
+          "             as_p(p).pad(~left: x + dx, ~top: y + dy))"
+          "fun slide_1():"
+          "  fun region(p, x, y, ~tag: name, ~nudge: nudge = #false):"
+          "    put(p, tag(shape_pict(~width: 60.0, ~height: 30.0,"
+          "                          ~fill: hex(\"929292\", ~alpha: 0.3)), name),"
+          "        x, y, ~nudge: nudge)"
+          "  def canvas = slide_canvas("
+          "    ~width: 320.0, ~height: 240.0,"
+          "    at(20.0, 20.0, tag(shape_pict(~width: 60.0, ~height: 40.0,"
+          "                                  ~fill: hex(\"4472C4\")), \"Box\")))"
+          "  let p = region(canvas, 100.0, 60.0, ~tag: \"class 1\")"
+          "  region(p, 100.0, 140.0, ~tag: \"class 2\")"
+          "def all_slides = [slide_1]")
+    "\n")
+   program #:exists 'replace)
+  (check-equal? (sort (for/list ([s (in-list (find-at-sites program))]) (or (at-site-tag s) "?"))
+                      string<?)
+                '("Box" "class 1" "class 2")
+                "both bound calls are found, and the `at` too")
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (check-true (drag-in-deck! deck 1 "class 1" 40.0 60.0) "the first is dragged")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved)
+                "which is written")
+  (check-regexp-match #rx"~tag: \"class 1\", ~nudge: [[]-60[.]0, 0[.]0[]]"
+                      (file->string program)
+                      "into the row that placed it")
+  (check-equal? (length (regexp-match* #rx"~nudge: [[]" (file->string program))) 1
+                "and only that row")
+  (picts->pptx (load-program-picts program) deck)
+  (check-equal? (sync-report-actions (sync-once program deck #:workdir w #:atomic? #t)) '()
+                "with nothing left to merge"))
+
+;; A size the call works out for itself has nowhere to be written, and saying so
+;; is the point: written as a correction to the position alone, the new size was
+;; lost and the save still counted the resize as applied -- and a resize that
+;; did not move the corner wrote `~nudge: [0.0, 0.0]` and called that the edit.
+(let ()
+  (define dir (build-path work "computed-size"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          "fun as_p(v): if v is_a pc.Pict | v | pc.Pict.from_handle(v)"
+          "fun put(base, p, x, y, ~nudge: nudge = #false):"
+          "  def [dx, dy] = if nudge | nudge | [0.0, 0.0]"
+          "  pc.overlay(~horiz: #'left, ~vert: #'top, as_p(base),"
+          "             as_p(p).pad(~left: x + dx, ~top: y + dy))"
+          "fun slide_1():"
+          "  fun blob(p, x, y, ~tag: name, ~nudge: nudge = #false):"
+          "    put(p, tag(shape_pict(~width: 60.0, ~height: 30.0,"
+          "                          ~fill: hex(\"929292\", ~alpha: 0.3)), name),"
+          "        x, y, ~nudge: nudge)"
+          "  def canvas = slide_canvas("
+          "    ~width: 320.0, ~height: 240.0,"
+          "    at(20.0, 20.0, ~tag: \"Box\","
+          "       shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))))"
+          "  blob(canvas, 100.0, 60.0, ~tag: \"class 1\")"
+          "def all_slides = [slide_1]")
+    "\n")
+   program #:exists 'replace)
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  (check-true (resize-in-deck! deck 1 "class 1" 100.0 50.0) "it is resized in the deck")
+  (define r (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (sync-report-applied r) '()
+                "a resize with nowhere to write the size applies nothing")
+  (check-regexp-match #rx"its size is computed" (format-sync-report r)
+                      "and the report says which part could not be written")
+  ;; The helper's own `~nudge:` argument is in the source either way; what must
+  ;; not be there is a correction written by the merge.
+  (check-equal? (regexp-match* #rx"~nudge: [[]" (file->string program)) '()
+                "and a correction of nothing is not written either")
+  ;; A drag on the same shape still lands. The deck keeps the size the source
+  ;; had nowhere to take, so this is still a resize -- and the position part of
+  ;; it is written, with the size said again.
+  (check-true (drag-in-deck! deck 1 "class 1" 40.0 60.0) "it is dragged")
+  (define r2 (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r2)) '(resized)
+                "which is applied")
+  (check-regexp-match #rx"~nudge: [[]-60[.]0, 0[.]0[]]" (file->string program)
+                      "as a correction on the call that placed it")
+  (check-regexp-match #rx"its size is computed" (format-sync-report r2)
+                      "and the size is still said to be unwritable"))
+
+;; ------------------------------- slides listed as calls rather than names
+;;
+;; `all_slides` need not be a list of bare names. A talk wraps its slides --
+;; `in_section(0, slide_2)`, `divider(1)` -- and every structural edit refused
+;; on that account: reordering the slides said the list was not a literal one,
+;; and deleting a slide said the merge could not see its entry, so a whole talk
+;; could not be reordered in the editor at all.
+(let ()
+  (define dir (build-path work "call-entries"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (define (fresh!)
+    (delete-directory/files (build-path dir ".glide") #:must-exist? #f)
+    (display-to-file
+     (string-join
+      (list "#lang rhombus/and_meta"
+            "import:"
+            "  lib(\"glide-pptx/runtime.rhm\") open"
+            "  pict as pc"
+            "export: all_slides"
+            "def slide_width = 320.0"
+            "def slide_height = 240.0"
+            "fun framed(mk):"
+            "  fun (): pc.Pict.from_handle(mk())"
+            "fun slide_1(): slide_canvas("
+            "  ~width: 320.0, ~height: 240.0,"
+            "  at(20.0, 20.0, ~tag: \"Box\","
+            "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))))"
+            "fun slide_2(): slide_canvas("
+            "  ~width: 320.0, ~height: 240.0,"
+            "  at(30.0, 30.0, ~tag: \"Other\","
+            "     shape_pict(~width: 50.0, ~height: 50.0, ~fill: hex(\"ED7D31\"))))"
+            "fun plain(): pc.Pict.from_handle(slide_canvas(~width: 320.0, ~height: 240.0))"
+            "def all_slides:"
+            "  [framed(slide_1),"
+            "   // the second one"
+            "   framed(slide_2),"
+            "   plain()]")
+      "\n")
+     program #:exists 'replace)
+    (picts->pptx (load-program-picts program) deck)
+    (void (sync-once program deck #:workdir w)))
+  (define (sync!) (sync-once program deck #:workdir w #:atomic? #t))
+
+  ;; Reordered in the navigator.
+  (fresh!)
+  (check-true (move-slide! deck 3 1) "the last slide is dragged to the front")
+  (define r1 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r1)) '(reordered)
+                "which is written")
+  (check-regexp-match #px"(?s:\\[plain[(][)],\\s*// the second one\\s*framed[(]slide_1[)],\\s*framed[(]slide_2[)]\\])"
+                      (file->string program)
+                      "the entries keep their shape, and the comment stays where it was")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A slide whose entry is a call and which nothing else draws: the entry goes,
+  ;; and the definition with it.
+  (fresh!)
+  (check-true (delete-slide! deck 2) "the second slide is deleted")
+  (define r2 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r2)) '(removed-slide)
+                "which is written")
+  (check-false (regexp-match? #rx"framed[(]slide_2[)]" (file->string program))
+               "its entry is gone")
+  (check-false (regexp-match? #rx"fun slide_2" (file->string program))
+               "and so is what it drew")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A slide pasted in the editor needs the list found before its name can go
+  ;; in it, and a talk writes a long list as a block rather than after an `=`.
+  (fresh!)
+  (check-not-false (paste-slide! deck deck 1) "the first slide is pasted")
+  (define r4 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r4)) '(added-slide)
+                "which is written")
+  (check-regexp-match #rx"def slide_3" (file->string program)
+                      "as a definition of its own")
+  (check-regexp-match #rx"plain[(][)], slide_3" (file->string program)
+                      "and an entry in the list, after the slide it was pasted behind")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; A slide drawn by something with no `at` form of its own has no definition
+  ;; the merge can point at. The entry still goes -- the slide is what was
+  ;; deleted -- and the report says what was left behind.
+  (fresh!)
+  (check-true (delete-slide! deck 3) "the third slide is deleted")
+  (define r3 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r3)) '(removed-slide)
+                "which is written")
+  (check-false (regexp-match? #rx"plain[(][)]," (file->string program))
+               "its entry is gone")
+  (check-regexp-match #rx"fun plain" (file->string program) "what drew it is not")
+  (check-regexp-match #rx"nothing was deleted with it" (format-sync-report r3)
+                      "and the report says so")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
+
+;; ------------------------------ a copied element keeps the face it was in
+;;
+;; A run written into a program names its typeface unless the program's own
+;; default already is that face -- and the default is what the program passed to
+;; `current_default_font`, not the face most of the deck happens to be in. A
+;; talk whose default is its code face had a copied line of prose written with
+;; no face at all, which is the code face: the copy came out in the wrong one.
+(let ()
+  (define dir (build-path work "copy-font"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (define (words tag y face)
+    (list (format "  at(20.0, ~a, ~a: ~s," y "~tag" tag)
+          (format "     textbox(~a: 200.0, ~a: 40.0," "~width" "~height")
+          (format "             para(run(~s~a~a, ~a: 20.0))))," tag
+                  (if face ", ~font: " "") (if face (format "~s" face) "")
+                  "~size")))
+  (define (fresh!)
+    (delete-directory/files (build-path dir ".glide") #:must-exist? #f)
+    (display-to-file
+     (string-join
+      (append
+       (list "#lang rhombus/and_meta"
+             "import:"
+             "  lib(\"glide-pptx/runtime.rhm\") open"
+             "  pict as pc"
+             "export: all_slides"
+             "current_default_font(\"PT Mono\")"
+             "def slide_1 = slide_canvas("
+             "  ~width: 320.0, ~height: 240.0,")
+       (words "prose" 20.0 "Liberation Sans")
+       (words "more prose" 70.0 "Liberation Sans")
+       (words "code" 120.0 #f)
+       (list "  )"
+             "def all_slides = [slide_1]"))
+      "\n")
+     program #:exists 'replace)
+    (picts->pptx (load-program-picts program) deck)
+    (void (sync-once program deck #:workdir w)))
+  (define (sync!) (sync-once program deck #:workdir w #:atomic? #t))
+
+  (fresh!)
+  (check-true (duplicate-in-deck! deck 1 "prose") "the prose box is copied")
+  (define r1 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r1)) '(added) "and written")
+  (check-regexp-match #rx"~tag: \"prose [(]2[)]\"" (file->string program) "under its own name")
+  (check-regexp-match #px"(?s:prose [(]2[)].*~font: \"Liberation Sans\")"
+                      (file->string program)
+                      "naming the face it was copied from, which the program's default is not")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled")
+
+  ;; The other way: a run already in the program's default face names nothing,
+  ;; because naming it would be noise.
+  (fresh!)
+  (check-true (duplicate-in-deck! deck 1 "code") "the code box is copied")
+  (define r2 (sync!))
+  (check-equal? (map sync-action-kind (sync-report-applied r2)) '(added) "and written")
+  (check-false (regexp-match? #px"(?s:code [(]2[)].*~font:)" (file->string program))
+               "with no face to name")
+  (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
+
+;; --------------------------------- a tag two `at` forms in the program share
+;;
+;; A helper that draws a badge puts the `at` inside itself, and a slide that
+;; calls it never mentions the tag. That is followed -- writing the one form
+;; moves everything it draws, which is what sharing code means. What cannot be
+;; followed is two `at` forms under one tag, and the report has to say which of
+;; the two it is: "no tagged `at` form in the source" of a name the file writes
+;; twice sends a person looking for the wrong thing.
+(let ()
+  (define dir (build-path work "shared-tag"))
+  (make-directory* dir)
+  (define program (build-path dir "p.rhm"))
+  (display-to-file
+   (string-join
+    (list "#lang rhombus/and_meta"
+          "import:"
+          "  lib(\"glide-pptx/runtime.rhm\") open"
+          "  pict as pc"
+          "export: all_slides"
+          "fun badge():"
+          "  at(200.0, 40.0, ~tag: \"Box\","
+          "     shape_pict(~width: 40.0, ~height: 40.0, ~fill: hex(\"70AD47\")))"
+          "def slide_1 = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  at(20.0, 20.0, ~tag: \"Box\","
+          "     shape_pict(~width: 60.0, ~height: 40.0, ~fill: hex(\"4472C4\"))))"
+          "def slide_2 = slide_canvas("
+          "  ~width: 320.0, ~height: 240.0,"
+          "  badge())"
+          "def all_slides = [slide_1, slide_2]")
+    "\n")
+   program #:exists 'replace)
+  (define deck (build-path dir "deck.pptx"))
+  (define w (build-path dir "w"))
+  (picts->pptx (load-program-picts program) deck)
+  (void (sync-once program deck #:workdir w))
+  ;; Slide 1's own `at` is found by its slide, so that one is written.
+  (check-true (drag-in-deck! deck 1 "Box" 60.0 80.0) "the one on its own slide is dragged")
+  (define r1 (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r1)) '(moved) "and written")
+  ;; The badge's is not: its slide does not hold it, and the file holds two.
+  (check-true (drag-in-deck! deck 2 "Box" 90.0 90.0) "the badge is dragged")
+  (define r2 (sync-once program deck #:workdir w #:atomic? #t))
+  (check-equal? (sync-report-applied r2) '() "which is not written")
+  (check-regexp-match #rx"2 `at` forms in the program are tagged \"Box\""
+                      (format-sync-report r2)
+                      "and the report says that is why"))
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

@@ -14,7 +14,7 @@
          (only-in "runtime.rkt" placed placed? placed-x placed-y placed-rot
                   placed-pict placed-tag placed-position pin-placed
                   body-natural-size))
-(provide pict->page semantic-page? canvas-tags current-flatten-opaque?)
+(provide pict->page semantic-page? canvas-tags addressable-count current-flatten-opaque?)
 
 ;; A pict is exported semantically when it says how it was built.
 (define (semantic-page? p) (slide-desc? (pict-desc p)))
@@ -71,6 +71,15 @@
                                                   (slide-desc-placeds ld)
                                                   (group-desc-placeds ld)))])
                         (placed-tag pl)))))))
+
+;; How much of a slide a frame shows: the elements its canvases place and the
+;; picts it names on its own, which are the things an edit can be written back
+;; to. What `settle` picks a frame by.
+(define (addressable-count p)
+  (+ (length (canvas-tags p))
+     (if (pict? p)
+         (for/sum ([e (in-list (pieces-within p))] #:when (eq? 'named (first e))) 1)
+         0)))
 
 ;; How a slide that is not a canvas is taken apart, in the order it is drawn.
 ;;
