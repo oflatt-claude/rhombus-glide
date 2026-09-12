@@ -264,9 +264,9 @@
      "  \"first.rhm\" open"
      "  \"second.rhm\" open"
      "export: all_slides"
-     "// The show-time wrapper deliberately throws its source structure away."
-     "// The manifest makes Glide load slide_1 itself for synchronization."
-     "fun in_section(i, mk): fun (): blank(480.0, 270.0)"
+     "// The show-time wrapper preserves the source slide it decorates."
+     "// The manifest separately records slide_1 as the writable owner."
+     "fun in_section(i, mk): mk"
      "glide_slides all_slides:"
      "  [in_section(0, slide_1), slide_2]"))
   (write-source!

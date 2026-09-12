@@ -425,7 +425,8 @@
             "def staged:"
             "  def base = pc.Pict.from_handle(canvas)"
             "  pc.switch(base, pc.animate(fun (t): base.alpha(t)))"
-            "def all_slides = [staged]")
+            "glide_slides all_slides:"
+            "  [staged]")
       "\n")
      program #:exists 'replace))
   (fresh!)
@@ -441,8 +442,9 @@
   (define r (sync-once program deck #:workdir w #:atomic? #t))
   (check-equal? (map sync-action-kind (sync-report-applied r)) '(added)
                 "and written")
-  (check-regexp-match #rx"from_stage[(]2, staged," (file->string program)
-                      "as a layer over the slide, appearing from that stage")
+  (check-regexp-match #rx"show_as[(]staged, from_stage[(]2, staged,"
+                      (file->string program)
+                      "as a checked layer over the slide, appearing from that stage")
   (define (tags-on i)
     (for/first ([st (in-list (program-slide-states program))]
                 #:when (= i (slide-state-index st)))

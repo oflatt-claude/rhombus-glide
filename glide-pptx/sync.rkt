@@ -281,15 +281,15 @@
       (define v (for/or ([name (in-list names)])
                   (require-program full name)))
       (define manifest (and v (slide-manifest-ref v)))
-      (define owners
+      (define manifest-slides
         (and manifest
              (for/list ([spec (in-list (cond [(list? manifest) manifest]
                                              [(treelist? manifest) (treelist->list manifest)]
                                              [else '()]))])
-               (or (slide-spec-source spec) (slide-spec-shown spec)))))
+               (slide-spec-shown spec))))
       ;; Settled here, inside the program's namespace, for the reason
       ;; `settle-frames` gives.
-      (define shown (or owners v))
+      (define shown (or manifest-slides v))
       (cond
         ;; Numbered here, so the deck carries the number the show draws. After
         ;; forcing and settling, because the number is drawn as an ordinary pict
@@ -1677,8 +1677,8 @@
 
 ;; The brackets in a `glide_slides` declaration or compatible literal list,
 ;; and each source owner in them.
-(struct name-list (open close items source) #:transparent)
-(struct name-entry (name range) #:transparent)
+(struct name-list (open close items source checked?) #:transparent)
+(struct name-entry (name range shown-range) #:transparent)
 
 ;; The checked declaration, plus both ordinary Rhombus definition spellings:
 ;;
@@ -1729,7 +1729,8 @@
   (define v (rhombus-group-value grp))
   (cond
     [(and v (symbol? (syntax-e* v)))
-     (name-entry (syntax-e* v) (range-of v))]
+     (define r (range-of v))
+     (name-entry (syntax-e* v) r r)]
     [else
      (define call (rhombus-call (syntax-e grp)))
      (define args (and call (cdr call)))
@@ -1757,13 +1758,34 @@
          [else #f]))
      (let* ([head (call-name-range grp)]
             [start (and head (rng-start head))]
-            [end (group-end grp)])
+            [end (group-end grp)]
+            [whole (and start end (make-range start end (rng-source head)))]
+            ;; `show_as` and `show_only` are syntax understood by
+            ;; `glide_slides`, not runtime functions. When Glide later wraps
+            ;; an entry to add an editor-drawn layer, only their shown
+            ;; expression can be nested inside the new marker.
+            [shown-arg (cond
+                         [(and call (eq? 'show_as (car call)) (= 2 (length args)))
+                          (second args)]
+                         [(and call (eq? 'show_only (car call)) (= 1 (length args)))
+                          (first args)]
+                         [else #f])]
+            [shown-start (and shown-arg (group-start shown-arg))]
+            [shown-end (and shown-arg (group-end shown-arg))]
+            [shown (if (and shown-start shown-end)
+                       (make-range shown-start shown-end (rng-source head))
+                       whole)])
        (and start end
-            (name-entry owner (make-range start end (rng-source head)))))]))
+            (name-entry owner whole shown)))]))
 
 ;; The `[...]` of the `all_slides` definition.
 (define (rhombus-name-list groups text source)
   (for/or ([g (in-list groups)])
+    (define gl (syntax-list g))
+    (define checked?
+      (and gl (>= (length gl) 2)
+           (eq? 'group (syntax-e* (first gl)))
+           (eq? 'glide_slides (syntax-e* (second gl)))))
     (define brackets (all-slides-brackets g))
     (define b (and brackets (syntax-list brackets)))
     (and b
@@ -1783,7 +1805,7 @@
                                               (lambda (c d)
                                                 (and (char=? c #\/) (eqv? d #\*)))))])
            (and (andmap values items) open close
-                (name-list open close items source))))))
+                (name-list open close items source checked?))))))
 
 ;; The first `ch` at or before `i`.
 (define (prev-char text i ch)
@@ -2885,6 +2907,13 @@
 
 ;; How far a group reaches. The group itself carries no position, but every term
 ;; in it does -- including the head of a nested `(...)`, which spans the lot.
+(define (group-start stx)
+  (let walk ([s stx] [best #f])
+    (define r (and (syntax? s) (range-of s)))
+    (define here (if (and r (< (rng-start r) (or best +inf.0))) (rng-start r) best))
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (if l (for/fold ([b here]) ([x (in-list l)]) (walk x b)) here)))
+
 (define (group-end stx)
   (let walk ([s stx] [best #f])
     (define r (and (syntax? s) (range-of s)))
@@ -3340,6 +3369,17 @@
   ;; canvas call of its own.
   (define (scope-for-slide i)
     (and scopes (<= 1 i (length scopes)) (list-ref scopes (sub1 i))))
+  (define slide-list (program-layout-slide-list layout))
+  (define checked-slide-list? (and slide-list (name-list-checked? slide-list)))
+  ;; Which declared entry owns an expanded editor page. The range and the
+  ;; source owner travel together here because a checked declaration may have
+  ;; to wrap the entry in `show_as` while preserving its manifest owner.
+  (define (entry-item-for i)
+    (define origins (unbox slide-origins))
+    (define items (and slide-list (name-list-items slide-list)))
+    (and items (<= 1 i (length origins))
+         (let ([j (list-ref origins (sub1 i))])
+           (and (<= 1 j (length items)) (list-ref items (sub1 j))))))
   ;; Where this slide's entry in `all_slides` is, which is what an edit written
   ;; around a slide is written around.
   (define (entry-range-for i)
@@ -3963,8 +4003,23 @@
              ;; `over` for a slide that has no canvas of its own, `from_stage`
              ;; for a stage after the first: the same layer, and the second one
              ;; waits.
-             (define call
+             (define inner-call
                (if (and stage (> stage 1)) (format "from_stage(~a, " stage) "over("))
+             (define entry-item (entry-item-for (sync-action-slide a)))
+             (define owner (and entry-item (name-entry-name entry-item)))
+             (define source-owner
+               (and (symbol? owner)
+                    (not (regexp-match? #rx"^glide_generated_" (symbol->string owner)))
+                    owner))
+             (define call
+               (string-append
+                (cond
+                  [(and checked-slide-list? source-owner)
+                   (format "show_as(~a, " source-owner)]
+                  [checked-slide-list? "show_only("]
+                  [else ""])
+                inner-call))
+             (define close (if checked-slide-list? "))" ")"))
              ;; Written below the call where the entry has its line to itself,
              ;; and on the one line where it does not: an entry can share a line
              ;; with the next one -- `in_section(0, slide_2), in_section(0,
@@ -3996,11 +4051,17 @@
                                            #:width +inf.0
                                            #:comment? #f
                                            #:identity-tags? #t)))
+             (define shown-entry
+               (if (and checked-slide-list? entry-item
+                        (name-entry-shown-range entry-item))
+                   (name-entry-shown-range entry-item)
+                   entry))
              (edit! entry
-                    (format (if alone? "~a~a,\n~a)" "~a~a, ~a)")
+                    (format (if alone? "~a~a,\n~a~a" "~a~a, ~a~a")
                             call
-                            (substring source-text (rng-start entry) (rng-end entry))
-                            layer))]
+                            (substring source-text (rng-start shown-entry) (rng-end shown-entry))
+                            layer
+                            close))]
             [(and after (at-site-whole after))
              (define at (rng-end (at-site-whole after)))
              (edit! (make-range at at (rng-source (at-site-whole after)))
