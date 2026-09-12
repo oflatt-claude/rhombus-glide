@@ -12,7 +12,7 @@
          (struct-out v:raw) (struct-out v:list) (struct-out v:pair) (struct-out v:call)
          (struct-out kwv)
          (struct-out flavor)
-         current-media-names media-name
+         current-media-names media-name current-identity-tags?
          current-deck-font dominant-font
          num-string
          element->value slide-background-value
@@ -69,6 +69,13 @@
 (define (media-name src) (hash-ref (current-media-names) src src))
 
 (define current-deck-font (make-parameter "Calibri"))
+
+;; A fresh translation lets the Rhombus `at` macro derive identity from the
+;; source location. Structural edits are different: the editor already has an
+;; object under its old id, so the first source form for that object keeps the
+;; id explicitly. This parameter is only enabled by the syncer's insertion
+;; paths, including nested children of a newly pasted group.
+(define current-identity-tags? (make-parameter #f))
 
 ;; Names are already unique within a slide, made so when the deck was parsed.
 (define (element-tag e)
@@ -354,13 +361,18 @@
 ;; children come out positioned relative to their group.
 (define (element->value e [ox 0.0] [oy 0.0])
   (define b (element-bbox e))
-  (define tag (element-tag e))
+  (define name (element-tag e))
   (v:call "at" (append (list (v:num (- (bbox-x b) ox)) (v:num (- (bbox-y b) oy)))
                        (if (zero? (bbox-rot b)) '()
                            (list (kwv "rotate" (v:num (bbox-rot b)))))
-                       ;; The tag names the element for export and for merging
-                       ;; edits back; it is the PowerPoint shape name.
-                       (if tag (list (kwv "tag" (v:str tag))) '())
+                       ;; Ordinary generated source uses a display name and lets
+                       ;; Rhombus derive identity from this call's location. An
+                       ;; editor-created object keeps its existing id for the
+                       ;; one structural handoff into source.
+                       (if name
+                           (list (kwv (if (current-identity-tags?) "tag" "name")
+                                      (v:str name)))
+                           '())
                        (list (pict-value e)))))
 
 (define (slide-background-value s)

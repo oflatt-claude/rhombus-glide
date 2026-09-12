@@ -48,4 +48,9 @@ $ raco glide-pptx watch out/talk.rhm --app keynote
 
 Saving the program regenerates the deck and reopens it; saving the deck merges
 the geometry back into the program's source, changing only the literals that
-moved. See `glide-pptx/README.md`.
+moved. A program can be split across locally imported `.rhm` files: Glide
+watches the import tree and writes an editor change back to the module that owns
+the source-located `at` form. A `glide_slides` declaration records which source
+slide sits behind presentation-only wrappers such as `in_section(...)`, so
+splitting the running order does not require boilerplate wrapper functions. See
+`glide-pptx/README.md`.

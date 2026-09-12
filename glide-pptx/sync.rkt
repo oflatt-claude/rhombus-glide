@@ -18,15 +18,19 @@
          (only-in shrubbery/parse parse-all)
          "ir.rkt" "draw-ir.rkt" "parse.rkt" "semantic.rkt" "sync-state.rkt"
          (only-in "runtime.rkt" current-media-base current-default-font
-                  number-on slide-numbers? set-slide-numbers! forget-bitmaps!)
-         (only-in "emit-common.rkt" media-names-for)
+                  number-on slide-numbers? set-slide-numbers! forget-bitmaps!
+                  slide-manifest-ref slide-spec-source slide-spec-shown)
+         (only-in "source-tag.rkt" source-position-tag automatic-tag? automatic-tag-key
+                  automatic-tag-name)
+         (only-in "emit-common.rkt" media-names-for dominant-font)
          (only-in "emit-rhombus.rkt" rhombus-element-source rhombus-slide-source))
 (provide (struct-out sync-action) (struct-out sync-report)
          program-slide-states deck-slide-states load-program-picts
+         validate-program-picts! record-program-base!
          set-stage-slides! ask-slide-numbers!
          match-elements merge-states
          apply-actions! sync-once
-         find-at-sites find-program-sites
+         find-at-sites find-program-sites program-source-files
          (struct-out at-site) (struct-out slide-site) (struct-out rng)
          (struct-out program-layout) (struct-out name-list) (struct-out name-entry)
          base-path-for format-sync-report current-keep-work?)
@@ -188,61 +192,11 @@
     (namespace-attach-module ns 'racket/gui/base (make-base-empty-namespace))
     #t))
 
-;; The program, read with a name written in for every element it does not name
-;; itself.
-;;
-;; A name is what the deck carries and what an edit is found by, and a program
-;; should not have to write one for every shape it draws to be editable. So the
-;; source is rewritten in memory -- `~tag: "Shape 3"` added to each `at` that
-;; has none -- and that is what is read. Nothing is written to the file: the
-;; names are worked out from the file again on the next read, and only an edit
-;; that needs one to stay put writes it down.
-;;
-;; Through the source rather than by counting at run time. The names go into the
-;; very calls the sites were read from, so which `at` drew which element is not
-;; a guess -- and a loop, a conditional or a spliced list, where drawing order
-;; and source order part company, cannot put an edit in the wrong place. One
-;; `at` in a loop draws several elements under one name, which is the same
-;; situation as a tag written by hand for several, and is refused the same way.
-(define (auto-tagged-source full)
-  (with-handlers ([exn:fail? (lambda (_e) #f)])
-    (and (regexp-match? #rx"[.]rhm$" (path->string full))
-         (let-values ([(sites _scopes _slides _layout) (find-program-sites full)])
-           (define auto (filter at-site-auto sites))
-           (and (pair? auto)
-                (let ([text (file->string full)])
-                  (splice-string
-                   text
-                   (for/list ([s (in-list auto)]
-                              #:when (at-site-whole s))
-                     ;; Just inside the closing parenthesis of the `at` call it
-                     ;; names, where an argument can always be added.
-                     (let ([at (sub1 (rng-end (at-site-whole s)))])
-                       (cons (rng at at)
-                             (format ", ~~tag: ~s" (at-site-tag s))))))))))))
-
-;; Reads the program, from that rewrite when there is one. Declared under a name
-;; of its own with the file as its source, so that `"slidehelpers.rhm"` next
-;; door still resolves and nothing has to be written beside it.
+;; Source identities come from the `at` macro itself. Reading the real module
+;; keeps imports, source locations, and the runtime manifest aligned; no source
+;; rewrite or synthetic module is involved.
 (define (require-program full name)
-  (define text (auto-tagged-source full))
-  (cond
-    [(not text) (dynamic-require `(file ,(path->string full)) name (lambda () #f))]
-    [else
-     (define stx
-       (parameterize ([read-accept-reader #t] [read-accept-lang #t]
-                      [current-directory (or (path-only full) (current-directory))])
-         (with-input-from-string text (lambda () (read-syntax full)))))
-     (define declared (string->symbol (format "glide-named-~a" (equal-hash-code text))))
-     ;; `module` has to be bound for a module form to be declared, and the
-     ;; namespace a program is read into has racket/base attached but not
-     ;; required -- deliberately, since a program is a module and takes its
-     ;; bindings from its own language rather than from around it. The instance
-     ;; is the attached one, so this shares rather than starting a second.
-     (namespace-require 'racket/base)
-     (parameterize ([current-module-declare-name (make-resolved-module-path declared)])
-       (eval stx))
-     (dynamic-require `',declared name (lambda () #f))]))
+  (dynamic-require `(file ,(path->string full)) name (lambda () #f)))
 
 (define (load-program-picts program-path #:named [named #f])
   (define full (path->complete-path program-path))
@@ -326,8 +280,16 @@
                    [current-command-line-arguments (vector)])
       (define v (for/or ([name (in-list names)])
                   (require-program full name)))
+      (define manifest (and v (slide-manifest-ref v)))
+      (define owners
+        (and manifest
+             (for/list ([spec (in-list (cond [(list? manifest) manifest]
+                                             [(treelist? manifest) (treelist->list manifest)]
+                                             [else '()]))])
+               (or (slide-spec-source spec) (slide-spec-shown spec)))))
       ;; Settled here, inside the program's namespace, for the reason
       ;; `settle-frames` gives.
+      (define shown (or owners v))
       (cond
         ;; Numbered here, so the deck carries the number the show draws. After
         ;; forcing and settling, because the number is drawn as an ordinary pict
@@ -335,11 +297,11 @@
         ;; By position in the whole list, including the slides a canvas says to
         ;; skip: those are exported, with `show="0"`, and the show counts them
         ;; too, so a number that skipped them would differ on the two sides.
-        [(list? v) (numbered v)]
+        [(list? shown) (numbered shown)]
         ;; A Rhombus `[...]` is a treelist, which is what a talk's `all_slides`
         ;; is -- so this branch is the one a hand-written talk takes.
-        [(treelist? v) (numbered (treelist->list v))]
-        [else (set-box! slide-origins '(1)) (force-slide v)])))
+        [(treelist? shown) (numbered (treelist->list shown))]
+        [else (set-box! slide-origins '(1)) (force-slide shown)])))
      keep-gui-namespace!))
   (cond
     [(list? found) found]
@@ -351,13 +313,16 @@
                            " or a name passed with --slides.")
             program-path)]))
 
-(define (program-slide-states program-path)
-  (for/list ([p (in-list (load-program-picts program-path))] [i (in-naturals 1)])
+(define (picts->slide-states picts)
+  (for/list ([p (in-list picts)] [i (in-naturals 1)])
     (define w (pict-width p)) (define h (pict-height p))
     (define pg (pict->page p w h))
     (items->slide-state i w h (display-page-items pg)
                         #:background (display-page-background pg)
                         #:hidden? (display-page-hidden? pg))))
+
+(define (program-slide-states program-path)
+  (picts->slide-states (load-program-picts program-path)))
 
 (define (deck-slide-states pptx-path #:workdir [workdir #f])
   (define dir (or workdir (make-temporary-file "syncdeck~a" 'directory)))
@@ -382,6 +347,23 @@
 ;; that lost its alt text is still itself and a new shape is not.
 (define LOST-TAG-LIMIT 1.0)
 
+;; Automatic tags may carry a readable name after their source digest. That
+;; suffix is editor metadata, not identity: in particular a computed `~name:`
+;; is known only when the program runs, while source recovery knows the same
+;; call by its digest alone.
+(define (tag-key tag) (or (and tag (automatic-tag-key tag)) tag))
+(define (same-tag? a b) (equal? (tag-key a) (tag-key b)))
+
+;; Generated frames of one PowerPoint build contain separate source `at` calls,
+;; so their automatic digests differ, but the original shape name is retained
+;; as metadata on every frame. Within a build only, that name identifies the
+;; repeated shape whose edit is deliberately carried across the frames.
+(define (same-build-tag? a b)
+  (or (same-tag? a b)
+      (let ([an (and a (automatic-tag-name a))]
+            [bn (and b (automatic-tag-name b))])
+        (and an bn (string=? an bn)))))
+
 (define (match-elements now base #:slide-size [size 1000.0])
   ;; By tag, several deep: one `at` in a loop draws several elements under one
   ;; tag, so a tag can name a family on both sides. Families are paired in
@@ -390,7 +372,7 @@
     (for/fold ([h (hash)] #:result (for/hash ([(k v) (in-hash h)])
                                     (values k (sort (reverse v) < #:key el-state-z))))
               ([e (in-list l)] #:when (el-state-tag e))
-      (hash-update h (el-state-tag e) (lambda (v) (cons e v)) '())))
+      (hash-update h (tag-key (el-state-tag e)) (lambda (v) (cons e v)) '())))
   (define base-by-tag (by-tag base))
   (define used (make-hasheq))
   (define matched-now (make-hasheq))
@@ -711,8 +693,10 @@
     ;; naming several elements has no order of its own to give.
     [(or (pair? added) (pair? removed)) '()]
     [(not (andmap values tags)) '()]
-    [(check-duplicates tags) '()]
-    [(for/or ([t (in-list tags)]) (> (length (hash-ref prog-by-tag t '())) 1)) '()]
+    [(check-duplicates (map tag-key tags)) '()]
+    [(for/or ([t (in-list tags)])
+       (> (length (hash-ref prog-by-tag (tag-key t) '())) 1))
+     '()]
     ;; Already in that order, so nothing was restacked.
     [(equal? places (sort places <)) '()]
     [else
@@ -731,14 +715,14 @@
   (for/fold ([h (hash)]) ([e (in-list (if s (slide-elements s) '()))])
     (cond
       [(and (group? e) (not (string=? "" (element-name e))))
-       (hash-set h (element-name e)
+       (hash-set h (tag-key (element-name e))
                  (let leaves ([es (group-children e)])
                    (append*
                     (for/list ([c (in-list es)])
                       (cond
                         [(group? c) (leaves (group-children c))]
                         [(string=? "" (element-name c)) '()]
-                        [else (list (element-name c))])))))]
+                        [else (list (tag-key (element-name c)))])))))]
       [else h])))
 
 ;; The tag of the element the deck draws just under this one, out of those the
@@ -762,25 +746,25 @@
     (for/fold ([h (hash)] #:result (for/hash ([(k v) (in-hash h)])
                                      (values k (sort (reverse v) < #:key el-state-z))))
               ([e (in-list l)] #:when (el-state-tag e))
-      (hash-update h (el-state-tag e) (lambda (v) (cons e v)) '())))
+      (hash-update h (tag-key (el-state-tag e)) (lambda (v) (cons e v)) '())))
   (define prog-by-tag (by-tag prog))
-  (define (prog-count tag) (length (hash-ref prog-by-tag tag '())))
+  (define (prog-count tag) (length (hash-ref prog-by-tag (tag-key tag) '())))
   ;; The elements the deck no longer has, by tag, and the groups that turn out
   ;; to hold exactly them.
   (define removed-by-tag
     (for/hash ([b (in-list deck-removed)] #:when (el-state-tag b))
-      (values (el-state-tag b) b)))
+      (values (tag-key (el-state-tag b)) b)))
   (define groupings
     (for/list ([d (in-list deck-added)]
                #:when (let ([kids (and (el-state-tag d)
-                                       (hash-ref group-children (el-state-tag d) #f))])
+                                       (hash-ref group-children (tag-key (el-state-tag d)) #f))])
                         (and (pair? kids)
                              (for/and ([k (in-list kids)]) (hash-ref removed-by-tag k #f)))))
       d))
   (define into-a-group
     (for*/hash ([d (in-list groupings)]
-                [k (in-list (hash-ref group-children (el-state-tag d)))])
-      (values k #t)))
+                [k (in-list (hash-ref group-children (tag-key (el-state-tag d))))])
+      (values (tag-key k) #t)))
   ;; What the program drew without an `at` form of its own: the shapes a helper
   ;; draws, the pieces of a diagram built in code. They have no tag on either
   ;; side, so they are compared one to one -- bucketed under #f instead, a slide
@@ -798,7 +782,7 @@
                       (list tag (reverse (hash-ref h tag))))]
         [else
          (define pair (car ps))
-         (define tag (or (el-state-tag (cdr pair)) (el-state-tag (car pair))))
+         (define tag (tag-key (or (el-state-tag (cdr pair)) (el-state-tag (car pair)))))
          (loop (cdr ps)
                (if (hash-has-key? h tag) order (cons tag order))
                (hash-update h tag (lambda (v) (cons pair v)) '()))])))
@@ -814,12 +798,17 @@
      (sync-action 'noted (or (el-state-name (car p)) "(unnamed)") index DRAWN-BY-CODE #f))
    (append*
     (for/list ([g (in-list groups)])
-      (define tag (first g))
+      (define key (first g))
       (define pairs (second g))
+      ;; Keep the readable suffix in reports and editor helpers, while every
+      ;; lookup uses the source digest above.
+      (define tag (or (el-state-tag (cdr (first pairs)))
+                      (el-state-tag (car (first pairs)))
+                      key))
       (if (or (> (length pairs) 1) (> (prog-count tag) 1))
-          (family-actions tag index pairs (hash-ref prog-by-tag tag '()))
+          (family-actions tag index pairs (hash-ref prog-by-tag key '()))
           (single-actions tag index (first pairs)
-                          (let ([ps (hash-ref prog-by-tag tag '())])
+                          (let ([ps (hash-ref prog-by-tag key '())])
                             (and (pair? ps) (first ps)))))))
    ;; Bringing a shape to the front changes the order everything is drawn in
    ;; and nothing else. That is the order of the `at` forms, so it is one edit
@@ -831,10 +820,12 @@
    ;; the deck does not. Read as three separate edits it looks like most of the
    ;; slide being thrown away, which is a slide the merge refuses to touch.
    (for/list ([d (in-list groupings)])
-     (sync-action 'grouped (el-state-tag d) index
+     (sync-action 'grouped (tag-key (el-state-tag d)) index
                   (list (el-geometry d)
-                        (for/list ([t (in-list (hash-ref group-children (el-state-tag d)))])
-                          (cons t (el-geometry (hash-ref removed-by-tag t)))))
+                        (for/list ([t (in-list (hash-ref group-children
+                                                        (tag-key (el-state-tag d))))])
+                          (define key (tag-key t))
+                          (cons key (el-geometry (hash-ref removed-by-tag key)))))
                   #f))
    ;; A shape drawn in the editor sits somewhere in the drawing order, and
    ;; that order is the order of the `at` forms -- so the new form says which
@@ -845,9 +836,10 @@
      ;; With where it sits in the drawing order, which is the only handle on a
      ;; shape the editor made itself: LibreOffice writes a new text box with no
      ;; name, and a name is how every other action finds its element.
-     (sync-action 'added (or (el-state-tag d) (el-state-name d) "(unnamed)") index
+     (sync-action 'added (or (tag-key (el-state-tag d)) (el-state-name d) "(unnamed)") index
                   (list (el-geometry d) (drawn-under d deck-pairs) (el-state-z d)) #f))
-   (for/list ([b (in-list deck-removed)] #:unless (hash-ref into-a-group (el-state-tag b) #f))
+   (for/list ([b (in-list deck-removed)]
+              #:unless (hash-ref into-a-group (tag-key (el-state-tag b)) #f))
      (define tag (el-state-tag b))
      (cond
        ;; One of a family deleted: the others are still drawn by the same `at`.
@@ -996,8 +988,10 @@
 (define SLIDE-MATCH 0.5)
 
 (define (slide-affinity a b)
-  (define ta (filter values (map el-state-tag (slide-state-elements a))))
-  (define tb (filter values (map el-state-tag (slide-state-elements b))))
+  (define ta (filter values (map (lambda (e) (tag-key (el-state-tag e)))
+                                 (slide-state-elements a))))
+  (define tb (filter values (map (lambda (e) (tag-key (el-state-tag e)))
+                                 (slide-state-elements b))))
   (cond
     [(and (null? ta) (null? tb)) 1.0]
     ;; Everything on a slide can be deleted, or a slide can be filled from
@@ -1205,7 +1199,7 @@
                                  '(slide-missing) #f))])))
    ;; Dragging slides about in the navigator changes their order and nothing
    ;; else, so no element differs and the merge used to see nothing at all.
-   ;; `all_slides` is a literal list, which is exactly what says the order.
+   ;; The checked `all_slides` manifest is exactly what says the order.
    (let ([order (for/list ([d (in-list (in-deck-order deck))])
                   (let ([b (for/first ([p (in-list pairs)] #:when (eq? d (car p))) (cdr p))])
                     (and b (slide-state-index b))))])
@@ -1238,44 +1232,41 @@
 
 ;; -------------------------------------------------------- patching the source
 
-;; One `(at x y ... #:tag "T" ... child)` form, with the source ranges of the
+;; One `at(x, y, ... child)` form, or an explicitly tagged helper proxy, with
+;; the source ranges of the
 ;; literals a merge is allowed to replace. A range is #f when the value is not a
 ;; literal -- `(at margin (+ top 20) ...)` is a decision the code is making, and
 ;; is reported rather than overwritten.
 ;; `nudge` is (list range dx dy) for an existing `#:nudge` argument, and
-;; `insert-at` is the position a new one would go, just after the tag.
-;; A tag names one element *within one slide*. That is what makes the deck's own
-;; shape names usable as tags: a real deck has "Title 1" on every slide. So each
-;; site remembers the top-level definition it sits in, and `all-slides` says
-;; which definition is which slide -- without that, dragging the title on slide 3
-;; would rewrite slide 1's coordinates.
-;; `auto` is set when the tag is ours rather than the file's: the program drew
-;; this element without naming it, and glide named it so that the deck could
-;; carry it and an edit to it could be found. Before a program is read it is
-;; rewritten in memory with those names written in -- see `auto-tagged-source`
-;; -- so the element on the slide answers to the same name the site does, with
-;; no guessing about which `at` drew which element and nothing written into the
-;; file until an edit asks for it.
+;; `insert-at` is the position a new one would go, after the last identity
+;; metadata or picture argument. Each site remembers the top-level definition
+;; and source module it sits in; `all_slides` says which definition is which
+;; slide. Source-derived ids are globally unique, while explicit proxy tags may
+;; still repeat in different named slide scopes.
 (struct at-site (tag x y rot width height texts nudge insert-at scope whole
-                 flip-h flip-v leaf-at styles auto) #:transparent)
+                 flip-h flip-v leaf-at styles) #:transparent)
 
 ;; Where a new element goes in one slide's definition: just after the last
 ;; argument of its `slide-canvas` call, at that argument's indentation. Adding a
 ;; shape in the editor puts it on top, which is where the last argument draws.
 (struct slide-site (scope insert-at indent def-start def-end background width height hidden
-                   build)
+                   build source)
   #:transparent)
-(struct rng (start end) #:transparent)
+(struct rng (source start end) #:transparent)
 
 ;; Shifts every recovered range, for a reader that was handed only part of the
 ;; file. The shrubbery parser cannot see a `#lang` line, so a Rhombus program is
 ;; parsed from just after it and the ranges are moved back into the whole file.
 (define current-range-offset (make-parameter 0))
+(define current-source-path (make-parameter #f))
+
+(define (make-range start end [source (current-source-path)])
+  (rng source start end))
 
 (define (range-of stx)
   (and (syntax-position stx) (syntax-span stx)
        (let ([start (+ (current-range-offset) (sub1 (syntax-position stx)))])
-         (rng start (+ start (syntax-span stx))))))
+         (make-range start (+ start (syntax-span stx))))))
 
 ;; Two elements answering to one tag would mean an edit lands on an arbitrary one
 ;; of them. That is refused rather than guessed at. The usual cause is an `at`
@@ -1284,7 +1275,7 @@
 (define (duplicate-tags tags)
   (define counts
     (for/fold ([h (hash)]) ([t (in-list tags)] #:when t)
-      (hash-update h t add1 0)))
+      (hash-update h (tag-key t) add1 0)))
   (sort (for/list ([(t n) (in-hash counts)] #:when (> n 1)) (cons t n))
         string<? #:key car))
 
@@ -1301,8 +1292,8 @@
 
 (define TAG-HINT
   (string-append
-   "Give the two `at` forms different tags. One `at` may carry a tag that repeats\n"
-   "  -- a loop draws several elements from one site -- but two sites may not share one."))
+   "Ordinary `at` forms get distinct identities from their source locations. If these\n"
+   "  are helper proxy calls, give each call a distinct literal `~tag:` instead."))
 
 ;; -------------------------------------------------- delimiters, on the text
 
@@ -1390,7 +1381,7 @@
     ;; written for its group and sits far to the right of anything the canvas
     ;; would write, so a slide whose last element is a group would otherwise
     ;; indent the next new one into the middle of it.
-    (define mine (canvas-forms (slide-site-scope ss) sites))
+    (define mine (canvas-forms (slide-site-scope ss) sites (slide-site-source ss)))
     (cond
       [(null? mine) ss]
       [else
@@ -1402,9 +1393,12 @@
 ;; the ones another of them encloses, which belong to a group and are drawn by
 ;; it. Drawing order, indentation and where a new element goes are all the
 ;; canvas's own list, not what is nested inside it.
-(define (canvas-forms scope sites)
+(define (canvas-forms scope sites [source #f])
   (define here (for/list ([s (in-list sites)]
-                          #:when (and (equal? scope (at-site-scope s)) (at-site-whole s)))
+                          #:when (and (equal? scope (at-site-scope s))
+                                      (at-site-whole s)
+                                      (or (not source)
+                                          (equal? source (rng-source (at-site-whole s))))))
                  s))
   (for/list ([s (in-list here)]
              #:unless (for/or ([o (in-list here)])
@@ -1425,10 +1419,11 @@
 ;; than as it was generated. That is what survives the user reformatting it: the
 ;; syntax tree is read to *find* things, and only the literals themselves are
 ;; overwritten, so no formatting is ever regenerated.
-;; (values sites scopes). `scopes` names the definition that builds each slide,
-;; in order, or is #f when `all-slides` is not a literal list of names: a program
-;; that computes its slide list cannot have a slide traced back to source, and
-;; then tags have to be unique across the whole file instead of per slide.
+;; (values sites scopes slide-sites layout). `scopes` is the checked list of
+;; source owners that builds the editor pages, in order. It comes either from a
+;; `glide_slides` declaration or, for compatibility, a literal list of names.
+;; An arbitrary computed slide list is rejected because it cannot trace a page
+;; back to a named source scope.
 ;; Only Rhombus source is patched. Any program that provides slide picts can be
 ;; rendered and exported -- that goes through `dynamic-require` and does not care
 ;; what language wrote it -- but tracing an edit back to a literal means reading
@@ -1440,13 +1435,147 @@
            (string-append "~a is not Rhombus source, so edits cannot be merged into it.\n"
                           "  Rendering and export work on any program; syncing needs a .rhm.")
            s))
-  (rhombus-at-sites path))
+  (define files (program-source-files path))
+  (define parsed
+    (for/list ([source (in-list files)] #:when (file-exists? source))
+      (call-with-values (lambda () (rhombus-at-sites source)) list)))
+  (when (null? parsed)
+    (error 'glide "cannot read Rhombus source ~a" s))
+  (define root (first parsed))
+  (define root-layout (fourth root))
+  (unless (second root)
+    (error 'glide
+           (string-append
+            "~a does not declare a traceable `all_slides`.\n"
+            "  Synchronization needs one source owner per editor page. Use, for example:\n"
+            "    glide_slides all_slides:\n"
+            "      [slide_1, in_section(0, slide_2)]\n"
+            "  A plain literal `[slide_1, slide_2]` remains supported for compatibility.")
+           s))
+  ;; Keep the defining module in the key. Two imported modules may each have a
+  ;; private `brand` or `slide_width`; flattening those to one bare symbol lets
+  ;; an edit in one module rewrite the other's unrelated binding.
+  (define globals
+    (for*/fold ([h (hash)]) ([p (in-list parsed)]
+                             [(key range) (in-hash (program-layout-globals (fourth p)))])
+      (hash-set h key range)))
+  (define exports
+    (for*/fold ([h (hash)]) ([p (in-list parsed)]
+                             [(source insertion)
+                              (in-hash (program-layout-exports (fourth p)))])
+      (hash-set h source insertion)))
+  (define open-imports
+    (for*/fold ([h (hash)]) ([p (in-list parsed)]
+                             [(source imports)
+                              (in-hash (program-layout-open-imports (fourth p)))])
+      (hash-set h source imports)))
+  (define public-names
+    (for*/fold ([h (hash)]) ([p (in-list parsed)]
+                             [(source names)
+                              (in-hash (program-layout-public-names (fourth p)))])
+      (hash-set h source names)))
+  (values (append* (map first parsed))
+          (second root)
+          (append* (map third parsed))
+          (struct-copy program-layout root-layout
+                       [globals globals]
+                       [exports exports]
+                       [open-imports open-imports]
+                       [public-names public-names]
+                       [files files])))
 
 (define (find-at-sites path)
   (define-values (sites _scopes _slides _layout) (find-program-sites path))
   sites)
 
 ;; ---------------------------------------------------------------- rhombus
+
+;; Reads one Rhombus module as shrubbery. Keeping this separate from site
+;; recovery lets the same parse discover local imports for both syncing and the
+;; watcher. A local import is a string at the head of an import entry; strings
+;; nested in `lib(...)` are collection paths and are deliberately not followed.
+(define (rhombus-source-groups path)
+  (define text (file->string path))
+  (define after-lang
+    (cond
+      [(regexp-match-positions #rx"^#lang[^\n]*\n" text) => (lambda (m) (cdar m))]
+      [else 0]))
+  (define stx
+    (let ([in (open-input-string (substring text after-lang))])
+      (port-count-lines! in)
+      (parse-all in #:source path)))
+  (define e (syntax-e stx))
+  (values text after-lang
+          (if (and (list? e) (eq? 'multi (syntax-e* (car e)))) (cdr e) (list stx))))
+
+(define (syntax-list s)
+  (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+
+(define (rhombus-local-imports groups source #:open-only? [open-only? #f])
+  (define (block-imports s)
+    (define l (syntax-list s))
+    (cond
+      [(not l) '()]
+      ;; A direct string is a relative module path, with optional modifiers
+      ;; such as `open`, `as`, or `.name` after it.
+      [(and (eq? 'group (syntax-e* (first l)))
+            (>= (length l) 2)
+            (string? (syntax-e* (second l)))
+            (or (not open-only?)
+                (for/or ([part (in-list (cddr l))])
+                  (eq? 'open (syntax-e* part)))))
+       (list (syntax-e* (second l)))]
+      ;; An import block holds one group per entry.
+      [(eq? 'block (syntax-e* (first l)))
+       (append* (map block-imports (cdr l)))]
+      ;; Only descend through blocks. In particular, do not descend through
+      ;; the parens of `lib("...")` and mistake its collection name for a file.
+      [else
+       (append*
+        (for/list ([part (in-list l)]
+                   #:when (let ([pl (syntax-list part)])
+                            (and pl (eq? 'block (syntax-e* (first pl))))))
+          (block-imports part)))]))
+  (define names
+    (append*
+     (for/list ([g (in-list groups)])
+       (define l (syntax-list g))
+       (if (and l (>= (length l) 3)
+                (eq? 'group (syntax-e* (first l)))
+                (eq? 'import (syntax-e* (second l))))
+           (block-imports (third l))
+           '()))))
+  (define base (or (path-only source) (current-directory)))
+  (for/list ([name (in-list names)]
+             #:when (regexp-match? #rx"[.]rhm$" name))
+    (simplify-path (path->complete-path (build-path base name)) #f)))
+
+;; Only an `open` import can make an exported definition available as a bare
+;; name in the importing module. This is deliberately narrower than the source
+;; graph above: global write-back must establish a binding path, not merely find
+;; a coincidentally unique spelling somewhere in the project.
+(define (rhombus-open-local-imports groups source)
+  (rhombus-local-imports groups source #:open-only? #t))
+
+;; The root module plus all transitively imported local `.rhm` modules, once
+;; each and in import order. Collection imports are dependencies too, but they
+;; are libraries rather than source owned by this program and must never be
+;; patched or watched as part of it.
+(define (program-source-files path)
+  (define seen (make-hash))
+  (define (visit source)
+    (define full (simplify-path (path->complete-path source) #f))
+    (cond
+      [(hash-ref seen full #f) '()]
+      [else
+       (hash-set! seen full #t)
+       (cons full
+             (if (file-exists? full)
+                 (let-values ([(text after-lang groups) (rhombus-source-groups full)])
+                   (void text after-lang)
+                   (append* (map visit (rhombus-local-imports groups full))))
+                 '()))]))
+  (visit path))
 
 ;; Shrubbery parses `at(57.6, 158.4, ~tag: "Box", shape_pict(...))` as
 ;;
@@ -1458,36 +1587,37 @@
 ;; is a one-element group, and a keyword argument is a group whose head is the
 ;; keyword and whose value sits in a block.
 (define (rhombus-at-sites path)
-  (define text (file->string path))
-  ;; `parse-all` reads shrubbery, not a module, so the `#lang` line comes off
-  ;; first and its length is added back to every range.
-  (define after-lang
-    (cond
-      [(regexp-match-positions #rx"^#lang[^\n]*\n" text) => (lambda (m) (cdar m))]
-      [else 0]))
-  (define stx
-    (let ([in (open-input-string (substring text after-lang))])
-      (port-count-lines! in)
-      (parse-all in #:source path)))
+  (define source (simplify-path (path->complete-path path) #f))
+  (define-values (text after-lang groups) (rhombus-source-groups source))
   (define sites '())
-  ;; `parse-all` returns `(multi group ...)`, so the top-level groups -- one per
-  ;; `def` -- are the scopes.
-  (define groups
-    (let ([e (syntax-e stx)])
-      (if (and (list? e) (eq? 'multi (syntax-e* (car e)))) (cdr e) (list stx))))
   ;; The offset has to be in effect while the ranges are computed, which is
   ;; during the walk.
-  (parameterize ([current-range-offset after-lang] [current-source-text text])
+  (parameterize ([current-range-offset after-lang]
+                 [current-source-text text]
+                 [current-source-path source])
     (for ([g (in-list groups)])
       (define scope (rhombus-def-name g))
+      (define local-names (rhombus-local-names g))
       (let walk ([s g])
         (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
         (when l
           (for ([call (in-list (rhombus-calls l))])
-            (define at? (eq? 'at (first call)))
+            (define direct? (eq? 'at (first call)))
+            (define automatic
+              (and direct?
+                   (let* ([r (range-of (second call))]
+                          [name-stx
+                           (for/or ([arg (in-list (third call))])
+                             (and (eq? '#:name (rhombus-kw-name arg))
+                                  (rhombus-kw-value arg)))]
+                          [name (and name-stx
+                                     (string? (syntax-e* name-stx))
+                                     (syntax-e* name-stx))])
+                     (and r (source-position-tag
+                             (rng-source r) (add1 (rng-start r)) name)))))
             (define site
-              (if at?
-                  (parse-rhombus-at (third call) (local-leaf-defs g))
+              (if direct?
+                  (parse-rhombus-at (third call) (local-leaf-defs g) automatic)
                   ;; A helper the program calls to draw something, which says by
                   ;; carrying a `~tag:` that what it draws is one element. See
                   ;; `parse-rhombus-tagged-call`.
@@ -1498,59 +1628,169 @@
                    (datum->syntax #f (list (second call) (fourth call))))))
             (when site
               (define extent (rhombus-call-extent text (second call)))
-              (define whole (and at? extent))
               (set! sites
-                    (cons (struct-copy at-site site
-                                       [scope scope]
-                                       [whole whole]
-                                       ;; An `at` the program did not name takes
-                                       ;; its added arguments -- the name itself,
-                                       ;; and a correction -- just inside the
-                                       ;; parenthesis that closes it.
-                                       [insert-at (or (at-site-insert-at site)
-                                                      (and extent
-                                                           (sub1 (rng-end extent))))])
+                    (cons (mask-at-site-shared
+                           (struct-copy at-site site
+                                        [scope scope]
+                                        [whole (and direct? extent)]
+                                        [insert-at
+                                         (or (at-site-insert-at site)
+                                             (and extent (sub1 (rng-end extent))))])
+                           local-names)
                           sites))))
           (for-each walk l))
         (void))))
-  ;; Named, where the program did not. A name is what the deck carries and what
-  ;; an edit is found by, and one per element is all it takes -- so an `at` with
-  ;; no `~tag:` gets "Shape 3" or "TextBox 5", counted per kind within its own
-  ;; slide, the way an editor numbers what somebody draws. A name the file
-  ;; already uses in that slide is stepped over rather than taken twice.
-  (define named-sites (name-untagged (reverse sites)))
-  (parameterize ([current-range-offset after-lang])
-    (values named-sites
-            (rhombus-slide-scopes groups (map at-site-scope named-sites))
-            (with-indents (rhombus-slide-sites groups text) named-sites text)
-            (program-layout (rhombus-name-list groups)
-                            (rhombus-export-block groups text)
+  (parameterize ([current-range-offset after-lang] [current-source-path source])
+    (define ordered (reverse sites))
+    (define nl (rhombus-name-list groups text source))
+    (define scopes (rhombus-slide-scopes groups))
+    (define traced-nl
+      (cond
+        [(not nl) #f]
+        [(not scopes) nl]
+        [else
+         (struct-copy name-list nl
+                      [items
+                       (for/list ([item (in-list (name-list-items nl))]
+                                  [scope (in-list scopes)])
+                         (if (name-entry-name item)
+                             item
+                             (struct-copy name-entry item [name scope])))])]))
+    (values ordered scopes
+            (with-indents (rhombus-slide-sites groups text source) ordered text)
+            (program-layout traced-nl
+                            (let ([ex (rhombus-export-block groups text)])
+                              (if ex (hash source ex) (hash)))
                             (rhombus-global-colours groups)
-                            (rhombus-slide-entries groups)))))
+                            (and traced-nl
+                                 (map name-entry-range (name-list-items traced-nl)))
+                            (hash source (rhombus-open-local-imports groups source))
+                            (hash source (rhombus-exported-names groups))
+                            source
+                            (list source)))))
 
 ;; Where a slide can be added, and where its name has to be entered for the
 ;; addition to mean anything. A `def slide_N` nobody lists in `all_slides` is
 ;; dead code, so the two edits go together.
-(struct program-layout (slide-list exports globals entries) #:transparent)
+(struct program-layout (slide-list exports globals entries open-imports public-names source files)
+  #:transparent)
 
-;; `def all_slides = [slide_1, slide_2]` -- the brackets, and each name in them.
-(struct name-list (open close items) #:transparent)
+;; The brackets in a `glide_slides` declaration or compatible literal list,
+;; and each source owner in them.
+(struct name-list (open close items source) #:transparent)
 (struct name-entry (name range) #:transparent)
 
-;; The `[...]` of the `all_slides` definition: where a name can be added, and
-;; every entry in it. An entry the program writes as a call has no name of its
-;; own -- `divider(1)` names no slide -- and is kept all the same, since the
-;; list's order is the deck's order and an entry missing from it would put a new
-;; slide in the wrong place.
-(define (rhombus-name-list groups)
-  (define b (all-slides-brackets groups))
-  (define r (and b (range-of (car b))))
-  (and r
-       (let ([items (for/list ([grp (in-list (cdr b))])
-                      (define v (rhombus-group-value grp))
-                      (name-entry (and v (symbol? (syntax-e* v)) (syntax-e* v))
-                                  (group-range grp)))])
-         (name-list (rng-start r) (sub1 (rng-end r)) items))))
+;; The checked declaration, plus both ordinary Rhombus definition spellings:
+;;
+;;   glide_slides all_slides:
+;;     [a, in_section(0, b), show_as(c, decorate(c)), divider(1)]
+;;
+;;   def all_slides = [a, b]
+;;   def all_slides:
+;;     [a, b]
+;;
+;; The latter's value is a one-expression block. Answer the brackets syntax in
+;; either case, leaving any computed expression as #f.
+(define (all-slides-brackets g)
+  (define l (and (syntax? g) (let ([e (syntax-e g)]) (and (list? e) e))))
+  (and l (>= (length l) 4) (eq? 'group (syntax-e* (first l)))
+       (let ([value
+              (cond
+                [(and (= 4 (length l))
+                      (eq? 'glide_slides (syntax-e* (second l)))
+                      (memq (syntax-e* (third l)) '(all_slides all-slides)))
+                 (define block (syntax-list (fourth l)))
+                 (define body (and block (eq? 'block (syntax-e* (first block)))
+                                   (= 2 (length block)) (syntax-list (second block))))
+                 (and body (eq? 'group (syntax-e* (first body)))
+                      (= 2 (length body)) (second body))]
+                ;; The shrubbery spelling of `=` is `(op =)`. A five-part
+                ;; definition has exactly the value shape we want here; the
+                ;; Rhombus parser has already established the operator slot.
+                [(and (= 5 (length l))
+                      (eq? 'def (syntax-e* (second l)))
+                      (memq (syntax-e* (third l)) '(all_slides all-slides)))
+                 (fifth l)]
+                [(and (= 4 (length l))
+                      (eq? 'def (syntax-e* (second l)))
+                      (memq (syntax-e* (third l)) '(all_slides all-slides)))
+                 (define block (syntax-list (fourth l)))
+                 (define body (and block (eq? 'block (syntax-e* (first block)))
+                                   (= 2 (length block)) (syntax-list (second block))))
+                 (and body (eq? 'group (syntax-e* (first body)))
+                      (= 2 (length body)) (second body))]
+                [else #f])])
+         (and (rhombus-head? value 'brackets) value))))
+
+;; The source owner and full editable extent of one deck entry. The macro has
+;; already rejected every other form at expansion time; recognizing the same
+;; small language here keeps the source rewriter independent of macro output.
+(define (rhombus-deck-entry grp index)
+  (define v (rhombus-group-value grp))
+  (cond
+    [(and v (symbol? (syntax-e* v)))
+     (name-entry (syntax-e* v) (range-of v))]
+    [else
+     (define call (rhombus-call (syntax-e grp)))
+     (define args (and call (cdr call)))
+     (define first-v (and args (pair? args) (rhombus-group-value (first args))))
+     (define owner
+       (cond
+         [(and call (eq? 'show_as (car call)) (= 2 (length args))
+               first-v (symbol? (syntax-e* first-v)))
+          (syntax-e* first-v)]
+         [(and call (eq? 'in_section (car call)) (= 2 (length args))
+               (let ([last-v (rhombus-group-value (second args))])
+                 (and last-v (symbol? (syntax-e* last-v)) (syntax-e* last-v))))]
+         ;; Compatibility with the structural wrappers Glide itself writes
+         ;; around a legacy literal slide list.
+         [(and call (eq? 'over (car call)) (= 2 (length args))
+               first-v (symbol? (syntax-e* first-v)))
+          (syntax-e* first-v)]
+         [(and call (eq? 'from_stage (car call)) (= 3 (length args))
+               (let ([slide-v (rhombus-group-value (second args))])
+                 (and slide-v (symbol? (syntax-e* slide-v)) (syntax-e* slide-v))))]
+         [(and call (eq? 'show_only (car call)) (= 1 (length args)))
+          (string->symbol (format "glide_generated_~a" index))]
+         [(and call (eq? 'divider (car call)) (pair? args))
+          (string->symbol (format "glide_generated_~a" index))]
+         [else #f]))
+     (let* ([head (call-name-range grp)]
+            [start (and head (rng-start head))]
+            [end (group-end grp)])
+       (and start end
+            (name-entry owner (make-range start end (rng-source head)))))]))
+
+;; The `[...]` of the `all_slides` definition.
+(define (rhombus-name-list groups text source)
+  (for/or ([g (in-list groups)])
+    (define brackets (all-slides-brackets g))
+    (define b (and brackets (syntax-list brackets)))
+    (and b
+         (let* ([items
+                 (for/list ([grp (in-list (cdr b))]
+                            [i (in-naturals 1)])
+                   (rhombus-deck-entry grp i))]
+                ;; The brackets carry no useful position of their own, so find
+                ;; the opening bracket from the first name. Empty slide lists
+                ;; are not traceable and are rejected with the other non-name
+                ;; lists below.
+                [anchor (and (pair? items) (rng-start (name-entry-range (first items))))]
+                [open (and anchor (prev-char text anchor #\[))]
+                [close (and open (match-close text open
+                                              (lambda (c d)
+                                                (and (char=? c #\/) (eqv? d #\/)))
+                                              (lambda (c d)
+                                                (and (char=? c #\/) (eqv? d #\*)))))])
+           (and (andmap values items) open close
+                (name-list open close items source))))))
+
+;; The first `ch` at or before `i`.
+(define (prev-char text i ch)
+  (let loop ([j (min i (sub1 (string-length text)))])
+    (cond [(< j 0) #f]
+          [(char=? (string-ref text j) ch) j]
+          [else (loop (sub1 j))])))
 
 ;; The `export:` block, as the position a new name goes after and the
 ;; indentation it takes. A program need not have one -- `all_slides` is what an
@@ -1578,101 +1818,83 @@
                               (cons (rng-end last-r)
                                     (indent-at text (rng-start last-r))))))))))))
 
+;; The simple names an editable module exports. A shared style in another file
+;; is writable only through a direct `open` import of one of these names. More
+;; elaborate export forms are left unresolved instead of guessed at.
+(define (rhombus-exported-names groups)
+  (remove-duplicates
+   (append*
+    (for/list ([g (in-list groups)])
+      (define l (syntax-list g))
+      (cond
+        [(and l (= 3 (length l))
+              (eq? 'group (syntax-e* (first l)))
+              (eq? 'export (syntax-e* (second l))))
+         (define b (syntax-list (third l)))
+         (if (and b (eq? 'block (syntax-e* (first b))))
+             (filter values
+                     (for/list ([entry (in-list (cdr b))])
+                       (define v (rhombus-group-value entry))
+                       (and v (symbol? (syntax-e* v)) (syntax-e* v))))
+             '())]
+        [else '()])))
+   eq?))
+
 ;; The `slide_canvas(...)` call in each `def slide_N = slide_canvas(...)`.
 ;; From the head of a call to just past its closing paren.
 (define (rhombus-call-extent text name)
   (define r (range-of name))
   (define open (and r (next-open text (rng-end r))))
   (define shut (and open (rhombus-close text open)))
-  (and shut (rng (rng-start r) (add1 shut))))
+  (and shut (make-range (rng-start r) (add1 shut) (rng-source r))))
 
-;; The `slide_canvas` a slide is defined by, and the parentheses it is called
-;; with, in either shape a definition can take:
-;;
-;;   def slide_1 = slide_canvas(...)      built when the program loads
-;;   fun slide_1(): slide_canvas(...)     built when the slide is shown
-;;
-;; The second is what lets a talk skip ahead without paying for the slides it
-;; skipped: `set_start_from` never calls the ones before it. Everything else
-;; here reads the same either way, which is why both are allowed.
-;; How far a definition reaches. A group carries no source position of its own,
-;; so the extent is the furthest any term inside it reaches -- which is what a
-;; slide being deleted has to take with it, and what a slide being added has to
-;; be written after.
-(define (group-extent g)
-  (let walk ([e g] [end #f])
-    (cond
-      [(syntax? e)
-       (define r (range-of e))
-       (define here (if (and r (or (not end) (> (rng-end r) end))) (rng-end r) end))
-       (walk (syntax-e e) here)]
-      [(pair? e) (walk (cdr e) (walk (car e) end))]
-      [else end])))
+;; The one `slide_canvas` nested anywhere in a named definition. A wrapper such
+;; as `in_section` belongs inside that function so `all_slides` can remain a
+;; literal name list while the canvas and its `at` forms keep the same scope.
+(define (slide-canvas-parts g)
+  (define found '())
+  (let walk ([s g])
+    (define l (and (syntax? s) (let ([e (syntax-e s)]) (and (list? e) e))))
+    (when l
+      ;; In `def slide_1 = slide_canvas(...)`, the call's two terms are
+      ;; siblings in the definition group; they are not wrapped in a group of
+      ;; their own. `call-name` deliberately recognizes both that form and a
+      ;; call nested as an argument.
+      (define name (call-name s))
+      (when (and name (eq? 'slide_canvas (syntax-e* name)))
+        (set! found (cons (cons name (call-parens s)) found)))
+      (for-each walk l)))
+  (reverse found))
 
-;; The `slide_canvas` a group is built on, and the parens holding its
-;; arguments. Three shapes, and the third is why a talk could not have a shape
-;; added to two thirds of its slides: a slide with stages writes its canvas as a
-;; `def` inside the function and then stages it, so the canvas is neither the
-;; whole definition nor the one thing the function returns.
-(define (rhombus-canvas-parts l)
-  (cond
-    [(and (= 5 (length l)) (eq? 'fun (syntax-e* (second l)))
-          (rhombus-head? (fourth l) 'parens))
-     (canvas-in-block (fifth l))]
-    [else (canvas-in-group l)]))
-
-;; `slide_canvas(...)` written as one group: as a `def`'s value, on a `def`'s
-;; own block, or on its own.
-(define (canvas-in-group l)
-  (cond
-    [(and (= 6 (length l)) (eq? 'slide_canvas (syntax-e* (fifth l))))
-     (values (fifth l) (sixth l))]
-    [(and (= 3 (length l)) (eq? 'slide_canvas (syntax-e* (second l)))
-          (rhombus-head? (third l) 'parens))
-     (values (second l) (third l))]
-    [(and (= 4 (length l)) (rhombus-head? (fourth l) 'block))
-     (canvas-in-block (fourth l))]
-    [else (values #f #f)]))
-
-;; The first `slide_canvas` among a block's groups. The first, because a slide
-;; with stages holds the one it is built on before the ones laid over it, and a
-;; shape added in the editor belongs on the slide rather than on a stage of it.
-(define (canvas-in-block blk-stx)
-  (define blk (let ([e (syntax-e blk-stx)]) (and (list? e) e)))
-  (cond
-    [(not (and blk (eq? 'block (syntax-e* (first blk))))) (values #f #f)]
-    [else
-     (let loop ([gs (cdr blk)])
-       (cond
-         [(null? gs) (values #f #f)]
-         [else
-          (define g (let ([e (syntax-e (car gs))]) (and (list? e) e)))
-          (define-values (name parens) (if g (canvas-in-group g) (values #f #f)))
-          (if name (values name parens) (loop (cdr gs)))]))]))
-
-(define (rhombus-slide-sites groups text)
+(define (rhombus-slide-sites groups text source)
   (filter values
           (for/list ([g (in-list groups)])
             (define scope (rhombus-def-name g))
+            (define local-names (rhombus-local-names g))
             (define l (let ([e (syntax-e g)]) (and (list? e) e)))
-            (define-values (name canvas-parens)
-              (if l (rhombus-canvas-parts l) (values #f #f)))
+            (define canvases (and l (slide-canvas-parts g)))
+            (define one (and (= 1 (length canvases)) (first canvases)))
+            (define name (and one (car one)))
+            (define canvas-parens (and one (cdr one)))
             (and scope name
                  (let* ([r (range-of name)]
                         [open (and r (next-open text (rng-end r)))]
                         [shut (and open (rhombus-close text open))]
                         [ins (and r (canvas-insertion text (rng-end r) rhombus-close))])
                    (and ins shut
-                        (slide-site scope (first ins) 2
-                                    (let ([d (range-of (second l))]) (and d (rng-start d)))
-                                    (or (group-extent g) (add1 shut))
-                                    (canvas-paint-site canvas-parens)
-                                    (canvas-size-site canvas-parens '#:width 'slide-width)
-                                    (canvas-size-site canvas-parens '#:height 'slide-height)
-                                    (canvas-flag-site canvas-parens '#:hidden 'hidden)
-                                    ;; Which build this slide is a frame of, if
-                                    ;; it is one.
-                                    (canvas-string canvas-parens '#:build))))))))
+                        (mask-slide-site-shared
+                         (slide-site scope (first ins) 2
+                                     (let ([d (range-of (second l))]) (and d (rng-start d)))
+                                     (or (group-end g) (add1 shut))
+                                     (canvas-paint-site canvas-parens)
+                                     (canvas-size-site canvas-parens '#:width 'slide-width)
+                                     (canvas-size-site canvas-parens '#:height 'slide-height)
+                                     (canvas-flag-site canvas-parens '#:hidden 'hidden)
+                                     ;; Which build this slide is a frame of,
+                                     ;; if it is one.
+                                     (canvas-string canvas-parens '#:build)
+                                     source)
+                         local-names)))))))
 
 ;; Where the canvas states its background, which is always somewhere: the
 ;; emitter writes one whether the slide had a background of its own or not.
@@ -1736,6 +1958,70 @@
        (symbol? (syntax-e* (third l)))
        (syntax-e* (third l))))
 
+;; Names bound inside one top-level definition. A bare style expression with
+;; one of these spellings is lexical, not a reference to a top-level colour or
+;; size that Glide may rewrite. This deliberately over-approximates nested
+;; bindings: declining an uncertain style edit is safe; choosing an unrelated
+;; top-level definition is not.
+(define (rhombus-local-names g)
+  (define names '())
+  (define (note! v) (when (symbol? v) (set! names (cons v names))))
+  (define (note-pattern! s)
+    (define l (syntax-list s))
+    (cond
+      [(not l) (note! (syntax-e* s))]
+      [else
+       (for ([part (in-list (if (memq (syntax-e* (first l)) '(group brackets parens))
+                                (cdr l)
+                                l))])
+         (note-pattern! part))]))
+  (define (parameter-name arg)
+    (define l (syntax-list arg))
+    (cond
+      [(not l) #f]
+      [(and (eq? 'group (syntax-e* (first l)))
+            (>= (length l) 2)
+            (symbol? (syntax-e* (second l))))
+       (syntax-e* (second l))]
+      [(and (eq? 'group (syntax-e* (first l)))
+            (>= (length l) 3)
+            (keyword? (syntax-e* (second l))))
+       (define b (syntax-list (third l)))
+       (define body (and b (eq? 'block (syntax-e* (first b)))
+                         (pair? (cdr b)) (syntax-list (second b))))
+       (and body (>= (length body) 2) (symbol? (syntax-e* (second body)))
+            (syntax-e* (second body)))]
+      [else #f]))
+  (let walk ([s g])
+    (define l (syntax-list s))
+    (when l
+      (when (and (eq? 'group (syntax-e* (first l)))
+                 (>= (length l) 3)
+                 (memq (syntax-e* (second l)) '(def fun let)))
+        (note-pattern! (third l))
+        (when (and (eq? 'fun (syntax-e* (second l)))
+                   (>= (length l) 4)
+                   (rhombus-head? (fourth l) 'parens))
+          (for ([arg (in-list (cdr (syntax-e (fourth l))))])
+            (note! (parameter-name arg)))))
+      (when (and (eq? 'group (syntax-e* (first l)))
+                 (>= (length l) 3)
+                 (eq? 'for (syntax-e* (second l))))
+        (for ([part (in-list (cddr l))]
+              #:when (rhombus-head? part 'parens))
+          (for ([clause (in-list (cdr (syntax-e part)))])
+            (define c (syntax-list clause))
+            (note! (parameter-name clause))
+            (define before-in
+              (and c (member 'in (map syntax-e* c))))
+            (when before-in
+              (for ([binding (in-list
+                              (take c (- (length c) (length before-in))))]
+                    #:unless (eq? 'group (syntax-e* binding)))
+                (note-pattern! binding))))))
+      (for-each walk l)))
+  (remove-duplicates names eq?))
+
 ;; `def brand = hex("4472C4")` -> brand -> the range of that string, and
 ;; `def slide_width = 720.0` -> slide_width -> the range of that number. A value
 ;; given a name is shared, so changing one shape that uses it is not the same
@@ -1748,148 +2034,91 @@
                     (syntax-e* (third l))))
     (define hit (and nm (hex-site g)))
     (define number (and nm (not hit) (= 5 (length l)) (literal-range (fifth l) real?)))
+    (define r (cond [(and hit (eq? 'literal (car hit))) (cdr hit)] [number number] [else #f]))
     (cond
-      [(and hit (eq? 'literal (car hit))) (hash-set h nm (cdr hit))]
-      [number (hash-set h nm number)]
+      [r (hash-set h (cons (rng-source r) nm) r)]
       [else h])))
 
-;; `def all_slides = [slide_1, slide_2]` -> '(slide_1 slide_2).
-;; Which slide each entry of `all_slides` comes from, in order.
-;;
-;; A generated program lists the names plainly -- `[slide_1, slide_2]` -- and
-;; that is the easy case. A talk wraps them: `held(in_section(0, slide_2))`
-;; holds the slide inside a couple of calls, and `held(divider(0))` names no
-;; slide at all because a divider is drawn rather than laid out. So an entry is
-;; read for the one name in it that some `at` form calls home; an entry with
-;; none is a slide with nothing to edit, and says so with #f.
-;;
-;; Getting this right is what keeps a tag's meaning local to its slide. Without
-;; it every tag has to be unique across the whole file, which no deck's tags
-;; are -- "Group" and "Rectangle (2)" are on half the slides -- and every merge
-;; is refused.
-;; The `[...]` of `all_slides`, in either shape the definition can take: on the
-;; `=`, or in the block that follows a `:`.
-(define (all-slides-brackets groups)
-  (for/or ([g (in-list groups)])
-    (define l (let ([e (syntax-e g)]) (and (list? e) e)))
-    (and l (>= (length l) 4) (eq? 'group (syntax-e* (first l)))
-         (eq? 'def (syntax-e* (second l)))
-         (memq (syntax-e* (third l)) '(all_slides all-slides))
-         (let ([tail (list-tail l 3)])
-           (for/or ([piece (in-list tail)])
-             (define e (let ([v (syntax-e piece)]) (and (list? v) v)))
-             (cond
-               [(not e) #f]
-               [(eq? 'brackets (syntax-e* (car e))) e]
-               [(eq? 'block (syntax-e* (car e)))
-                (for/or ([grp (in-list (cdr e))])
-                  (define ge (let ([v (syntax-e grp)]) (and (list? v) v)))
-                  (and ge (>= (length ge) 2)
-                       (let ([inner (let ([v (syntax-e (second ge))]) (and (list? v) v))])
-                         (and inner (eq? 'brackets (syntax-e* (car inner))) inner))))]
-               [else #f]))))))
-
-;; How far each entry of `all_slides` reaches, in order. A slide is edited by
-;; its position in that list, and an edit that has to be written *around* a
-;; slide -- something that appears from one of its stages on -- is written
-;; around its entry, whatever shape the entry has: a name, or a call like
-;; `in_section(0, slide_2)`.
-(define (rhombus-slide-entries groups)
-  (define b (all-slides-brackets groups))
-  (and b (for/list ([grp (in-list (cdr b))]) (group-range grp))))
-
-;; A group's whole extent: groups carry no position of their own, so it is the
-;; span from the earliest term in it to the furthest.
-(define (group-range g)
-  (define lo #f)
-  (define hi #f)
-  (let walk ([e g])
-    (cond
-      [(syntax? e)
-       (define r (range-of e))
-       (when r
-         (when (or (not lo) (< (rng-start r) lo)) (set! lo (rng-start r)))
-         (when (or (not hi) (> (rng-end r) hi)) (set! hi (rng-end r))))
-       (walk (syntax-e e))]
-      [(pair? e) (walk (car e)) (walk (cdr e))]
-      [else (void)]))
-  (and lo hi (rng lo hi)))
-
-(define (rhombus-slide-scopes groups site-scopes)
-  (define known (for/hash ([s (in-list site-scopes)] #:when s) (values s #t)))
-  ;; What each top-level definition is defined as, so that a name in
-  ;; `all_slides` which is not itself a scope can be followed to one.
-  (define bodies
+;; `glide_slides all_slides: [slide_1, show_as(slide_2, ...)]`
+;; -> '(slide_1 slide_2).
+(define (rhombus-slide-scopes groups)
+  (define (contains-at? g)
+    (let walk ([v g])
+      (define l (and (syntax? v) (syntax-list v)))
+      (and l
+           (or (for/or ([call (in-list (rhombus-calls l))])
+                 (eq? 'at (first call)))
+               (for/or ([part (in-list l)]) (walk part))))))
+  (define canvases
     (for/hash ([g (in-list groups)]
-               #:when (let ([e (syntax-e g)])
-                        (and (list? e) (>= (length e) 3)
-                             (eq? 'group (syntax-e* (first e)))
-                             (eq? 'def (syntax-e* (second e)))
-                             (symbol? (syntax-e* (third e))))))
-      (values (syntax-e* (third (syntax-e g))) g)))
-  (define (scope-in stx)
-    (let walk ([e stx])
+               #:when (let ([name (rhombus-def-name g)])
+                        (and name (= 1 (length (slide-canvas-parts g)))
+                             (contains-at? g))))
+      (values (rhombus-def-name g) #t)))
+  (define bodies
+    (for/hash ([g (in-list groups)] #:when (rhombus-def-name g))
+      (values (rhombus-def-name g) g)))
+  (define (scope-through name)
+    (let loop ([name name] [seen (set)])
       (cond
-        [(syntax? e) (walk (syntax-e e))]
-        [(symbol? e) (and (hash-ref known e #f) e)]
-        [(pair? e) (or (walk (car e)) (walk (cdr e)))]
-        [else #f])))
-  ;; A slide given stages is not a canvas: it is an animated pict built from
-  ;; one, and `all_slides` names the animation rather than the canvas -- so the
-  ;; entry holds no scope and the slide has no `at` forms as far as anything can
-  ;; tell. Followed one definition further, it does: `def s = switch(base, ...)`
-  ;; where `base` came from a canvas is that canvas's slide.
-  ;;
-  ;; Only with one slide of the deck per stage. Settled into a single slide, a
-  ;; staged slide is several canvases drawn over each other and nothing can say
-  ;; which of them an element came from; a stage is one of them, and they line
-  ;; up.
-  (define (scope-through stx)
-    (or (scope-in stx)
-        (and (unbox stage-slides?)
-             (let ([names (let walk ([e stx] [acc '()])
-                            (cond
-                              [(syntax? e) (walk (syntax-e e) acc)]
-                              [(symbol? e) (if (hash-ref bodies e #f) (cons e acc) acc)]
-                              [(pair? e) (walk (car e) (walk (cdr e) acc))]
-                              [else acc]))])
-               (for/or ([n (in-list names)])
-                 (scope-in (hash-ref bodies n)))))))
-  (define (entries-of b)
-    (and b (eq? 'brackets (syntax-e* (car b)))
-         (let ([names (map scope-through (cdr b))])
-           (and (pair? names) names))))
+        [(hash-ref canvases name #f) name]
+        [(set-member? seen name) #f]
+        [else
+         (define body (hash-ref bodies name #f))
+         (and body
+              (let walk ([v body])
+                (cond
+                  [(syntax? v) (walk (syntax-e v))]
+                  [(and (symbol? v) (hash-ref bodies v #f))
+                   (loop v (set-add seen name))]
+                  [(pair? v) (or (walk (car v)) (walk (cdr v)))]
+                  [else #f])))])))
+  (define (scope-in v)
+    (cond
+      [(syntax? v) (scope-in (syntax-e v))]
+      [(and (symbol? v) (hash-ref canvases v #f)) v]
+      [(pair? v) (or (scope-in (car v)) (scope-in (cdr v)))]
+      [else #f]))
   (for/or ([g (in-list groups)])
-    (define l (let ([e (syntax-e g)]) (and (list? e) e)))
-    (and l (>= (length l) 4) (eq? 'group (syntax-e* (first l)))
-         (eq? 'def (syntax-e* (second l)))
-         (memq (syntax-e* (third l)) '(all_slides all-slides))
-         ;; `def all_slides = [...]`, or `def all_slides:` with the list in the
-         ;; block that follows.
-         (let* ([tail (list-tail l 3)]
-                [brackets
-                 (for/or ([piece (in-list tail)])
-                   (define e (let ([v (syntax-e piece)]) (and (list? v) v)))
-                   (cond
-                     [(not e) #f]
-                     [(eq? 'brackets (syntax-e* (car e))) e]
-                     [(eq? 'block (syntax-e* (car e)))
-                      (for/or ([grp (in-list (cdr e))])
-                        (define ge (let ([v (syntax-e grp)]) (and (list? v) v)))
-                        (and ge (>= (length ge) 2)
-                             (let ([inner (let ([v (syntax-e (second ge))]) (and (list? v) v))])
-                               (and inner (eq? 'brackets (syntax-e* (car inner))) inner))))]
-                     [else #f]))])
-           (entries-of brackets)))))
+    (define brackets (all-slides-brackets g))
+    (define b (and brackets (syntax-list brackets)))
+    (and b
+         (let* ([entry-groups (cdr b)]
+                [entries (for/list ([grp (in-list entry-groups)]
+                                    [i (in-naturals 1)])
+                           (rhombus-deck-entry grp i))])
+           (and (pair? entries) (andmap values entries)
+                (let* ([l (syntax-list g)]
+                       [macro? (and l (>= (length l) 2)
+                                    (eq? 'glide_slides (syntax-e* (second l))))]
+                       [owners
+                        (for/list ([entry (in-list entries)]
+                                   [entry-group (in-list entry-groups)])
+                          (define owner (name-entry-name entry))
+                          (if macro?
+                              owner
+                              (or (scope-in entry-group)
+                                  (and owner (scope-through owner)))))])
+                  (and (or (not macro?) (andmap values owners)) owners)))))))
+
+;; (cons name-syntax parens-syntax) for the first call-shaped pair in a group.
+(define (rhombus-call-parts l)
+  (and (pair? l)
+       (eq? 'group (syntax-e* (first l)))
+       ;; A call used as a definition's value has the same sibling shape as a
+       ;; standalone call, but later in the group:
+       ;; `(group def canvas (op =) titled (parens ...))`.
+       (for/or ([name (in-list (cdr l))]
+                [p (in-list (cddr l))])
+         (and (symbol? (syntax-e* name))
+              (rhombus-head? p 'parens)
+              (cons name p)))))
 
 ;; (cons name arg-groups) when `l` is a call, else #f.
 (define (rhombus-call l)
-  (and (>= (length l) 3)
-       (eq? 'group (syntax-e* (first l)))
-       (symbol? (syntax-e* (second l)))
-       (let ([p (third l)])
-         (and (rhombus-head? p 'parens)
-              (cons (syntax-e* (second l)) (cdr (syntax-e p)))))))
+  (define parts (rhombus-call-parts l))
+  (and parts
+       (cons (syntax-e* (car parts)) (cdr (syntax-e (cdr parts))))))
 
 ;; Every call a group makes at its own term level, as
 ;; `(name name-stx args parens)`.
@@ -1990,7 +2219,12 @@
              #:when (= 1 (hash-ref placed name 0)))
     (values name value)))
 
-(define (parse-rhombus-at args [leaf-defs (hash)])
+(define (call-has-literal-tag? args)
+  (for/or ([g (in-list args)])
+    (and (eq? '#:tag (rhombus-kw-name g))
+         (let ([v (rhombus-kw-value g)]) (and v (string? (syntax-e* v)))))))
+
+(define (parse-rhombus-at args [leaf-defs (hash)] [automatic-tag #f])
   ;; A positional argument is any group that is not a keyword argument. Note it
   ;; can hold more than one term: the last one is a call, so its group is
   ;; `(group shape_pict (parens ...))`.
@@ -2002,12 +2236,13 @@
   ;; canvas is not doing the placing.
   (define kw-tag-stx (hash-ref kws '#:tag #f))
   (define tag-stx (or kw-tag-stx (tag-call-name-stx args)))
-  (define tag (and tag-stx (string? (syntax-e* tag-stx)) (syntax-e* tag-stx)))
+  (define tag (or (and tag-stx (string? (syntax-e* tag-stx)) (syntax-e* tag-stx))
+                  (and (not tag-stx) automatic-tag)))
   ;; A tag the program states but does not spell out -- `~tag: tag` inside a
   ;; helper -- is neither a name an edit can be written to nor an `at` glide may
   ;; name itself: a second `~tag:` in one call is a program that does not
   ;; compile. Those are left alone, as they were before glide named anything.
-  (and (or tag (not tag-stx))
+  (and tag
        (>= (length positional) 3)
        (let* ([written (last positional)]
               [named (let ([v (rhombus-group-value written)])
@@ -2015,8 +2250,10 @@
                             (hash-ref leaf-defs (syntax-e* v) #f)))]
               [child (or named written)])
          (at-site tag
-                  (literal-range (rhombus-group-value (first positional)) real?)
-                  (literal-range (rhombus-group-value (second positional)) real?)
+                  (and (>= (length positional) 2)
+                       (literal-range (rhombus-group-value (first positional)) real?))
+                  (and (>= (length positional) 2)
+                       (literal-range (rhombus-group-value (second positional)) real?))
                   (literal-range (hash-ref kws '#:rotate #f) real?)
                   (rhombus-child-size child 'width)
                   (rhombus-child-size child 'height)
@@ -2027,51 +2264,15 @@
                   ;; call of its own, and so does no name at all -- both take
                   ;; the place the walk works out, just inside the parenthesis
                   ;; that closes this call.
-                  (and kw-tag-stx
-                       (let ([r (range-of kw-tag-stx)]) (and r (rng-end r))))
+                  (cond
+                    [kw-tag-stx
+                     (let ([r (range-of kw-tag-stx)]) (and r (rng-end r)))]
+                    [else (group-end written)])
                   #f #f
                   (rhombus-child-flag child '#:flip_h)
                   (rhombus-child-flag child '#:flip_v)
                   (rhombus-child-insert child)
-                  (style-sites child)
-                  ;; What was drawn, for naming it if the program did not: the
-                  ;; leaf's own call says whether this is a shape, a text box, a
-                  ;; picture or a group, which is how PowerPoint names them too.
-                  (and (not tag-stx) (leaf-kind-name child))))))
-
-;; The sites in source order, with a name given to every one the program did not
-;; name. Counted per kind and per slide, and never a name the file already uses
-;; there: two elements answering to one name is a name no edit can be traced
-;; back to.
-(define (name-untagged sites)
-  (define taken
-    (for/fold ([h (hash)]) ([s (in-list sites)] #:when (at-site-tag s))
-      (hash-update h (at-site-scope s)
-                   (lambda (ts) (cons (at-site-tag s) ts)) '())))
-  (define counts (make-hash))
-  (for/list ([s (in-list sites)])
-    (cond
-      [(at-site-tag s) s]
-      [else
-       (define kind (or (at-site-auto s) "Shape"))
-       (define scope (at-site-scope s))
-       (define here (hash-ref taken scope '()))
-       (define name
-         (let loop ()
-           (define n (add1 (hash-ref counts (cons scope kind) 0)))
-           (hash-set! counts (cons scope kind) n)
-           (define candidate (format "~a ~a" kind n))
-           (if (member candidate here) (loop) candidate)))
-       (struct-copy at-site s [tag name] [auto #t])])))
-
-;; What to call a kind of leaf, the way an editor names one.
-(define (leaf-kind-name child)
-  (case (let ([n (call-name child)]) (and n (syntax-e* n)))
-    [(textbox text_box) "TextBox"]
-    [(image_pict) "Picture"]
-    [(group_pict) "Group"]
-    [(table_pict) "Table"]
-    [else "Shape"]))
+                  (style-sites child)))))
 
 ;; Any call that carries a literal `~tag:` is a site, not only `at`.
 ;;
@@ -2119,8 +2320,7 @@
                   ;; helper that takes `~fill:` offers a colour the way
                   ;; `~nudge:` offers a position. What it keeps to itself is
                   ;; reported rather than written.
-                  (if call-stx (style-sites call-stx) '())
-                  #f))))
+                  (if call-stx (style-sites call-stx) '())))))
 
 ;; The name a `tag(p, "name")` among these arguments gives, as the syntax of the
 ;; string itself so that its extent is known. The first one only: a call that
@@ -2200,7 +2400,7 @@
      (define shut (and open (match-close text open
                                          (lambda (c d) (and (char=? c #\/) (eqv? d #\/)))
                                          (lambda (c d) (and (char=? c #\/) (eqv? d #\*))))))
-     (and shut (rng open (add1 shut)))]
+     (and shut (make-range open (add1 shut)))]
     [else kw]))
 
 (define (rhombus-nudge stx)
@@ -2295,6 +2495,22 @@
 ;; is no literal inside the old `hex(...)` that means that.
 (struct style-site (property range shared insert-at keyword whole) #:transparent)
 
+(define (mask-style-shared site local-names)
+  (if (and site (memq (style-site-shared site) local-names))
+      (struct-copy style-site site [shared #f])
+      site))
+
+(define (mask-at-site-shared site local-names)
+  (struct-copy at-site site
+               [styles (for/list ([style (in-list (at-site-styles site))])
+                         (mask-style-shared style local-names))]))
+
+(define (mask-slide-site-shared site local-names)
+  (struct-copy slide-site site
+               [background (mask-style-shared (slide-site-background site) local-names)]
+               [width (mask-style-shared (slide-site-width site) local-names)]
+               [height (mask-style-shared (slide-site-height site) local-names)]))
+
 ;; The literal inside the first `hex("...")` under `stx`, or the name it is given
 ;; instead.
 (define (hex-site stx)
@@ -2380,7 +2596,7 @@
   (define terms (if (and (pair? l) (eq? 'group (syntax-e* (first l)))) (cdr l) (or l '())))
   (and (= 2 (length terms))
        (let ([a (range-of (first terms))] [b (range-of (second terms))])
-         (and a b (rng (rng-start a) (rng-end b))))))
+         (and a b (make-range (rng-start a) (rng-end b) (rng-source a))))))
 
 ;; A keyword's value inside an argument list already in hand.
 (define (parens-kw-group parens kw)
@@ -2733,7 +2949,7 @@
   (define before (back-over-space text start))
   (cond
     [(and (> before 0) (char=? (string-ref text (sub1 before)) #\,))
-     (rng (sub1 before) (rng-end r))]
+     (make-range (sub1 before) (rng-end r) (rng-source r))]
     [else
      (define after
        (let loop ([j (rng-end r)])
@@ -2741,57 +2957,169 @@
              (loop (add1 j))
              j)))
      (if (and (< after (string-length text)) (char=? (string-ref text after) #\,))
-         (rng start (add1 after))
-         (rng start (rng-end r)))]))
+         (make-range start (add1 after) (rng-source r))
+         (make-range start (rng-end r) (rng-source r)))]))
 
 ;; Within one slide definition a tag has to be unique, because that is the only
 ;; thing an edit is matched on. Across slides it need not be: "Title 1" on every
 ;; slide is the normal case. When the slide list is computed there is no per-slide
-;; scope to speak of, so uniqueness has to hold file-wide.
-;; Which slides cannot be told apart, and why -- a hash from the slide's
-;; definition name to what is wrong with it.
-;;
-;; A slide written by hand often holds more than one canvas: a base and a stage
-;; per reveal, all inside one definition, drawing the same shapes again. The
-;; tags then repeat, and an edit to that slide cannot be matched to an `at`
-;; form. That is a refusal for *that slide*, not for the file: a reorder writes
-;; the slide list and touches no element, and a drag on some other slide has
-;; nothing to do with this one. It used to stop every save a program like that
-;; ever made.
+;; scope to speak of, so uniqueness has to hold across the local source tree.
+(define (check-site-tags sites scopes path)
+  (define where (format "~a" (if (path? path) (path->string path) path)))
+  (void scopes)
+  (for ([scope (in-list (remove-duplicates (map at-site-scope sites)))])
+    (check-unique-tags (for/list ([s (in-list sites)]
+                                 #:when (equal? scope (at-site-scope s)))
+                         (at-site-tag s))
+                       (if scope (format "~a: ~a" where scope) where)
+                       TAG-HINT)))
+
+;; Every identity produced by running the program must have one static place an
+;; edit can land. Check that before a base is recorded, while no editor changes
+;; are at risk. One source call may legitimately appear on several pages (a
+;; shared slide helper, for example); the merge treats those occurrences as a
+;; family and refuses a page-local edit rather than silently changing them all.
+(define (runtime-source-site sites scopes slide-index tag)
+  (define key (tag-key tag))
+  (define scope (and scopes (<= 1 slide-index (length scopes))
+                     (list-ref scopes (sub1 slide-index))))
+  (define scoped
+    (for/list ([site (in-list sites)]
+               #:when (and (equal? scope (at-site-scope site))
+                           (equal? key (tag-key (at-site-tag site)))))
+      site))
+  (define global
+    (for/list ([site (in-list sites)]
+               #:when (equal? key (tag-key (at-site-tag site))))
+      site))
+  (cond
+    ;; Several sites under one tag in one slide are one editable family: moving
+    ;; them together writes every site, while moving only one is reported as
+    ;; ambiguous by the merge. What cannot be recovered is a tag that has no
+    ;; site in this page's scope and several unrelated sites elsewhere.
+    [(pair? scoped) (first scoped)]
+    [(= 1 (length global)) (first global)]
+    [else #f]))
+
+(define (validate-runtime-sites sites scopes slides path)
+  ;; Stage expansion can turn one declared slide into several editor pages.
+  ;; `slide-origins` records which declaration owns each page.
+  (define page-scopes (scopes-by-deck-slide scopes))
+  (unless (and page-scopes (= (length page-scopes) (length slides)))
+    (error 'glide
+           (string-append
+            "~a declares ~a source owner~a, but the running pages cannot all be traced to them.\n"
+            "  Keep the running order in one `glide_slides` declaration; do not compute or append pages outside it.")
+           path (length scopes) (if (= 1 (length scopes)) "" "s")
+           ))
+  (define missing
+    (remove-duplicates
+     (for*/list ([slide (in-list slides)]
+                 [e (in-list (slide-state-elements slide))]
+                 #:when (and (el-state-tag e)
+                             (not (runtime-source-site
+                                   sites page-scopes (slide-state-index slide)
+                                   (el-state-tag e)))))
+       (el-state-tag e))))
+  (when (pair? missing)
+    (error 'glide
+           (string-append
+            "~a produces editor identities that have no writable source site:\n~a"
+            "  Put an ordinary object in `at(...)`. For a helper whose inner `at` is\n"
+            "  called more than once, put a distinct literal `~~tag:` on each outer\n"
+            "  helper call and pass its tag and `~~nudge:` through.")
+           path
+           (apply string-append
+                  (for/list ([tag (in-list missing)])
+                    (format "    ~s\n" (or (automatic-tag-name tag) tag))))))
+  (void))
+
+;; A single static call can draw on more than one editor page. That is useful
+;; for shared slide helpers, but a drag on only one occurrence cannot be
+;; represented by changing that one call: it would move every occurrence.
+;; Identify such keys so a save is refused before any source edit is made.
+(define (shared-runtime-site-keys sites scopes slides)
+  (define page-scopes (scopes-by-deck-slide scopes))
+  (define origins (unbox slide-origins))
+  (define (logical-slide page)
+    (if (<= 1 page (length origins))
+        (list-ref origins (sub1 page))
+        page))
+  (define occurrences (make-hasheq))
+  (for* ([slide (in-list slides)]
+         [e (in-list (slide-state-elements slide))]
+         #:when (el-state-tag e))
+    (define site
+      (runtime-source-site sites page-scopes (slide-state-index slide) (el-state-tag e)))
+    (when site
+      (hash-update! occurrences site
+                    (lambda (ps) (cons (logical-slide (slide-state-index slide)) ps)) '())))
+  (define by-key
+    (for*/fold ([h (hash)]) ([(site ps) (in-hash occurrences)]
+                              #:when (> (length (remove-duplicates ps)) 1))
+      (hash-update h (tag-key (at-site-tag site))
+                   (lambda (old) (append ps old)) '())))
+  (for/hash ([(key ps) (in-hash by-key)])
+    (values key (sort (remove-duplicates ps) <))))
+
+(define (protect-shared-runtime-sites actions shared)
+  (define (keys a)
+    (case (sync-action-kind a)
+      [(moved resized retext restyle removed)
+       (list (tag-key (sync-action-tag a)))]
+      [(grouped)
+       (for/list ([child (in-list (second (sync-action-detail a)))])
+         (tag-key (car child)))]
+      [(restacked) (map tag-key (sync-action-detail a))]
+      [else '()]))
+  (define hit
+    (for*/or ([a (in-list actions)] [key (in-list (keys a))])
+      (and (hash-ref shared key #f) key)))
+  (if (not hit)
+      actions
+      ;; Treat the whole editor save as one refused operation even for callers
+      ;; that did not request atomic application. Grouping and ungrouping are
+      ;; several low-level actions, and applying the unrelated-looking half is
+      ;; another way to corrupt the shared family.
+      (for/list ([a (in-list actions)] #:unless (eq? 'noted (sync-action-kind a)))
+        (struct-copy sync-action a
+                     [kind 'ambiguous]
+                     [detail
+                      (format (string-append
+                               "this source object also appears on slides ~a; changing only"
+                               " one occurrence would change them all -- give independently"
+                               " editable helper calls distinct literal `~~tag:` arguments")
+                              (hash-ref shared hit))]))))
+
+;; Direct callers of `apply-actions!` still need a per-scope account of an
+;; ambiguous source. Normal sync validates earlier, before recording a base.
 (define (ambiguous-scopes sites scopes path)
   (define where (format "~a" (if (path? path) (path->string path) path)))
   (cond
     [(not scopes)
-     ;; With a computed slide list there is no slide to attach the trouble to,
-     ;; and nothing can be matched at all: that is still the whole file's
-     ;; problem.
      (check-unique-tags (map at-site-tag sites)
-                        (format "~a (its slide list is computed, so tags have to be unique file-wide)"
-                                where)
+                        (format "~a (its slide list is not traceable)" where)
                         TAG-HINT)
      (hash)]
     [else
-     (for/fold ([h (hash)]) ([scope (in-list (remove-duplicates (map at-site-scope sites)))])
-       (define dups (duplicate-tags (for/list ([s (in-list sites)]
-                                               #:when (equal? scope (at-site-scope s)))
-                                      (at-site-tag s))))
-       (cond
-         [(null? dups) h]
-         [else
-          ;; The message, and the tags it is about. Only those tags are in the
-          ;; way: an edit to an element whose tag names one form is placed
-          ;; exactly, whatever else on the slide is doubled up. Refusing the
-          ;; whole slide meant one repeated tag made every element on it
-          ;; uneditable -- three of them, in one real talk, and forty-odd
-          ;; elements on that slide that nobody could touch.
-          (hash-set h scope
-                    (cons (format "~a uses one tag for more than one element, so this cannot be told apart: ~a"
-                                  (or scope "the slide")
-                                  (string-join
-                                   (for/list ([d (in-list dups)])
-                                     (format "~s appears ~a times" (car d) (cdr d)))
-                                   ", "))
-                          (map car dups)))]))]))
+     (for/fold ([h (hash)]) ([scope (in-list (remove-duplicates
+                                              (map at-site-scope sites)))])
+       (define dups
+         (duplicate-tags
+          (for/list ([s (in-list sites)]
+                     #:when (equal? scope (at-site-scope s)))
+            (at-site-tag s))))
+       (if (null? dups)
+           h
+           (hash-set h scope
+                     (cons
+                      (format "~a uses one tag for more than one element: ~a"
+                              (or scope "the slide")
+                              (string-join
+                               (for/list ([d (in-list dups)])
+                                 (format "~s appears ~a times" (car d) (cdr d)))
+                               ", "))
+                      (map car dups)))))]))
 
 ;; An element added in the editor has to be written as source, which is the same
 ;; job the translator does -- so it is the same code, for one element, at the
@@ -2851,7 +3179,7 @@
 ;; the edit to two splices instead of renumbering and reflowing the file.
 (define (apply-added-slides! program-path actions slide-sites layout d
                             media-names media-subdir)
-  (define text (file->string program-path))
+  (define text (file->string (program-layout-source layout)))
   (define taken
     (for/list ([ss (in-list slide-sites)]) (symbol->string (slide-site-scope ss))))
   (define next
@@ -2875,13 +3203,23 @@
       (list a s (format "slide_~a" (+ next i)))))
   (define missing (filter (lambda (p) (not (second p))) planned))
   (define usable (filter second planned))
+  (define def-source (and (pair? slide-sites) (slide-site-source (last slide-sites))))
+  (define export-at
+    (and def-source (hash-ref (program-layout-exports layout) def-source #f)))
   (cond
     [(null? slide-sites)
      (for/list ([p (in-list planned)])
        (cons (first p) "there is no `def slide_N = slide_canvas(...)` to add one beside"))]
     [(not (program-layout-slide-list layout))
      (for/list ([p (in-list planned)])
-       (cons (first p) "`all_slides` is not a literal list, so a slide cannot be added to it"))]
+       (cons (first p) "`all_slides` has no traceable manifest, so a slide cannot be added to it"))]
+    [(and def-source
+          (not (same-file-path? def-source (program-layout-source layout)))
+          (not export-at))
+     (for/list ([p (in-list planned)])
+       (cons (first p)
+             (format "~a has no `export:` block, so a new slide defined there would not be visible to `all_slides`"
+                     (file-name-from-path def-source))))]
     [else
      ;; The images a pasted slide brings with it.
      (for* ([p (in-list usable)]
@@ -2894,13 +3232,16 @@
         (for/list ([p (in-list usable)])
           (rhombus-slide-source (second p) (third p)
                                 #:media-names media-names
-                                #:font (program-default-font text)))
+                                #:font (or (program-default-font text)
+                                           (and d (dominant-font d)))
+                                #:identity-tags? #t))
         "\n\n"))
      (define at (slide-site-def-end (last slide-sites)))
-     (list (list (rng at at) (string-append "\n\n" defs))
+     (list (list (make-range at at (slide-site-source (last slide-sites)))
+                 (string-append "\n\n" defs))
            ;; Each name goes where its slide sits in the deck's order.
            (name-list-edits (program-layout-slide-list layout) usable text)
-           (export-edits (program-layout-exports layout) usable)
+           (export-edits export-at usable def-source)
            missing)]))
 
 ;; One edit per position in `all_slides`, since several slides can be added at
@@ -2922,24 +3263,25 @@
     (cond
       ;; After nothing: at the head of the list.
       [(or (zero? after) (null? items))
-       (list (rng (add1 (name-list-open nl)) (add1 (name-list-open nl)))
+       (list (make-range (add1 (name-list-open nl)) (add1 (name-list-open nl))
+                         (name-list-source nl))
              (string-append (string-join names ", ")
                             (if (null? items) "" ", ")))]
       [else
        (define i (min (sub1 after) (sub1 (length items))))
        (define r (name-entry-range (list-ref items i)))
-       (list (rng (rng-end r) (rng-end r))
+       (list (make-range (rng-end r) (rng-end r) (rng-source r))
              (string-append ", " (string-join names ", ")))])))
 
 ;; A name nobody exports still works -- `all_slides` is what an export reads --
 ;; but the generated file lists them all, so a new one is listed too.
-(define (export-edits ex planned)
+(define (export-edits ex planned source)
   (cond
     [(not ex) '()]
     [else
      (define at (car ex))
      (define ind (cdr ex))
-     (list (list (rng at at)
+     (list (list (make-range at at source)
                  (apply string-append
                         (for/list ([p (in-list planned)])
                           (format "\n~a~a" (make-string ind #\space) (third p))))))]))
@@ -2960,7 +3302,16 @@
   (define scopes (scopes-by-deck-slide scopes*))
   ;; The source text, for the sites that describe a value rather than carry it:
   ;; whether a `~rotate:` says zero, whether a `~flip_h:` says true.
-  (define source-text (file->string program-path))
+  (define source-texts
+    (for/hash ([source (in-list (program-layout-files layout))]
+               #:when (file-exists? source))
+      (values source (file->string source))))
+  (define (source-text-for source)
+    (hash-ref source-texts source
+              (lambda () (file->string source))))
+  (define (site-source site)
+    (and site (at-site-whole site) (rng-source (at-site-whole site))))
+  (define source-text (source-text-for (program-layout-source layout)))
   ;; Set when an edit was carried to frames of a build other than the one it
   ;; names. The deck still holds the old value on those frames, and only the
   ;; caller can put that right, by writing the deck again from the program.
@@ -3032,20 +3383,20 @@
   ;; `at`. When the slide list is computed there is no definition to key on, and
   ;; `check-site-tags` has already established that tags are unique file-wide.
   (define by-scope (for/hash ([s (in-list all-sites)])
-                     (values (cons (at-site-scope s) (at-site-tag s)) s)))
+                     (values (cons (at-site-scope s) (tag-key (at-site-tag s))) s)))
   (define shared-tags
     (for/hash ([d (in-list (duplicate-tags (map at-site-tag all-sites)))])
       (values (car d) (cdr d))))
   (define by-tag
     (for/hash ([s (in-list all-sites)]
-               #:unless (hash-ref shared-tags (at-site-tag s) #f))
-      (values (at-site-tag s) s)))
+               #:unless (hash-ref shared-tags (tag-key (at-site-tag s)) #f))
+      (values (tag-key (at-site-tag s)) s)))
   ;; Why an edit found no form to write to. Two `at` forms under one tag is not
   ;; the same as none, and a talk that draws its badges with a shared helper hits
   ;; the first: saying "no tagged `at` form" of a name written twice sent a person
   ;; looking for the wrong thing.
   (define (no-site-reason tag)
-    (define n (hash-ref shared-tags tag #f))
+    (define n (hash-ref shared-tags (tag-key tag) #f))
     (if n
         (format "~a `at` forms in the program are tagged ~s, so an edit to it cannot be traced back to one of them"
                 n tag)
@@ -3057,7 +3408,7 @@
     (if d
         (for*/fold ([h (hash)]) ([s (in-list (deck-slides d))]
                                  [e (in-list (slide-elements s))])
-          (hash-update h (element-name e) add1 0))
+          (hash-update h (tag-key (element-name e)) add1 0))
         (hash)))
   (define (site-for a) (site-for-tag a (sync-action-tag a)))
   ;; The same, for a tag other than the action's own: a grouping names the
@@ -3069,8 +3420,8 @@
     (cond
       ;; No definition to key on: tags are unique file-wide, which
       ;; `check-site-tags` has already insisted on.
-      [(not scope) (hash-ref by-tag tag #f)]
-      [(hash-ref by-scope (cons scope tag) #f)]
+      [(not scope) (hash-ref by-tag (tag-key tag) #f)]
+      [(hash-ref by-scope (cons scope (tag-key tag)) #f)]
       ;; Not in the slide's own definition, so it is written somewhere the slide
       ;; calls: a talk that draws a badge with `with_icon(...)` puts the `at`
       ;; inside the helper, and the slide never mentions the tag at all.
@@ -3085,8 +3436,9 @@
       ;; in the deck answers to the tag -- which is to say that form drew this
       ;; and nothing more.
       [(eq? 'removed (sync-action-kind a))
-       (and (zero? (hash-ref tag-count tag 0)) (hash-ref by-tag tag #f))]
-      [else (hash-ref by-tag tag #f)]))
+       (and (zero? (hash-ref tag-count (tag-key tag) 0))
+            (hash-ref by-tag (tag-key tag) #f))]
+      [else (hash-ref by-tag (tag-key tag) #f)]))
   ;; Where a new element goes, for the slide an action names.
   (define (slide-site-for a)
     (define scope (and scopes
@@ -3099,7 +3451,9 @@
   ;; fresh emit would have used.
   (define media-names (if d (media-names-for d) (hash)))
   (define media-subdir "media")
-  (define media? (regexp-match? #rx"media[-_]lookup" (file->string program-path)))
+  (define media?
+    (for/or ([text (in-hash-values source-texts)])
+      (regexp-match? #rx"media[-_]lookup" text)))
   (define edits '())
   (define applied '())
   (define skipped '())
@@ -3178,7 +3532,7 @@
                                       (equal? build (slide-site-build ss)))
                           [st (in-list all-sites)]
                           #:when (and (equal? (slide-site-scope ss) (at-site-scope st))
-                                      (equal? tag (at-site-tag st))))
+                                      (same-build-tag? tag (at-site-tag st))))
                 st)))
     (define kin (append (twins-of a primary) others))
     (when (pair? others) (set-box! spread? #t))
@@ -3245,7 +3599,9 @@
   ;; The lifts, before the loop: each replaces one `at` form with the forms it
   ;; held, and the actions it answers are done with.
   (for ([l (in-list lifts)])
+    (set! source-text (source-text-for (site-source (site-for (first l)))))
     (current-source-text source-text)
+    (current-source-path (site-source (site-for (first l))))
     (define gone (first l))
     (define inner (third l))
     (define g (sync-action-detail gone))
@@ -3272,7 +3628,14 @@
   (for ([a (in-list actions)] #:unless (or (eq? 'added-slide (sync-action-kind a))
                                            (hash-ref consumed a #f)))
     (define site (site-for a))
+    (define ss-for-action (slide-site-for a))
+    (define action-source
+      (or (site-source site)
+          (and ss-for-action (slide-site-source ss-for-action))
+          (program-layout-source layout)))
+    (set! source-text (source-text-for action-source))
     (current-source-text source-text)
+    (current-source-path action-source)
     ;; An action either lands or it does not. One that writes part of itself and
     ;; then finds it cannot write the rest is reported as refused, and what it
     ;; had written is dropped: a half-applied edit is how a program stops
@@ -3344,7 +3707,8 @@
                (cond
                  [(not shifted?) #f]
                  [existing (edit! (first existing) (nudge->source dx dy))]
-                 [else (edit! (rng (at-site-insert-at site) (at-site-insert-at site))
+                 [else (edit! (make-range (at-site-insert-at site) (at-site-insert-at site)
+                                          (site-source site))
                               (nudge-argument->source dx dy))]))
              ;; A size the call works out for itself has nowhere to be
              ;; written, and that is said rather than swallowed. If the same
@@ -3527,8 +3891,13 @@
                                ;; one that is written has to be found again, and
                                ;; a tag found file-wide is what finds it.
                                #:when (or (not home-scope)
-                                          (equal? home-scope (at-site-scope st))))
-                      (at-site-tag st))
+                                          (and (equal? home-scope (at-site-scope st))
+                                               (or (not ss)
+                                                   (let ([whole (at-site-whole st)])
+                                                     (and whole
+                                                          (equal? (slide-site-source ss)
+                                                                  (rng-source whole))))))))
+                      (or (automatic-tag-name (at-site-tag st)) (at-site-tag st)))
                     (hash-ref claimed home-scope '())))
           (define named
             (let loop ([n 2] [name (element-name e)])
@@ -3542,7 +3911,9 @@
             (rhombus-element-source
              named (if ss (slide-site-indent ss) 2)
              #:media-names media-names
-             #:font (program-default-font source-text)))
+             #:font (or (program-default-font source-text)
+                        (and d (dominant-font d)))
+             #:identity-tags? #t))
           ;; Drawn on a stage after the first: written as a layer over that
           ;; slide, which appears from that stage on.
           ;;
@@ -3558,7 +3929,9 @@
             (let ([d (sync-action-detail a)])
               (and (list? d) (>= (length d) 2) (second d))))
           (define canvas-here
-            (if ss (canvas-forms (slide-site-scope ss) all-sites) '()))
+            (if ss
+                (canvas-forms (slide-site-scope ss) all-sites (slide-site-source ss))
+                '()))
           ;; A form this same save deletes is no anchor. Its comma goes with it,
           ;; and an insertion written against that comma left the canvas holding
           ;; two arguments with no separator between them -- a program that does
@@ -3571,7 +3944,10 @@
                                    (= (sync-action-slide b) (sync-action-slide a))))
               (sync-action-tag b)))
           (define surviving
-            (filter (lambda (st) (not (member (at-site-tag st) doomed))) canvas-here))
+            (filter (lambda (st)
+                      (not (member (tag-key (at-site-tag st))
+                                   (map tag-key doomed))))
+                    canvas-here))
           ;; Drawn over something the canvas does not hold itself -- a shape
           ;; inside a group -- it goes at the end of the slide instead. The
           ;; program cannot say "above one member of a group" without joining
@@ -3610,12 +3986,16 @@
                (if alone?
                    (rhombus-element-source named (+ col (string-length call))
                                            #:media-names media-names
-                                           #:font (program-default-font source-text))
+                                           #:font (or (program-default-font source-text)
+                                                      (and d (dominant-font d)))
+                                           #:identity-tags? #t)
                    (rhombus-element-source named 0
                                            #:media-names media-names
-                                           #:font (program-default-font source-text)
+                                           #:font (or (program-default-font source-text)
+                                                      (and d (dominant-font d)))
                                            #:width +inf.0
-                                           #:comment? #f)))
+                                           #:comment? #f
+                                           #:identity-tags? #t)))
              (edit! entry
                     (format (if alone? "~a~a,\n~a)" "~a~a, ~a)")
                             call
@@ -3623,17 +4003,21 @@
                             layer))]
             [(and after (at-site-whole after))
              (define at (rng-end (at-site-whole after)))
-             (edit! (rng at at) (string-append ",\n" src-text))]
+             (edit! (make-range at at (rng-source (at-site-whole after)))
+                    (string-append ",\n" src-text))]
             [(and (not under) first-form)
              (define at (line-start source-text (rng-start (at-site-whole first-form))))
-             (edit! (rng at at) (string-append src-text ",\n"))]
+             (edit! (make-range at at (rng-source (at-site-whole first-form)))
+                    (string-append src-text ",\n"))]
             [else
-             (edit! (rng (slide-site-insert-at ss) (slide-site-insert-at ss))
+             (edit! (make-range (slide-site-insert-at ss) (slide-site-insert-at ss)
+                                (slide-site-source ss))
                     (string-append ",\n" src-text))])
           ;; And on every frame after this one, since a build only ever adds.
           (unless over?
             (for ([ss2 (in-list (later-frames a))])
-              (edit! (rng (slide-site-insert-at ss2) (slide-site-insert-at ss2))
+              (edit! (make-range (slide-site-insert-at ss2) (slide-site-insert-at ss2)
+                                 (slide-site-source ss2))
                      (string-append ",\n" src-text))))
           ;; A slide with stages is built from one canvas, and this went into
           ;; that canvas -- so it is there from the first stage, not from the
@@ -3655,7 +4039,7 @@
           ;; change to what the program does rather than to a literal in it.
           (mark-unwritable! a)
           (set! skipped (cons (cons a "no form here can be deleted on its own") skipped))]
-         [else (edit! (deletion-range (file->string program-path) whole) "")
+         [else (edit! (deletion-range (source-text-for (rng-source whole)) whole) "")
                ;; One form draws the shape on every stage of its slide, so
                ;; taking the form out takes it off all of them -- not only the
                ;; stage it was deleted on. Which stage a shape stops appearing
@@ -3697,7 +4081,7 @@
                          [(and (style-site-insert-at hit)
                                (eq? keyword (style-site-keyword hit)))
                           (define at (style-site-insert-at hit))
-                          (edit! (rng at at)
+                          (edit! (make-range at at action-source)
                                  (format "~a~~~a: ~a"
                                          (argument-comma (current-source-text) at)
                                          (keyword->string keyword) src))]
@@ -3759,7 +4143,7 @@
              [(and hit (not (style-site-range hit)) (not (style-site-shared hit))
                    (style-site-insert-at hit) (style-site-keyword hit)
                    (let ([at (style-site-insert-at hit)])
-                     (edit! (rng at at)
+                     (edit! (make-range at at action-source)
                             (format "~a~~~a: ~a"
                                     (argument-comma (current-source-text) at)
                                     (keyword->string (style-site-keyword hit))
@@ -3770,20 +4154,27 @@
               ;; rewritten only when everything that uses it changed the same
               ;; way -- the same rule as a tag that names several elements.
               (define name (style-site-shared hit))
-              (define users (sites-using all-sites property name))
+              (define target (global-range layout name action-source))
+              (define users (if target
+                                (sites-using all-sites property name layout target)
+                                '()))
               (define agreed?
-                (and (hash-ref (program-layout-globals layout) name #f)
+                (and target
                      (for/and ([st (in-list users)])
                        (for/or ([b (in-list actions)])
                          (and (eq? 'restyle (sync-action-kind b))
-                              (equal? (at-site-tag st) (sync-action-tag b))
+                              (same-tag? (at-site-tag st) (sync-action-tag b))
                               (for/or ([c (in-list (sync-action-detail b))])
                                 (and (equal? (first c) property)
                                      (equal? (third c) want))))))))
               (cond
+                [(not target)
+                 (values done
+                         (cons (format "~a is ~a, which has more than one definition in the imported source files"
+                                       (property-name property) name)
+                               left))]
                 [agreed?
-                 (edit! (hash-ref (program-layout-globals layout) name)
-                        (style->source property want))
+                 (edit! target (style->source property want))
                  (values (cons (format "~a via ~a" (property-name property) name) done) left)]
                 [else
                  (values done (cons (format "~a is ~a, shared with ~a other element~a that did not change with it"
@@ -3808,11 +4199,13 @@
                       skipped))])]
       ;; The order the slides are in, which `all_slides` states.
       [(reordered)
+       (define nl (program-layout-slide-list layout))
+       (define items (and nl (name-list-items nl)))
        (define entries (program-layout-entries layout))
        (define order (sync-action-detail a))
        (cond
-         [(not entries)
-          (set! skipped (cons (cons a "`all_slides` is not a literal list of every slide")
+         [(or (not entries) (not items) (not (= (length items) (length order))))
+          (set! skipped (cons (cons a "`all_slides` has no traceable entry for every slide")
                               skipped))]
          [(not (= (length entries) (length order)))
           ;; With one deck slide per stage the deck's order is not the list's
@@ -3857,7 +4250,8 @@
        (define entries (program-layout-entries layout))
        (define entry (and items scope
                           (findf (lambda (e) (eq? scope (name-entry-name e))) items)))
-       (define def-r (and ss (definition-extent ss source-text)))
+       (define def-text (and ss (source-text-for (slide-site-source ss))))
+       (define def-r (and ss (definition-extent ss def-text)))
        ;; Which entry of `all_slides` showed this slide. A bare name is found by
        ;; name; an entry that is a call -- `divider(0)`, `in_section(3,
        ;; slide_39)` -- is found by where it sits in the list, which is where
@@ -3867,10 +4261,17 @@
          (or (and entry (entry-extent entry items))
              (and entries (entry-index-for i (length entries))
                   (list-entry-extent entries (entry-index-for i (length entries))))))
-       (define export-r (and scope (export-entry-extent source-text (symbol->string scope))))
+       (define export-r
+         (and scope
+              (for/or ([source (in-list (program-layout-files layout))])
+                (export-entry-extent (source-text-for source) (symbol->string scope) source))))
        (define elsewhere
-         (and scope (mentions-outside source-text (symbol->string scope)
-                                      (list def-r entry-r export-r))))
+         (and scope
+              (for/sum ([source (in-list (program-layout-files layout))])
+                (mentions-outside
+                 (source-text-for source) (symbol->string scope)
+                 (filter (lambda (r) (and r (equal? source (rng-source r))))
+                         (list def-r entry-r export-r))))))
        (cond
          ;; One deck slide per stage: the slide the editor deleted is one beat of
          ;; a slide the program shows, and deleting the program's slide would
@@ -3929,6 +4330,11 @@
                                              " so the program cannot tell them apart"
                                              " -- rename one of them in the editor"))
                       skipped))]
+         [(not (= 1 (length (remove-duplicates
+                             (map (lambda (st) (rng-source (at-site-whole st))) sites)))))
+          (set! skipped
+                (cons (cons a "the shapes are defined in different source files, so their forms cannot be grouped together")
+                      skipped))]
          [(not (for/and ([st (in-list sites)])
                  (and (at-site-whole st) (at-site-x st) (at-site-y st))))
           (set! skipped (cons (cons a "one of the shapes it holds has a computed position")
@@ -3949,6 +4355,8 @@
           ;; they were drawn.
           (define anchor (argmin (lambda (st) (rng-start (at-site-whole st))) sites))
           (define ind (indent-at text (rng-start (at-site-whole anchor))))
+          ;; This group is a new editor object. Keep its current id through the
+          ;; structural handoff; its children retain their existing source ids.
           (define head (format "at(~a, ~a, ~~tag: ~s,"
                                (num->source (first g)) (num->source (second g))
                                (sync-action-tag a)))
@@ -3975,15 +4383,16 @@
                      [pair (in-list (list (cons (slide-site-width ss) (first want))
                                           (cons (slide-site-height ss) (second want))))]
                      #:when (car pair))
-           pair))
+           (list (car pair) (cdr pair) (slide-site-source ss))))
        (define resolved
          (for/list ([t (in-list targets)])
-           (define site (car t))
-           (define value (cdr t))
+           (define site (first t))
+           (define value (second t))
+           (define source (third t))
            (cond
              [(style-site-range site) (cons (style-site-range site) value)]
              [(and (style-site-shared site)
-                   (hash-ref (program-layout-globals layout) (style-site-shared site) #f))
+                   (global-range layout (style-site-shared site) source))
               => (lambda (r) (cons r value))]
              [else #f])))
        (cond
@@ -4013,7 +4422,7 @@
           (set! applied (cons a applied))]
          [(and (style-site-insert-at hit) want)
           (define at (style-site-insert-at hit))
-          (edit! (rng at at)
+          (edit! (make-range at at (slide-site-source ss))
                  (format "~a~~hidden: #true" (argument-comma (current-source-text) at)))
           (set! applied (cons a applied))]
          ;; Nothing there and nothing wanted is nothing to do.
@@ -4044,7 +4453,8 @@
       [(restacked)
        (define scope (let ([i (sync-action-slide a)])
                        (and scopes (<= 1 i (length scopes)) (list-ref scopes (sub1 i)))))
-       (define here (sort (canvas-forms scope all-sites)
+       (define ss (slide-site-for a))
+       (define here (sort (canvas-forms scope all-sites (and ss (slide-site-source ss)))
                           < #:key (lambda (st) (rng-start (at-site-whole st)))))
        (define want (sync-action-detail a))
        (define pieces (reorder-pieces here want source-text))
@@ -4086,7 +4496,7 @@
     [(and atomic? (pair? blocking))
      (values '() (reverse skipped) (append ambiguity-notes (reverse notes)) #f #t)]
     [else
-     (when (pair? edits) (splice-file! program-path edits))
+     (when (pair? edits) (splice-files! program-path edits))
      (values (reverse applied) (reverse skipped)
              (append ambiguity-notes (reverse notes))
              (and (pair? applied) (unbox spread?))
@@ -4140,7 +4550,8 @@
   (cond
     [(at-site-rot site) (edit! (at-site-rot site) (num->source rot))]
     [(at-site-insert-at site)
-     (edit! (rng (at-site-insert-at site) (at-site-insert-at site))
+     (edit! (make-range (at-site-insert-at site) (at-site-insert-at site)
+                        (rng-source (at-site-whole site)))
             (format ", ~~rotate: ~a" (num->source rot)))]
     [else #f]))
 
@@ -4150,18 +4561,42 @@
       [range (edit! range (if want "#true" "#false"))]
       [(not want) #t]                       ; nothing there and none wanted
       [(at-site-leaf-at site)
-       (edit! (rng (at-site-leaf-at site) (at-site-leaf-at site))
+       (edit! (make-range (at-site-leaf-at site) (at-site-leaf-at site)
+                          (rng-source (at-site-whole site)))
               (format "~~~a: #true, " name))]
       [else #f]))
   (and (one (at-site-flip-h site) (and fh #t) "flip_h")
        (one (at-site-flip-v site) (and fv #t) "flip_v")))
 
-;; Every `at` in the program whose `property` is the shared name `name`.
-(define (sites-using sites property name)
+;; Resolve a shared name from the module containing its use. A same-module
+;; definition wins. Otherwise it must be exported by a module that this source
+;; directly imports `open`. Mere uniqueness in the project is not binding
+;; evidence: a private definition in a sibling module, or a same-named function
+;; parameter, must never become the target of an editor write.
+(define (global-range layout name source)
+  (define globals (program-layout-globals layout))
+  (or (hash-ref globals (cons source name) #f)
+      (let ([ranges
+             (for/list ([imported (in-list
+                                   (hash-ref (program-layout-open-imports layout)
+                                             source '()))]
+                        #:when (memq name
+                                     (hash-ref (program-layout-public-names layout)
+                                               imported '()))
+                        #:when (hash-ref globals (cons imported name) #f))
+               (hash-ref globals (cons imported name)))])
+        (and (= 1 (length ranges)) (first ranges)))))
+
+;; Every `at` in the program whose `property` resolves to the same shared
+;; definition as this one.
+(define (sites-using sites property name layout target)
   (for/list ([st (in-list sites)]
              #:when (for/or ([sy (in-list (at-site-styles st))])
                       (and (equal? property (style-site-property sy))
-                           (eq? name (style-site-shared sy)))))
+                           (eq? name (style-site-shared sy))
+                           (equal? target
+                                   (global-range layout name
+                                                 (rng-source (at-site-whole st)))))))
     st))
 
 ;; A style value as it reads in source: a colour is the string inside `hex`, a
@@ -4232,13 +4667,14 @@
   (define start (slide-site-def-start ss))
   (define end (slide-site-def-end ss))
   (and start end
-       (rng (comment-block-start text start)
+       (make-range (comment-block-start text start)
             (let loop ([j end])
               (cond
                 [(>= j (string-length text)) j]
                 [(char=? #\newline (string-ref text j)) (add1 j)]
                 [(char-whitespace? (string-ref text j)) (loop (add1 j))]
-                [else end])))))
+                [else end]))
+            (slide-site-source ss))))
 
 ;; Back over the comment lines immediately above a position, to the start of the
 ;; first of them.
@@ -4265,7 +4701,7 @@
 ;; The line naming a slide in the program's `export:` block, which a generated
 ;; program has one of per slide. Only inside that block: a bare name on a line
 ;; of its own means something else anywhere but there.
-(define (export-entry-extent text name)
+(define (export-entry-extent text name [source (current-source-path)])
   (define m (regexp-match-positions #px"(?m:^export:[ \t]*$)" text))
   (and m
        (let* ([from (cdar m)]
@@ -4279,7 +4715,7 @@
               [hit (regexp-match-positions (pregexp (format "(?m:^[ \t]+~a[ \t]*\r?\n)"
                                                             (regexp-quote name)))
                                            text from block-end)])
-         (and hit (rng (caar hit) (cdar hit))))))
+         (and hit (make-range (caar hit) (cdar hit) source)))))
 
 ;; How many times a name is written outside the places being removed. A program
 ;; that names a slide anywhere else is one the merge would be rewriting.
@@ -4318,8 +4754,10 @@
   (define r (list-ref ranges i))
   (define n (length ranges))
   (cond
-    [(< (add1 i) n) (rng (rng-start r) (rng-start (list-ref ranges (add1 i))))]
-    [(> i 0) (rng (rng-end (list-ref ranges (sub1 i))) (rng-end r))]
+    [(< (add1 i) n)
+     (make-range (rng-start r) (rng-start (list-ref ranges (add1 i))) (rng-source r))]
+    [(> i 0)
+     (make-range (rng-end (list-ref ranges (sub1 i))) (rng-end r) (rng-source r))]
     [else r]))
 
 (define (entry-extent entry items)
@@ -4327,8 +4765,12 @@
   (define i (index-of items entry))
   (define n (length items))
   (cond
-    [(and i (< (add1 i) n)) (rng (rng-start r) (rng-start (name-entry-range (list-ref items (add1 i)))))]
-    [(and i (> i 0)) (rng (rng-end (name-entry-range (list-ref items (sub1 i)))) (rng-end r))]
+    [(and i (< (add1 i) n))
+     (make-range (rng-start r) (rng-start (name-entry-range (list-ref items (add1 i))))
+                 (rng-source r))]
+    [(and i (> i 0))
+     (make-range (rng-end (name-entry-range (list-ref items (sub1 i)))) (rng-end r)
+                 (rng-source r))]
     [else r]))
 
 ;; The `at` forms of one slide, written out in a new order. What separates them
@@ -4336,13 +4778,15 @@
 ;; forms themselves move. A comment between two of them is a reason not to: it
 ;; would end up describing something else.
 (define (reorder-pieces sites want text)
-  (define by-tag (for/hash ([st (in-list sites)]) (values (at-site-tag st) st)))
-  (define ordered (for/list ([t (in-list want)]) (hash-ref by-tag t #f)))
+  (define by-tag (for/hash ([st (in-list sites)])
+                   (values (tag-key (at-site-tag st)) st)))
+  (define ordered (for/list ([t (in-list want)]) (hash-ref by-tag (tag-key t) #f)))
   ;; A comment sitting above an `at` describes that `at`, so it is part of the
   ;; piece that moves. The emitter writes one over every element it adds.
   (define (extent st)
-    (rng (comment-block-start text (rng-start (at-site-whole st)))
-         (rng-end (at-site-whole st))))
+    (make-range (comment-block-start text (rng-start (at-site-whole st)))
+                (rng-end (at-site-whole st))
+                (rng-source (at-site-whole st))))
   (define gaps
     (for/list ([a (in-list sites)] [b (in-list (cdr (append sites (list #f))))]
                #:when b)
@@ -4353,8 +4797,9 @@
        (not (for/or ([g (in-list gaps)]) (regexp-match? #rx"//" g)))
        ;; The forms are copied rather than spelled out, so an edit to one of
        ;; them made in the same save moves with it.
-       (let ([span (rng (rng-start (extent (first sites)))
-                        (rng-end (extent (last sites))))])
+       (let ([span (make-range (rng-start (extent (first sites)))
+                               (rng-end (extent (last sites)))
+                               (rng-source (extent (first sites))))])
          (cons span
                (append*
                 (for/list ([st (in-list ordered)] [i (in-naturals)])
@@ -4445,7 +4890,8 @@
             (for/list ([b (in-list actions)]
                        #:when (and (eq? 'added (sync-action-kind b))
                                    (= (sync-action-slide a) (sync-action-slide b))
-                                   (member (sync-action-tag b) tags)))
+                                   (for/or ([t (in-list tags)])
+                                     (same-tag? (sync-action-tag b) t))))
               b)))
      (and (pair? (or arrived '()))
           ;; Every shape it held, and nothing else: a group half of which was
@@ -4496,10 +4942,13 @@
 ;; Whether one range holds another, which is how a nested `at` is told from one
 ;; the canvas holds itself.
 (define (encloses? a b)
-  (and (<= (rng-start a) (rng-start b)) (<= (rng-end b) (rng-end a))))
+  (and (equal? (rng-source a) (rng-source b))
+       (<= (rng-start a) (rng-start b))
+       (<= (rng-end b) (rng-end a))))
 
 ;; A range read out of one place, used inside a copy of it.
-(define (shift-range r start) (rng (- (rng-start r) start) (- (rng-end r) start)))
+(define (shift-range r start)
+  (make-range (- (rng-start r) start) (- (rng-end r) start) (rng-source r)))
 
 ;; Edits inside a string, back to front so the offsets hold.
 (define (splice-string str edits)
@@ -4630,12 +5079,70 @@
 ;; characters, and a generated program has multi-byte ones in it -- a bullet
 ;; glyph is three bytes and one character, so splicing by byte offset lands in
 ;; the wrong place further down the file.
-(define (splice-file! path edits)
+(define (spliced-file-text path edits)
   (define text (file->string path))
-  (define out (splice-nested text edits))
-  ;; Renamed over the program rather than written into it: a save that stops
-  ;; halfway would leave half a program where the whole one was.
-  (write-atomically path (lambda (o) (write-string out o))))
+  (splice-nested text edits))
+
+;; Apply a save to every source module that owns one of its ranges. Ranges are
+;; grouped before any file is written, so offsets from two modules can never be
+;; interpreted against the root program by accident. Every result is rendered
+;; and staged before the first rename. Backups make the sequence transactional
+;; across modules too: if a later rename fails, earlier modules are restored.
+(define (splice-files! root edits)
+  (define by-source
+    (for/fold ([h (hash)]) ([e (in-list edits)])
+      (define source (or (rng-source (first e)) (path->complete-path root)))
+      (hash-update h source (lambda (es) (cons e es)) '())))
+  (define planned
+    (for/list ([(source source-edits) (in-hash by-source)])
+      ;; The grouping fold conses, so restore the order `apply-actions!` chose.
+      ;; Equal-position insertions rely on it: two shapes added in one save must
+      ;; be emitted in the same drawing order as the deck.
+      (cons source (spliced-file-text source (reverse source-edits)))))
+  (define staged '()) ; (list source replacement backup)
+  (define committed '())
+  (define (discard path)
+    (when (and path (file-exists? path))
+      (with-handlers ([exn:fail? void]) (delete-file path))))
+  (define (cleanup!)
+    (for ([s (in-list staged)])
+      (discard (second s))
+      (discard (third s))))
+  (with-handlers
+      ([exn:fail?
+        (lambda (e)
+          ;; A replacement already renamed into place gets its original back.
+          (define unrecovered (make-hash))
+          (for ([s (in-list committed)])
+            (with-handlers ([exn:fail? (lambda (_restore-error)
+                                         ;; Leave this backup beside the source
+                                         ;; rather than discard the only intact
+                                         ;; copy when restoration itself fails.
+                                         (hash-set! unrecovered (third s) #t))])
+              (rename-file-or-directory (third s) (first s) #t)))
+          (for ([s (in-list staged)])
+            (discard (second s))
+            (unless (hash-ref unrecovered (third s) #f)
+              (discard (third s))))
+          (raise e))])
+    (for ([p (in-list planned)])
+      (define source (car p))
+      (define dir (or (path-only source) (current-directory)))
+      (define replacement
+        (make-temporary-file (path->string (build-path dir ".glide-stage~a"))))
+      (define backup
+        (make-temporary-file (path->string (build-path dir ".glide-backup~a"))))
+      (copy-file source backup #t)
+      (call-with-output-file replacement #:exists 'truncate/replace
+        (lambda (o) (write-string (cdr p) o)))
+      (define mode (with-handlers ([exn:fail? (lambda (_e) #f)])
+                     (file-or-directory-permissions source 'bits)))
+      (when mode (file-or-directory-permissions replacement mode))
+      (set! staged (cons (list source replacement backup) staged)))
+    (for ([s (in-list staged)])
+      (rename-file-or-directory (second s) (first s) #t)
+      (set! committed (cons s committed)))
+    (cleanup!)))
 
 ;; What an edit replaces its range with: either a string, or a plan -- strings
 ;; and ranges of the file to copy, in the order they should read.
@@ -4745,6 +5252,30 @@
               (path->string (path-replace-extension (file-name-from-path full)
                                                     ".sync.rktd"))))
 
+;; The watcher already has the picts in hand before it overwrites the editor's
+;; deck. Validate their source identities first, then use the same states as the
+;; new merge base after the export succeeds. This keeps position-derived ids in
+;; step when an ordinary source edit shifts later call sites.
+(define (validate-program-picts! program-path picts
+                                 #:sites [given-sites #f]
+                                 #:scopes [given-scopes #f])
+  (define-values (sites scopes)
+    (if (and given-sites given-scopes)
+        (values given-sites given-scopes)
+        (let-values ([(sites scopes _slide-sites _layout)
+                      (find-program-sites program-path)])
+          (values sites scopes))))
+  (define states (picts->slide-states picts))
+  (validate-runtime-sites sites scopes states program-path)
+  states)
+
+(define (record-program-base! program-path pptx-path #:states [states #f])
+  (define current (or states (validate-program-picts!
+                             program-path (load-program-picts program-path))))
+  (write-sync-base (base-path-for program-path) current
+                   #:program (path->string (path->complete-path program-path))
+                   #:deck (path->string (path->complete-path pptx-path))))
+
 ;; One merge pass: read both sides, merge against the base, patch the source,
 ;; and record the new agreed state.
 ;; `atomic?` is what a save means: either every edit the editor made is written
@@ -4757,6 +5288,12 @@
                    #:workdir [workdir #f]
                    #:dry-run? [dry-run? #f]
                    #:atomic? [atomic? #f])
+  ;; Validate the source map before recording a base or opening an editing
+  ;; session. Waiting until the first deck change would let an untraceable
+  ;; `all_slides` arrangement appear to work and refuse only after the user had
+  ;; edits at stake.
+  (define-values (sites scopes _slide-sites layout)
+    (find-program-sites program-path))
   (define base-file (base-path-for program-path))
   (define-values (base recorded-program _d) (read-sync-base base-file))
   ;; The scratch is picked up rather than cleared when a session starts, so
@@ -4777,7 +5314,9 @@
            (file-name-from-path base-file) recorded-program
            (path->string (path->complete-path program-path))
            (let ([d (path-only base-file)]) (if d (path->string d) base-file))))
-  (define prog0 (program-slide-states program-path))
+  (define picts (load-program-picts program-path))
+  (define prog (validate-program-picts! program-path picts
+                                        #:sites sites #:scopes scopes))
   ;; The program has been loaded now, so the typeface it falls back on is known.
   (define fallback-font (current-default-font))
   ;; The deck is unzipped to be read. When the caller did not say where, this
@@ -4793,7 +5332,6 @@
     (parameterize ([current-slide-tag-names stated])
       (let ([d (pptx->deck pptx-path #:workdir dir)])
         (values d (deck->slide-states d)))))
-  (define prog prog0)
   (define (done! v)
     (when (and (not given-dir) (not (current-keep-work?)))
       (delete-directory/files dir #:must-exist? #f))
@@ -4809,12 +5347,17 @@
      (done! (sync-report '() '() '() '() (not dry-run?) #f))]
     [else
      (define actions
-       (parameterize ([inherited-font fallback-font])
-         (merge-states base prog deck program-path #:deck-ir deck-ir)))
+       (protect-shared-runtime-sites
+        (parameterize ([inherited-font fallback-font])
+          (merge-states base prog deck program-path #:deck-ir deck-ir))
+        (shared-runtime-site-keys sites scopes prog)))
      (cond
        [dry-run? (done! (sync-report actions '() '() '() #f #f))]
        [else
-        (define before-text (file->string program-path))
+        (define before-texts
+          (for/hash ([source (in-list (program-layout-files layout))]
+                     #:when (file-exists? source))
+            (values source (file->string source))))
         (define-values (applied skipped notes behind? refused?)
           (apply-actions! program-path actions #:deck deck-ir #:atomic? atomic?))
         ;; The new base is the program as it now reads, so the next pass
@@ -4834,13 +5377,15 @@
                (with-handlers ([exn:fail? (lambda (e)
                                             (set-box! failed (exn-message e))
                                             #f)])
-                 (program-slide-states program-path))))
+                 (validate-program-picts! program-path
+                                          (load-program-picts program-path)))))
         (cond
           ;; Nothing was written, so there is nothing new for the base to
           ;; record: leaving it alone is what makes the next save try again.
           [refused? (done! (sync-report actions '() skipped notes #f #f))]
           [(unbox failed)
-           (write-atomically program-path (lambda (o) (write-string before-text o)))
+           (for ([(source text) (in-hash before-texts)])
+             (write-atomically source (lambda (o) (write-string text o))))
            (done! (sync-report
                    actions '()
                    (append (for/list ([a (in-list applied)])
@@ -4877,6 +5422,7 @@
           (if (> (length tags) 4) (format " and ~a more" (- (length tags) 4)) "")))
 
 (define (format-sync-report r)
+  (define (shown-tag t) (or (and (string? t) (automatic-tag-name t)) t))
   (define o (open-output-string))
   (define as (sync-report-actions r))
   (cond
@@ -4885,14 +5431,28 @@
      (for ([a (in-list as)] #:unless (eq? 'noted (sync-action-kind a)))
        (fprintf o "  slide ~a  ~a  ~s~a\n" (sync-action-slide a)
                 (~a (sync-action-kind a) #:min-width 12)
-                (sync-action-tag a)
+                (shown-tag (sync-action-tag a))
                 (if (memq (sync-action-kind a) '(moved resized))
                     (let ([g (sync-action-detail a)])
                       (format "  -> ~a,~a ~ax~a"
                               (~r (first g) #:precision 1) (~r (second g) #:precision 1)
                               (~r (third g) #:precision 1) (~r (fourth g) #:precision 1)))
                     "")))
-     (for ([g (in-list (by-reason (sync-report-skipped r)))])
+     ;; Grouped by reason. A deck can have thirty shapes the merge refuses for
+     ;; one structural reason, and thirty identical lines bury the edits that
+     ;; did apply.
+     (define skipped-by-reason
+       (let loop ([sks (sync-report-skipped r)] [order '()] [h (hash)])
+         (cond
+           [(null? sks) (for/list ([why (in-list (reverse order))])
+                          (cons why (reverse (hash-ref h why))))]
+           [else
+            (define why (cdr (car sks)))
+            (loop (cdr sks)
+                  (if (hash-has-key? h why) order (cons why order))
+                  (hash-update h why (lambda (v) (cons (shown-tag (sync-action-tag (car (car sks)))) v))
+                               '()))])))
+     (for ([g (in-list skipped-by-reason)])
        (define tags (cdr g))
        (cond
          [(= 1 (length tags))

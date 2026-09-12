@@ -78,9 +78,11 @@
                                ;; continue below it, because the indentation
                                ;; that would mean is the next entry's.
                                #:width [width LINE-WIDTH]
-                               #:comment? [comment? #t])
+                               #:comment? [comment? #t]
+                               #:identity-tags? [identity-tags? #f])
   (parameterize ([current-media-names names]
-                 [current-deck-font (or font (current-deck-font))])
+                 [current-deck-font (or font (current-deck-font))]
+                 [current-identity-tags? identity-tags?])
     (define head
       (if (or (not comment?) (string=? "" (element-name e)))
           '()
@@ -95,10 +97,12 @@
 (define (rhombus-slide-source s name
                               #:media-names [names (hash)]
                               #:font [font #f]
+                              #:identity-tags? [identity-tags? #f]
                               #:width-expr [width-expr "slide_width"]
                               #:height-expr [height-expr "slide_height"])
   (parameterize ([current-media-names names]
-                 [current-deck-font (or font (current-deck-font))])
+                 [current-deck-font (or font (current-deck-font))]
+                 [current-identity-tags? identity-tags?])
     (define out (open-output-string))
     (write-slide out s name width-expr height-expr)
     ;; The writer ends every line, including the last.
@@ -147,9 +151,9 @@
     (line out 0 "// ~a slides at ~a x ~a pt."
           (length (deck-slides d)) (num-string (deck-width d)) (num-string (deck-height d)))
     (line out 0 "//")
-    (line out 0 "// Every slide_N is a pict, and every `at` carries a tag. Open this with")
-    (line out 0 "// `raco glide` and what you drag in the editor is written back here --")
-    (line out 0 "// nothing else rewrites this file.")
+    (line out 0 "// Every slide_N is a pict. Open this with `raco glide` and what you drag")
+    (line out 0 "// in the editor is written back here; Glide supplies its editor tags from")
+    (line out 0 "// source locations, so they do not have to appear in the program.")
     (newline out)
     (line out 0 "import:")
     (line out 2 "lib(\"glide-pptx/runtime.rhm\") open")
@@ -180,7 +184,8 @@
       (write-slide out s (format "slide_~a" (slide-index s))
                    "slide_width" "slide_height"))
     (newline out)
-    (line out 0 "def all_slides = [~a]"
+    (line out 0 "glide_slides all_slides:")
+    (line out 2 "[~a]"
           (string-join (for/list ([s (in-list (deck-slides d))])
                          (format "slide_~a" (slide-index s)))
                        ", "))

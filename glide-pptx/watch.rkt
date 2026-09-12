@@ -17,7 +17,7 @@
          libreoffice-user-dir glide-macro-files
          watch-loop watch-once program-picts
          soffice-exe powerpoint-installed?
-         current-watch-log)
+         current-watch-log program-content-hash)
 
 (define current-watch-log (make-parameter (lambda (fmt . args)
                                             (apply printf fmt args)
@@ -531,6 +531,25 @@ BASIC
              "\n")))]
     [else (call-with-input-file path sha1)]))
 
+;; A Rhombus program is its root module and the local modules it imports. The
+;; path list is part of the hash, so adding or removing an import is a change
+;; even when the remaining files happen to have the same bytes.
+(define (program-sources program [fallback #f])
+  (define root (simplify-path (path->complete-path program) #f))
+  (with-handlers ([exn:fail? (lambda (_e) (or fallback (list root)))])
+    (program-source-files root)))
+
+(define (sources-content-hash sources)
+  (sha1
+   (open-input-string
+    (string-join
+     (for/list ([source (in-list sources)])
+       (format "~a:~a" (path->string source) (content-hash source)))
+     "\n"))))
+
+(define (program-content-hash program)
+  (sources-content-hash (program-sources program)))
+
 (define (all-files dir)
   (append*
    (for/list ([p (in-list (directory-list dir #:build? #t))])
@@ -547,6 +566,17 @@ BASIC
       [(>= waited limit) h2]
       [else (loop h2 (+ waited quiet))])))
 
+(define (settle-program program #:sources [sources #f]
+                        #:quiet [quiet 0.25] #:limit [limit 5.0])
+  (define watched (or sources (program-sources program)))
+  (let loop ([h (sources-content-hash watched)] [waited 0.0])
+    (sleep quiet)
+    (define h2 (sources-content-hash watched))
+    (cond
+      [(equal? h h2) h2]
+      [(>= waited limit) h2]
+      [else (loop h2 (+ waited quiet))])))
+
 ;; ------------------------------------------------------------------- steps
 
 ;; program -> deck, then show it.
@@ -554,15 +584,24 @@ BASIC
   (log! "program changed -> regenerating ~a\n" (file-name-from-path pptx))
   (define warnings (box '()))
   (with-handlers ([exn:fail? (lambda (e)
-                               (log! "  ! the program did not run: ~a\n"
+                               (log! "  ! regeneration failed: ~a\n"
                                      (first (string-split (exn-message e) "\n")))
                                #f)])
     (define picts (program-picts program))
+    ;; Refuse an untraceable source shape before replacing the editor's deck.
+    ;; The returned states become the new agreed base only after export works.
+    (define states (validate-program-picts! program picts))
     (parameterize ([current-export-warnings warnings])
       (picts->pptx picts pptx #:width w #:height h))
+    ;; The editor and the base advance together. If reload fails, it is still
+    ;; showing the old deck, so recording these new source identities would
+    ;; pair a stale editor document with a future base.
+    (unless ((app-adapter-reload! adapter) pptx)
+      (error 'glide "~a did not reload the regenerated deck"
+             (app-adapter-name adapter)))
+    (record-program-base! program pptx #:states states)
     (for ([m (in-list (remove-duplicates (reverse (unbox warnings))))])
       (log! "  note: ~a\n" m))
-    ((app-adapter-reload! adapter) pptx)
     (log! "  ~a slides written\n" (length picts))
     #t))
 
@@ -705,15 +744,33 @@ BASIC
   ;; Asking the editor whether it is still open costs a subprocess, so it is
   ;; asked on a timer rather than every tick.
   (define open-every (max 1 (inexact->exact (round (/ open-check (max interval 0.01))))))
+  (define (merge-and-refresh!)
+    (define merged? (merge-back! program pptx document adapter workdir))
+    (cond
+      [(not merged?) #f]
+      [(regenerate! program pptx adapter #:width w #:height h) #t]
+      [else
+       ;; `sync-once` has advanced the source and base, but the editor is still
+       ;; showing the saved document with the identities it had before source
+       ;; splices shifted later call sites. Do not accept another editor save
+       ;; against that pairing. Restarting rebuilds it from the program.
+       (error 'glide
+              "watch stopped because the merged deck could not be regenerated and reloaded")]))
   ;; Said once the first deck is written and before the first hash is taken, so
   ;; that "it is watching now" is something anyone can wait for rather than
   ;; guess at. A cold start compiles the runtime and takes seconds.
   (log! "watching for changes\n")
+  ;; Discover imports once per program change, not once per polling tick. If an
+  ;; import is added or removed, the module containing that import is already
+  ;; in this set and changes first; the graph is then refreshed below. Parsing
+  ;; a large talk every 0.4 seconds would otherwise keep a core busy while idle.
+  (define initial-sources (program-sources program))
   (with-handlers ([exn:break? (lambda (_e)
                                 (newline)
                                 (finish! program pptx document adapter workdir
                                          "interrupted"))])
-   (let loop ([prog-hash (content-hash program)]
+   (let loop ([prog-sources initial-sources]
+             [prog-hash (sources-content-hash initial-sources)]
              [doc-hash (content-hash document)]
              [stuck? #f]
              [n 0])
@@ -726,15 +783,16 @@ BASIC
                 (format "~a closed" (app-adapter-name adapter)))]
       [else
        (sleep interval)
-       (define ph (content-hash program))
+       (define ph (sources-content-hash prog-sources))
        (define dh (content-hash document))
        (define changed?
          (or (and ph (not (equal? ph prog-hash)))
              (and dh (not (equal? dh doc-hash)))))
        (cond
          [(and stuck? changed?)
+          (settle-program program #:sources prog-sources)
           (settle document)
-          (define ok? (merge-back! program pptx document adapter workdir))
+          (define ok? (merge-and-refresh!))
           (unless ok?
             (log! "    the program is untouched and the deck is not being rewritten,
 ")
@@ -744,16 +802,25 @@ BASIC
             (log! "    and take the program as it is, delete ~a and save the program.
 "
                   (file-name-from-path (base-path-for program))))
-          (loop (content-hash program) (content-hash document) (not ok?) (add1 n))]
-         [stuck? (loop prog-hash doc-hash #t (add1 n))]
+          (define next-sources (program-sources program prog-sources))
+          (loop next-sources (sources-content-hash next-sources)
+                (content-hash document) (not ok?) (add1 n))]
+         [stuck? (loop prog-sources prog-hash doc-hash #t (add1 n))]
          [(and ph (not (equal? ph prog-hash)))
-          (settle program)
-          (regenerate! program pptx adapter #:width w #:height h)
+          (settle-program program #:sources prog-sources)
+          (unless (regenerate! program pptx adapter #:width w #:height h)
+            ;; Continuing would let a later save from a stale editor document
+            ;; be compared with identities it has never seen. Stop with the old
+            ;; base intact; restarting retries the reload from the program.
+            (error 'glide
+                   "watch stopped because the regenerated deck could not be reloaded"))
           ;; Re-read both, since we just wrote the deck ourselves.
-          (loop (content-hash program) (content-hash document) #f (add1 n))]
+          (define next-sources (program-sources program prog-sources))
+          (loop next-sources (sources-content-hash next-sources)
+                (content-hash document) #f (add1 n))]
          [(and dh (not (equal? dh doc-hash)))
           (settle document)
-          (define ok? (merge-back! program pptx document adapter workdir))
+          (define ok? (merge-and-refresh!))
           (unless ok?
             (log! "    the program is untouched and the deck will not be rewritten,
 ")
@@ -762,5 +829,7 @@ BASIC
                   (app-adapter-name adapter))
             (log! "    there or in the program, and save again.
 "))
-          (loop (content-hash program) (content-hash document) (not ok?) (add1 n))]
-         [else (loop prog-hash doc-hash #f (add1 n))])]))))
+          (define next-sources (program-sources program prog-sources))
+          (loop next-sources (sources-content-hash next-sources)
+                (content-hash document) (not ok?) (add1 n))]
+         [else (loop prog-sources prog-hash doc-hash #f (add1 n))])]))))

@@ -12,7 +12,7 @@
 (require racket/list racket/string racket/math racket/file racket/path
          racket/format racket/class racket/draw
          file/zip
-         "draw-ir.rkt" (prefix-in ir: "ir.rkt"))
+         "draw-ir.rkt" "source-tag.rkt" (prefix-in ir: "ir.rkt"))
 (provide display-pages->pptx current-write-warnings)
 
 (define current-write-warnings (make-parameter #f))
@@ -158,14 +158,18 @@
 
 ;; ------------------------------------------------------------------ shapes
 
-;; An element's tag goes in both `name`, which PowerPoint shows in its Selection
-;; Pane, and `descr`, the alt text. Neither is guaranteed to survive an editor
-;; -- LibreOffice destroys both -- so they are a convenience for matching later,
-;; not something to rely on.
+;; A user-supplied tag is also a useful Selection Pane name. An automatic tag is
+;; deliberately opaque bookkeeping, so it goes only in alt text and the editor
+;; gets its ordinary kind-and-id name instead.
+(define (editor-name tag fallback)
+  (or (automatic-tag-name tag)
+      (and tag (not (automatic-tag? tag)) tag)
+      fallback))
+
 (define (nv-xml id name #:tag [tag #f])
   (format (string-append "<p:nvSpPr><p:cNvPr id=\"~a\" name=\"~a\"~a/>"
                          "<p:cNvSpPr/><p:nvPr/></p:nvSpPr>")
-          id (xml-escape (or tag name))
+          id (xml-escape (editor-name tag name))
           (if tag (format " descr=\"glide-pptx:~a\"" (xml-escape tag)) "")))
 
 (define (xfrm-xml x y w h rot [fh #f] [fv #f])
@@ -454,7 +458,7 @@
            ;; now, so asking for a style here paints it a second time.
            "<a:tbl><a:tblPr/><a:tblGrid>~a</a:tblGrid>~a</a:tbl>"
            "</a:graphicData></a:graphic></p:graphicFrame>")
-          id (xml-escape (or (it:table-tag i) (format "Table ~a" id)))
+          id (xml-escape (editor-name (it:table-tag i) (format "Table ~a" id)))
           (if (it:table-tag i)
               (format " descr=\"glide-pptx:~a\"" (xml-escape (it:table-tag i)))
               "")
@@ -536,7 +540,7 @@
                          "<a:stretch><a:fillRect/></a:stretch></p:blipFill>"
                          "<p:spPr>~a<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>~a</p:spPr>"
                          "</p:pic>")
-          id (xml-escape (or (it:picture-tag i) (format "Picture ~a" id)))
+          id (xml-escape (editor-name (it:picture-tag i) (format "Picture ~a" id)))
           (if (it:picture-tag i)
               (format " descr=\"glide-pptx:~a\"" (xml-escape (it:picture-tag i))) "")
           rid
@@ -566,7 +570,7 @@
                          "<p:spPr>~a<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr>"
                          "</p:pic>")
           id
-          (xml-escape (or (it:image-tag i) (format "Picture ~a" id)))
+          (xml-escape (editor-name (it:image-tag i) (format "Picture ~a" id)))
           (if (it:image-tag i)
               (format " descr=\"glide-pptx:~a\"" (xml-escape (it:image-tag i))) "")
           rid
@@ -659,7 +663,7 @@
                          "<a:chOff x=\"~a\" y=\"~a\"/><a:chExt cx=\"~a\" cy=\"~a\"/>"
                          "</a:xfrm></p:grpSpPr>~a</p:grpSp>")
           id
-          (xml-escape (or (it:group-tag i) (format "Group ~a" id)))
+          (xml-escape (editor-name (it:group-tag i) (format "Group ~a" id)))
           (if (it:group-tag i)
               (format " descr=\"glide-pptx:~a\"" (xml-escape (it:group-tag i))) "")
           (string-append

@@ -417,8 +417,9 @@ the program, so a conflict is a diff a human can read.
 Matching gets easier in this model, not harder. Neither side is matched against a
 fresh export; both are matched against the base, which differs from each only by
 the edits made since the last sync, and which carries the keys. Program side
-matches by `#:tag`; pptx side by annotation if it survived, and by signature
-matching otherwise. One matcher, used on both sides.
+matches by the source identity derived for each `at`; the pptx side uses that
+identity from alt text if it survived, and signature matching otherwise. One
+matcher, used on both sides.
 
 ### Ownership: PowerPoint owns geometry, code owns everything else
 
@@ -501,9 +502,18 @@ is the whole point of generating readable code.
 
 Export works for **any** pict program, through the display list. Two-way sync
 does not: it needs a stable identity per element and somewhere to put the answer,
-so it needs tagged elements -- from our runtime, or from a `#:tag` the user adds
-by hand. That is the real justification for `at` and `#:tag` existing at all, and
-it is worth saying plainly rather than presenting them as decoration.
+so it needs Rhombus source whose slide order and `at` sites can be recovered.
+Ordinary `at` calls get identity from their source locations. A literal `~tag:`
+is only the proxy escape hatch for an outer helper call whose one inner `at`
+would otherwise be instantiated as several independently editable objects.
+
+The running order is declared with `glide_slides`. The macro still produces an
+ordinary `all_slides` list, but it also records the source owner behind each
+presentation-only wrapper. In particular,
+`in_section(0, slide_2)` is shown decorated and synchronized as `slide_2`, while
+`divider(0)` is explicitly a generated page. Arbitrary computed entries are a
+compile-time error, so an untraceable deck cannot appear to work until its first
+editor save.
 
 Patch-mode export also matters more here than it did for one pass. Across
 repeated cycles a synthesized deck would replace the user's template every time;
@@ -530,25 +540,30 @@ Two things that look like the missing feature, and why neither is:
 So we make our own, and it takes three carriers because there are three different
 jobs.
 
-### 1. `at #:tag` -- the source tag, for sync
+### 1. `at` source locations -- the sync identity
 
-```racket
-(at 54.0 167.75 #:tag "Title 1"
-    (textbox #:width 612.0 #:height 115.75 ...))
+```rhombus
+at(54.0, 167.75, ~name: "Title 1",
+   textbox(~width: 612.0, ~height: 115.75, ...))
 ```
 
-This is not metadata on a pict; it is a string literal in the program text. That
-is the point. Merge has to find something *in the file* to patch, and it has to
-survive the program being reformatted, moved or rewritten. A literal `#:tag`
-does; anything computed at runtime does not.
+The Rhombus `at` macro captures this call's source location. Glide hashes the
+file and character position into an opaque identity, writes it to the deck's alt
+text, and recovers the same identity when it parses the source. The optional
+`~name:` is only readable selection-pane metadata and is not part of identity.
 
 `at` is therefore the **unit of sync**: the thing that has a position PowerPoint
 is allowed to change. Elements composed together inside one `at` move as a unit,
 which is the same bargain a PowerPoint group makes. If you want a piece
 positioned independently, give it its own `at`.
 
-A tag has to be a literal for sync. `(at x y #:tag (format "box-~a" i) ...)`
-exports fine and cannot be merged, and that is reported rather than guessed at.
+One `at` used repeatedly on a single slide is one family and can only be edited
+as a family. A source site may also be reused on several slides; it exports
+normally, but a page-local edit is refused because one source change would
+affect every occurrence. When a helper instead creates independently editable
+objects at several outer call sites, each call states a distinct literal
+`~tag:` and passes the tag and `~nudge:` through. A dynamic tag with no such
+source site is rejected before an editing session starts.
 
 ### 2. A `pict` subtype -- the value tag, for capture
 

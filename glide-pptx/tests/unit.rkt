@@ -243,11 +243,25 @@
 (let ()
   (local-require glide-pptx/emit-common glide-pptx/emit-rhombus
                  (only-in glide-pptx/sync find-at-sites at-site-tag)
+                 (only-in glide-pptx/source-tag source-position-tag automatic-tag?
+                          automatic-tag-key automatic-tag-name)
                  (only-in shrubbery/parse parse-all))
   (define (reparses? text)
     (with-handlers ([exn:fail? (lambda (_e) #f)])
       (void (parse-all (open-input-string text)))
       #t))
+
+  (define named-tag (source-position-tag "/tmp/talk.rhm" 42 "Readable"))
+  (check-true (automatic-tag? named-tag))
+  (check-equal? (automatic-tag-name named-tag) "Readable")
+  (check-equal? (automatic-tag-key named-tag)
+                (source-position-tag "/tmp/talk.rhm" 42)
+                "the readable suffix is metadata rather than identity")
+  (check-equal? (source-position-tag (string->path "/tmp/talk.rhm") 42)
+                (source-position-tag "/tmp/talk.rhm" 42)
+                "string and path srcloc sources have the same identity")
+  (check-false (automatic-tag? "source:foo")
+               "the prefix alone does not reserve an explicit user tag")
 
   ;; Nested calls, indented far enough in to cross the threshold.
   (define deep
@@ -268,7 +282,8 @@
 
   ;; And the whole of every fixture, read the way a sync reads it -- which also
   ;; says the reader understood the structure, not merely that it did not choke:
-  ;; every `at` in the file has to come back as a site with its tag.
+  ;; every `at` in the file has to come back as a site with an automatic tag,
+  ;; while none of that editor bookkeeping appears in the emitted program.
   (for ([name (in-list '("01-placeholders" "02-text" "03-shapes"
                          "04-pictures-groups" "05-realistic"))])
     (define d (pptx->deck (build-path decks-dir (string-append name ".pptx"))
@@ -281,9 +296,14 @@
     (check-true (list? sites)
                 (format "~a emits a program the reader accepts: ~a" name sites))
     (when (list? sites)
-      (define written (length (regexp-match* #rx"~tag:" (file->string out))))
+      (define source (file->string out))
+      (define written (length (regexp-match* #px"(?m:^[ ]*at[(])" source)))
       (check-equal? (length sites) written
-                    (format "~a: every `at` written was found again" name)))
+                    (format "~a: every `at` written was found again" name))
+      (check-true (andmap automatic-tag? (map at-site-tag sites))
+                  (format "~a: source locations supply the tags" name))
+      (check-false (regexp-match? #rx"~tag:" source)
+                   (format "~a: tags are absent from the program" name)))
     (delete-file out)))
 
 ;; ------------------------------------------- a leading space is not a wrap

@@ -15,6 +15,7 @@ import:
   pict as pc
 
 export:
+  glide_slides
   slide_canvas
   from_stage
   over
@@ -65,6 +66,48 @@ export:
   blank
   vstack
   hstack
+
+// A deck remains an ordinary `List` for user code, while this declaration also
+// records a private manifest, which records the source slide behind each
+// show-time wrapper. Only these three entry shapes are accepted, so a deck that
+// cannot be traced back to source is rejected when it is compiled instead of
+// after an editor change:
+//
+//   glide_slides all_slides:
+//     [slide_1,
+//      divider(0),
+//      in_section(0, slide_2)]
+//
+// `in_section` uses its final identifier as the source owner, while `divider`
+// is a generated page with no source canvas. `show_as` and `show_only` are the
+// corresponding escape hatches for other decorators and generated pages; they
+// are marker forms understood only here and do not enter the user program as
+// functions.
+expr.macro
+| 'glide_slide_entry($(('in_section($section, $(owner :: Identifier))' && shown)))':
+    'rt.#{make-slide-spec}(#'$owner, $owner, $shown)'
+| 'glide_slide_entry($(('divider($arg, ...)' && shown)))':
+    'rt.#{make-slide-spec}(#false, #false, $shown)'
+| 'glide_slide_entry(show_as($(owner :: Identifier), $shown))':
+    'rt.#{make-slide-spec}(#'$owner, $owner, $shown)'
+| 'glide_slide_entry(show_only($shown))':
+    'rt.#{make-slide-spec}(#false, #false, $shown)'
+| 'glide_slide_entry($(owner :: Identifier))':
+    'rt.#{make-slide-spec}(#'$owner, $owner, $owner)'
+| 'glide_slide_entry($bad)':
+    syntax_meta.error(
+      "glide_slides: expected a slide name, in_section(section, slide), divider(section), show_as(slide, shown), or show_only(shown)",
+      bad)
+
+defn.macro 'glide_slides $name:
+              [$entry, ...]':
+  '«def glide_slide_manifest:
+       [glide_slide_entry($entry), ...]
+    def $name:
+      rt.#{register-slide-manifest}(
+        glide_slide_manifest,
+        for List (entry in glide_slide_manifest):
+          rt.#{slide-spec-shown}(entry))»'
 
 // A Rhombus list is not a Racket list, so anything crossing into the Racket
 // runtime as a list argument is converted here. Generated code can then use
@@ -129,8 +172,20 @@ fun to_rkt_spec(spec):
 fun transition_of(s):
   rt.#{canvas-transition}(s)
 
-fun at(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~nudge: nudge = #false):
-  rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~nudge: to_rkt_list(nudge))
+// A deck needs an identifier that connects an editor object back to this call,
+// but the program should not have to carry that bookkeeping. The macro captures
+// the call site's source location and the Racket runtime turns it into an opaque
+// alt-text tag. An explicit `~tag:` still wins when one source site intentionally
+// draws a named family of elements.
+fun at_impl(x, y, p, ~rotate: rot = 0.0, ~tag: tag = #false, ~name: name = #false,
+            ~nudge: nudge = #false, ~source_location: source_location = #false):
+  rt.#{at}(x, y, p, ~rotate: rot, ~tag: tag, ~name: name,
+           ~nudge: to_rkt_list(nudge),
+           ~#{source-location}: source_location)
+
+expr.macro 'at($arg, ...)':
+  ~op_stx: who
+  'at_impl($arg, ..., ~source_location: $(who.srcloc()))'
 
 // What to call what this pict draws, wherever it ends up.
 //
@@ -291,7 +346,13 @@ fun slide_pages(s0):
   def s = forced(s0)
   match s
   | q :: pc.Pict:
-      for List (i in 0 .. math.max(1, q.duration)): q.snapshot(i, 1.0).handle
+      // The end of each epoch is the picture that epoch's press lands on. A pict
+      // padded to start before epoch 0 has an arrival animation -- see `~lead_in:`
+      // in `staged.rhm` -- and the press that arrives lands on the end of *that*
+      // epoch, so it is a page too, and without it the backup would be missing the
+      // one picture the slide rests on.
+      def first = if q.epoch_extent(-1) == 0 | 0 | -1
+      for List (i in first .. math.max(1, q.duration)): q.snapshot(i, 1.0).handle
   | ~else: [s]
 
 // `~hidden:` is checked here rather than left to the Racket side, because a

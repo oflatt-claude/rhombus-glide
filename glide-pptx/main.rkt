@@ -374,8 +374,9 @@
 
 ;; A slideshow to start from. It is built as a deck and written by the same
 ;; emitter that writes an imported one, so a new program is in the dialect
-;; glide reads back -- the tags, the `all_slides` list, the slideshow and PDF
-;; submodules -- rather than a second idiom that has to be kept in step.
+;; glide reads back -- source-derived identities, the `all_slides` list, the
+;; slideshow and PDF submodules -- rather than a second idiom that has to be
+;; kept in step.
 (define (starter-deck)
   (define (box x y w h) (bbox x y w h 0.0 #f #f))
   (define (words text size bold?)

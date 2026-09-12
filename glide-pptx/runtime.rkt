@@ -6,13 +6,16 @@
 ;; rest of `pict`, and animated, without knowing anything about pptx.
 (require racket/treelist racket/class racket/list racket/math racket/string racket/promise
          racket/draw pict
-         "ir.rkt" "geometry.rkt" "tagged.rkt")
+         "ir.rkt" "geometry.rkt" "tagged.rkt" "source-tag.rkt")
 (provide shown-picts canvas-transition canvas-hidden?
          set-slide-numbers! slide-numbers? slide-numbers-on? number-on
          forget-bitmaps!
+         (struct-out slide-spec) make-slide-spec
+         register-slide-manifest slide-manifest-ref
          ;; composition
          (struct-out placed) at tag-pict slide-canvas from-stage pin-placed
          placed-position
+         source-location-tag automatic-tag? automatic-tag-key automatic-tag-name
          ;; structure carried on the pict, for export
          (all-from-out "tagged.rkt")
          ;; leaves
@@ -42,6 +45,26 @@
 (define (warn! msg)
   (define b (runtime-warnings))
   (when b (set-box! b (cons msg (unbox b)))))
+
+;; A `glide_slides` declaration keeps the ordinary list that user code expects,
+;; and additionally registers a manifest for synchronization. `source` is the
+;; undecorated slide that owns editor changes; `shown` is what the slideshow,
+;; PDF, and direct exporter use. A generated page such as a section divider has
+;; neither an owner nor a separate source value; the loader uses its shown value
+;; so page numbering stays aligned.
+(struct slide-spec (owner source shown) #:transparent)
+
+(define (make-slide-spec owner source shown)
+  (slide-spec owner source shown))
+
+(define slide-manifests (make-weak-hasheq))
+
+(define (register-slide-manifest specs slides)
+  (hash-set! slide-manifests slides specs)
+  slides)
+
+(define (slide-manifest-ref slides [failure-result #f])
+  (hash-ref slide-manifests slides failure-result))
 
 ;; ------------------------------------------------------------------- paint
 
@@ -851,9 +874,9 @@
 
 ;; An element positioned on a slide. `rot` is degrees clockwise about the
 ;; element's center, matching PowerPoint.
-;; `tag` names the element for export and for merging edits back. It is the
-;; PowerPoint shape name, and it has to be a literal in the source for a merge
-;; to be able to find it.
+;; `tag` names the element for export and for merging edits back. Rhombus's
+;; `at` macro supplies an opaque tag derived from the call's source location;
+;; an explicit tag overrides it for a site that deliberately names a family.
 ;;
 ;; `nudge` is a `(list dx dy)` correction added to the position. It exists for
 ;; the case where x and y are *computed* -- `(at margin (+ top 20) ...)` -- and
@@ -865,8 +888,15 @@
 ;; these two numbers, so corrections cannot stack up the way nested pads do.
 (struct placed (x y rot pict tag nudge) #:transparent)
 
-(define (at x y p #:rotate [rot 0.0] #:tag [tag #f] #:nudge [nudge #f])
-  (placed x y rot p tag nudge))
+(define (at x y p #:rotate [rot 0.0] #:tag [tag #f] #:name [name #f] #:nudge [nudge #f]
+            #:source-location [source-location #f])
+  ;; A name already carried by the pict is an explicit user identity too. It
+  ;; predates automatic source tags and is how a pict placed by a helper keeps
+  ;; its name; the fallback must not hide it merely because `at` also has a
+  ;; source location.
+  (define desc (and (pict? p) (pict-desc p)))
+  (define pict-tag (and (name-desc? desc) (name-desc-name desc)))
+  (placed x y rot p (or tag pict-tag (source-location-tag source-location name)) nudge))
 
 ;; The same name, put on the pict rather than on the placement, for a pict
 ;; something other than a canvas will place: see `name-desc`.

@@ -23,6 +23,11 @@
 (define-runtime-path decks-dir "decks")
 (define-runtime-path media-dir "media")
 
+;; Source-derived ids are deliberately bookkeeping. A source edit can move a
+;; later call site and therefore change its opaque id without changing which
+;; editor object the user sees.
+(define (visible-tag t) (or (and t (automatic-tag-name t)) t))
+
 (define work (build-path (find-system-path 'temp-dir) "glide-pptx-sync"))
 (delete-directory/files work #:must-exist? #f)
 (make-directory* work)
@@ -53,7 +58,8 @@
   (define moves (filter (lambda (a) (eq? 'moved (sync-action-kind a)))
                         (sync-report-actions r)))
   (check-equal? (length moves) 1 "exactly one element moved")
-  (check-equal? (sync-action-tag (first moves)) "Rounded Rectangle 2")
+  (check-equal? (automatic-tag-name (sync-action-tag (first moves)))
+                "Rounded Rectangle 2")
   (check-equal? (length (sync-report-applied r)) 1 "and it was applied")
 
   (define after (file->string program))
@@ -187,7 +193,7 @@
   (check-equal? (length changed) 1 "exactly one line of Rhombus source changed")
   (check-true (regexp-match? #rx"at[(]111[.]0, 222[.]0," (cdr (first changed)))
               "with its commas intact")
-  (check-true (regexp-match? #rx"~tag: \"Rounded Rectangle 2\"" (cdr (first changed)))
+  (check-true (regexp-match? #rx"~name: \"Rounded Rectangle 2\"" (cdr (first changed)))
               "and the rest of the line untouched")
   ;; And it is still a Rhombus program. Loading it is the check: running it
   ;; opens a slideshow, which needs a display.
@@ -195,17 +201,374 @@
 
 (printf "sync tests done; artifacts under ~a\n" work)
 
-;; ------------------------------------- a tag is per slide, not per program
+;; --------------------------------------- slides owned by imported source files
 
-;; A real deck names shapes per slide, so "Title 1" exists on every slide. The
-;; merge has to patch the slide that moved: keying sites by tag alone silently
-;; rewrote slide 1 when slide 3 was dragged.
+;; The root owns the order; each imported module owns its slide definition and
+;; element literals. A deck save can touch both modules in one transaction, and
+;; a slide reorder still belongs to the root list.
+(let ()
+  (define dir (build-path work "multiple-files"))
+  (make-directory* dir)
+  (define program (build-path dir "talk.rhm"))
+  (define first-source (build-path dir "first.rhm"))
+  (define common-source (build-path dir "common.rhm"))
+  (define second-source (build-path dir "second.rhm"))
+  (define computed-program (build-path dir "computed.rhm"))
+  (define exported (build-path dir "talk.pptx"))
+  (define (write-source! path lines)
+    (display-to-file (string-join (append lines '("")) "\n") path #:exists 'replace))
+  (write-source!
+   common-source
+   '("#lang rhombus/and_meta"
+     "import: lib(\"glide-pptx/runtime.rhm\") open"
+     "export: first_fill"
+     "def first_fill = hex(\"4472C4\")"))
+  (write-source!
+   first-source
+   '("#lang rhombus/and_meta"
+     "import:"
+     "  lib(\"glide-pptx/runtime.rhm\") open"
+     "  \"common.rhm\" open"
+     "export:"
+     "  slide_1"
+     "  first_marker"
+     "def first_marker = 1"
+     "fun section_wrap(mk): mk()"
+     "fun slide_1():"
+     "  fun content():"
+     "    slide_canvas("
+     "      ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+     "      at(40.0, 60.0,"
+     "         shape_pict(~width: 100.0, ~height: 40.0, ~fill: first_fill))"
+     "    )"
+     "  section_wrap(content)"))
+  (write-source!
+   second-source
+   '("#lang rhombus/and_meta"
+     "import: lib(\"glide-pptx/runtime.rhm\") open"
+     "export:"
+     "  slide_2"
+     "  second_marker"
+     "def second_marker = 2"
+     "def first_fill = hex(\"112233\")" ; private and unrelated to common.rhm's name
+     "def slide_2 = slide_canvas("
+     "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+     "  at(200.0, 80.0,"
+     "     shape_pict(~width: 120.0, ~height: 50.0, ~fill: hex(\"ED7D31\")))"
+     ")"))
+  (write-source!
+   program
+   '("#lang rhombus/and_meta"
+     "import:"
+     "  lib(\"glide-pptx/runtime.rhm\") open"
+     "  \"first.rhm\" open"
+     "  \"second.rhm\" open"
+     "export: all_slides"
+     "// The show-time wrapper deliberately throws its source structure away."
+     "// The manifest makes Glide load slide_1 itself for synchronization."
+     "fun in_section(i, mk): fun (): blank(480.0, 270.0)"
+     "glide_slides all_slides:"
+     "  [in_section(0, slide_1), slide_2]"))
+  (write-source!
+   computed-program
+   '("#lang rhombus/and_meta"
+     "import:"
+     "  lib(\"glide-pptx/runtime.rhm\") open"
+     "  \"first.rhm\" open"
+     "export: all_slides"
+     "glide_slides all_slides:"
+     "  [section_wrap(slide_1)]"))
+
+  (check-exn #rx"traceable `all_slides`"
+             (lambda () (find-program-sites computed-program))
+             "wrappers in `all_slides` are rejected before they make source mapping ambiguous")
+  (check-exn #rx"glide_slides: expected a slide name"
+             (lambda () (load-program-picts computed-program))
+             "the macro rejects an ambiguous wrapper when the program compiles")
+
+  (check-equal? (program-source-files program)
+                (map path->complete-path
+                     (list program first-source common-source second-source))
+                "transitive local Rhombus imports are the editable source set")
+  (define-values (sites _scopes _slide-sites layout) (find-program-sites program))
+  (check-true
+   (and (hash-has-key? (program-layout-globals layout)
+                       (cons (path->complete-path common-source) 'first_fill))
+        (hash-has-key? (program-layout-globals layout)
+                       (cons (path->complete-path second-source) 'first_fill)))
+   "private shared-value names stay qualified by their source module")
+  (define first-tag (at-site-tag (first sites)))
+  (define second-tag (at-site-tag (second sites)))
+  (check-equal? (map (lambda (s) (rng-source (at-site-whole s))) sites)
+                (map path->complete-path (list first-source second-source))
+                "each recovered site remembers the module that owns it")
+
+  (picts->pptx (load-program-picts program) exported #:width 480.0 #:height 270.0)
+  (check-exn #rx"traceable `all_slides`"
+             (lambda () (sync-once computed-program exported
+                                   #:workdir (build-path dir "computed-w")))
+             "a sync refuses the untraceable list before recording a base")
+  (sync-once program exported #:workdir (build-path dir "w"))
+  (define root-before (file->string program))
+  (define first-before (file->string first-source))
+  (check-true (drag-in-deck! exported 2 second-tag 222.0 111.0))
+  (define r1 (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (length (sync-report-applied r1)) 1)
+  (check-equal? (file->string program) root-before "the root was not regenerated")
+  (check-equal? (file->string first-source) first-before "the other module was untouched")
+  (check-regexp-match #rx"at[(]222[.]0, 111[.]0" (file->string second-source)
+                      "the edit landed in the imported module")
+
+  ;; One editor save can patch source ranges in two modules.
+  (check-true (drag-in-deck! exported 1 first-tag 75.0 95.0))
+  (check-true (drag-in-deck! exported 2 second-tag 260.0 120.0))
+  (define r2 (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (length (sync-report-applied r2)) 2)
+  (check-regexp-match #rx"at[(]75[.]0, 95[.]0" (file->string first-source))
+  (check-regexp-match #rx"at[(]260[.]0, 120[.]0" (file->string second-source))
+  (check-true (pair? (load-program-picts program)) "the split program still loads")
+
+  ;; The bare colour in first.rhm resolves through its direct open import and
+  ;; export declaration. The private same-named definition in the sibling
+  ;; module is never a candidate merely because it has the same spelling.
+  (check-true
+   (edit-after-tag! exported 1 first-tag #px"<a:srgbClr val=\"[0-9A-Fa-f]+\"/>"
+                    "<a:srgbClr val=\"70AD47\"/>"))
+  (define r-style
+    (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r-style)) '(restyle))
+  (check-regexp-match #rx"def first_fill = hex[(]\"70AD47\"[)]"
+                      (file->string common-source)
+                      "the exported imported binding was rewritten")
+  (check-regexp-match #rx"def first_fill = hex[(]\"112233\"[)]"
+                      (file->string second-source)
+                      "the sibling module's private homonym was untouched")
+
+  ;; Navigation order remains a property of the root module.
+  (check-true (move-slide! exported 2 1))
+  (define r3 (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (length (sync-report-applied r3)) 1)
+  (check-regexp-match #rx"[[]slide_2, in_section[(]0, slide_1[)][]]"
+                      (file->string program)
+                      "reordering preserves the complete wrapper entry")
+
+  ;; Deleting that first deck slide removes its definition and export from the
+  ;; helper, and its ordering entry from the root.
+  (check-true (delete-slide! exported 1))
+  (define r4 (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (length (sync-report-applied r4)) 1)
+  (check-false (regexp-match? #rx"slide_2" (file->string second-source)))
+  (check-regexp-match #rx"second_marker" (file->string second-source))
+  (check-regexp-match #rx"[[]in_section[(]0, slide_1[)][]]" (file->string program))
+  (check-true (pair? (load-program-picts program)) "the deletion left the split program valid"))
+
+;; A named function may delegate to raw slide content through a section
+;; wrapper. An explicit tag on a helper call is the escape hatch for a helper
+;; whose inner `at` is invoked as independently editable objects; when that tag
+;; is unique, it remains traceable through the wrapper's extra scope.
+(let ()
+  (define dir (build-path work "named-wrapper-proxy"))
+  (make-directory* dir)
+  (define program (build-path dir "talk.rhm"))
+  (define exported (build-path dir "talk.pptx"))
+  (display-to-file
+   (string-join
+    '("#lang rhombus/and_meta"
+      "import: lib(\"glide-pptx/runtime.rhm\") open"
+      "export: all_slides"
+      "fun section_wrap(mk): mk()"
+      "fun place(x, y, ~tag: tag, ~nudge: nudge = #false):"
+      "  at(x, y, ~tag: tag, ~nudge: nudge,"
+      "     shape_pict(~width: 100.0, ~height: 40.0, ~fill: hex(\"4472C4\")))"
+      "def start_x = 40.0"
+      "def start_y = 60.0"
+      "fun raw_slide():"
+      "  slide_canvas(~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+      "               place(start_x, start_y, ~tag: \"Box\"))"
+      "fun slide_1(): section_wrap(raw_slide)"
+      "def all_slides = [slide_1]"
+      "")
+    "\n")
+   program #:exists 'replace)
+  (picts->pptx (load-program-picts program) exported #:width 480.0 #:height 270.0)
+  (sync-once program exported #:workdir (build-path dir "w"))
+  (check-true (drag-in-deck! exported 1 "Box" 100.0 90.0))
+  (define r (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved))
+  (check-regexp-match #rx"place[(]start_x, start_y, ~tag: \"Box\", ~nudge: [[]60[.]0, 30[.]0[]]"
+                      (file->string program)
+                      "the correction landed on the unique helper call behind the wrapper"))
+
+;; A proxy need not expose coordinates when it states a literal correction.
+;; This is useful for a title helper whose position is an implementation detail:
+;; the call site still owns any editor adjustment.
+(let ()
+  (define dir (build-path work "nudge-only-proxy"))
+  (make-directory* dir)
+  (define program (build-path dir "talk.rhm"))
+  (define exported (build-path dir "talk.pptx"))
+  (display-to-file
+   (string-join
+    '("#lang rhombus/and_meta"
+      "import: lib(\"glide-pptx/runtime.rhm\") open"
+      "export: all_slides"
+      "fun titled(title, ~tag: tag, ~nudge: nudge):"
+      "  slide_canvas(~width: 480.0, ~height: 270.0,"
+      "               at(40.0, 60.0, ~tag: tag, ~name: title, ~nudge: nudge,"
+      "                  shape_pict(~width: 100.0, ~height: 40.0)))"
+      "fun slide_1(): titled(\"One\", ~tag: \"Title\", ~nudge: [0.0, 0.0])"
+      "def all_slides = [slide_1]"
+      "")
+    "\n")
+   program #:exists 'replace)
+  (picts->pptx (load-program-picts program) exported #:width 480.0 #:height 270.0)
+  (void (sync-once program exported #:workdir (build-path dir "w")))
+  (check-true (drag-in-deck! exported 1 "Title" 75.0 85.0))
+  (define r (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved))
+  (check-regexp-match #rx"~nudge: [[]35[.]0, 25[.]0[]]" (file->string program)
+                      "the helper call's stated correction was updated"))
+
+;; A computed display name is available when the program runs but not while its
+;; source is parsed. It decorates the automatic id without becoming identity,
+;; so the runtime object and the static call site still meet.
+(let ()
+  (define dir (build-path work "dynamic-name"))
+  (make-directory* dir)
+  (define program (build-path dir "talk.rhm"))
+  (define exported (build-path dir "talk.pptx"))
+  (display-to-file
+   (string-join
+    '("#lang rhombus/and_meta"
+      "import: lib(\"glide-pptx/runtime.rhm\") open"
+      "export: all_slides"
+      "fun slide_1():"
+      "  def title = \"Computed Name\""
+      "  slide_canvas(~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+      "               at(40.0, 60.0, ~name: title,"
+      "                  shape_pict(~width: 100.0, ~height: 40.0)))"
+      "def all_slides = [slide_1]"
+      "")
+    "\n")
+   program #:exists 'replace)
+  (define static-tag (at-site-tag (first (find-at-sites program))))
+  (define runtime-tag
+    (el-state-tag (first (slide-state-elements (first (program-slide-states program))))))
+  (check-equal? (automatic-tag-key runtime-tag) (automatic-tag-key static-tag)
+                "a dynamic name does not change source identity")
+  (check-equal? (automatic-tag-name runtime-tag) "Computed Name")
+  (picts->pptx (load-program-picts program) exported #:width 480.0 #:height 270.0)
+  (sync-once program exported #:workdir (build-path dir "w"))
+  (check-true (drag-in-deck! exported 1 runtime-tag 90.0 80.0))
+  (define r (sync-once program exported #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (map sync-action-kind (sync-report-applied r)) '(moved))
+  (check-regexp-match #rx"at[(]90[.]0, 80[.]0" (file->string program)))
+
+;; Reusing one source site on separate slides is renderable, but a page-local
+;; edit is not independently writable: changing the source would change every
+;; occurrence. The merge refuses that save. An entirely dynamic tag with no
+;; static proxy is rejected before a base is recorded at all.
+(let ()
+  (define dir (build-path work "untraceable-runtime-sites"))
+  (make-directory* dir)
+  (define repeated (build-path dir "repeated.rhm"))
+  (define repeated-deck (build-path dir "repeated.pptx"))
+  (define orphan (build-path dir "orphan.rhm"))
+  (display-to-file
+   (string-join
+    '("#lang rhombus/and_meta"
+      "import: lib(\"glide-pptx/runtime.rhm\") open"
+      "export: all_slides"
+      "fun common(title):"
+      "  slide_canvas(~width: 480.0, ~height: 270.0,"
+      "               at(40.0, 60.0, ~name: title,"
+      "                  shape_pict(~width: 100.0, ~height: 40.0)))"
+      "fun slide_1(): common(\"One\")"
+      "fun slide_2(): common(\"Two\")"
+      "def all_slides = [slide_1, slide_2]"
+      "")
+    "\n")
+   repeated #:exists 'replace)
+  (define repeated-picts (load-program-picts repeated))
+  (check-not-exn (lambda () (validate-program-picts! repeated repeated-picts))
+                 "a shared source object can be rendered on several pages")
+  (picts->pptx repeated-picts repeated-deck #:width 480.0 #:height 270.0)
+  (void (sync-once repeated repeated-deck #:workdir (build-path dir "repeated-w")))
+  (define shared-tag
+    (el-state-tag (first (slide-state-elements
+                          (first (program-slide-states repeated))))))
+  (define repeated-before (file->string repeated))
+  (check-true (drag-in-deck! repeated-deck 1 shared-tag 90.0 80.0))
+  (define repeated-report
+    (sync-once repeated repeated-deck #:workdir (build-path dir "repeated-w")
+               #:atomic? #t))
+  (check-equal? (sync-report-applied repeated-report) '())
+  (check-regexp-match #rx"also appears on slides"
+                      (cdr (first (sync-report-skipped repeated-report)))
+                      "a page-local edit to a shared source object is refused")
+  (check-equal? (file->string repeated) repeated-before)
+
+  ;; The same hazard exists for an explicit tag written on the inner helper.
+  (display-to-file
+   (string-join
+    '("#lang rhombus/and_meta"
+      "import: lib(\"glide-pptx/runtime.rhm\") open"
+      "export: all_slides"
+      "fun common():"
+      "  slide_canvas(~width: 480.0, ~height: 270.0,"
+      "               at(40.0, 60.0, ~tag: \"Shared\","
+      "                  shape_pict(~width: 100.0, ~height: 40.0)))"
+      "fun slide_1(): common()"
+      "fun slide_2(): common()"
+      "def all_slides = [slide_1, slide_2]"
+      "")
+    "\n")
+   repeated #:exists 'replace)
+  (define old-base (base-path-for repeated))
+  (when (file-exists? old-base) (delete-file old-base))
+  (picts->pptx (load-program-picts repeated) repeated-deck #:width 480.0 #:height 270.0)
+  (void (sync-once repeated repeated-deck #:workdir (build-path dir "explicit-w")))
+  (check-true (drag-in-deck! repeated-deck 1 "Shared" 100.0 90.0))
+  (define explicit-report
+    (sync-once repeated repeated-deck #:workdir (build-path dir "explicit-w")
+               #:atomic? #t))
+  (check-equal? (sync-report-applied explicit-report) '())
+  (check-regexp-match #rx"also appears on slides"
+                      (cdr (first (sync-report-skipped explicit-report)))
+                      "an explicit inner tag cannot bypass the family check")
+
+  (display-to-file
+   (string-join
+    '("#lang rhombus/and_meta"
+      "import: lib(\"glide-pptx/runtime.rhm\") open"
+      "export: all_slides"
+      "fun common(tag):"
+      "  slide_canvas(~width: 480.0, ~height: 270.0,"
+      "               at(40.0, 60.0, ~tag: tag,"
+      "                  shape_pict(~width: 100.0, ~height: 40.0)))"
+      "fun slide_1(): common(\"orphan\")"
+      "def all_slides = [slide_1]"
+      "")
+    "\n")
+   orphan #:exists 'replace)
+  (check-exn #rx"no writable source site"
+             (lambda () (validate-program-picts! orphan (load-program-picts orphan)))
+             "a dynamic runtime tag cannot slip through initial validation"))
+
+;; ------------------------------------- source ids distinguish repeated names
+
+;; A real deck names shapes per slide, so "Title 1" exists on every slide. Each
+;; source call nevertheless gets its own hidden id, and the merge has to patch
+;; the call that drew slide 3 rather than either of the other titles.
 (let ()
   (define-values (dir program exported) (fixture "perslide" "01-placeholders.pptx"))
   (define before (file->string program))
   (define tags (for/list ([s (in-list (find-at-sites program))]) (at-site-tag s)))
-  (check-equal? (length (filter (lambda (t) (string=? t "Title 1")) tags)) 3
-                "the fixture does reuse one tag across slides")
+  (check-equal? (length (filter (lambda (t) (equal? (automatic-tag-name t) "Title 1"))
+                                tags))
+                3 "all three source ids retain the editor-facing name")
+  (check-equal? (length (remove-duplicates tags)) (length tags)
+                "while each source call has a distinct identity")
 
   (check-true (drag-in-deck! exported 3 "Title 1" 111.0 222.0) "the shape to drag was found")
   (define r (sync-once program exported #:workdir (build-path dir "syncwork")))
@@ -218,7 +581,7 @@
   ;; The patched `at` is the one under `slide-3`, which is the last of the three.
   (define (title-lines text)
     (for/list ([l (in-list (string-split text "\n"))]
-               #:when (regexp-match? #rx"~tag: \"Title 1\"" l))
+               #:when (regexp-match? #rx"~name: \"Title 1\"" l))
       l))
   (define b (title-lines before))
   (define a (title-lines (file->string program)))
@@ -335,17 +698,15 @@
   (void (sync-once program deck #:workdir (build-path dir "w")))
   (check-true (drag-in-deck! deck 1 "Box" 300.0 300.0))
   ;; The drag could land on either `at`, so it is not written. It is this
-  ;; slide's edits that are refused, not the file's: a program can have one
-  ;; hand-written slide the merge cannot read -- a slide given stages holds
-  ;; several canvases and repeats their tags -- and everything else about the
-  ;; deck, its order included, still merges.
+  ;; slide's edit that is refused, while unambiguous edits elsewhere can still
+  ;; merge.
   (define r (sync-once program deck #:workdir (build-path dir "w")))
   (check-equal? (map sync-action-kind (sync-report-applied r)) '()
                 "an edit that could land on either `at` form is not written")
   (check-equal? (length (sync-report-skipped r)) 1 "it is refused, and said so")
   (check-regexp-match #rx"appears 2 times" (cdr (first (sync-report-skipped r)))
                       "with what is wrong with the program")
-  (check-regexp-match #rx"different tags" (cdr (first (sync-report-skipped r)))
+  (check-regexp-match #rx"distinct literal" (cdr (first (sync-report-skipped r)))
                       "and what to do about it")
   (check-regexp-match #rx"at[(]200[.]0, 60[.]0" (file->string program)
                       "the program is untouched"))
@@ -382,10 +743,10 @@
   ;; What matters is the invariant: the program now draws what the deck holds.
   (define prog-tags
     (for/list ([s (in-list (program-slide-states program))])
-      (map el-state-tag (slide-state-elements s))))
+      (map (lambda (e) (visible-tag (el-state-tag e))) (slide-state-elements s))))
   (define deck-tags
     (for/list ([s (in-list (deck-states-by-name exported (build-path dir "cmp")))])
-      (map el-state-tag (slide-state-elements s))))
+      (map (lambda (e) (visible-tag (el-state-tag e))) (slide-state-elements s))))
   (check-equal? prog-tags deck-tags "program and deck hold the same elements, in order")
 
   ;; And a second pass has nothing to do, so the edit converged.
@@ -428,7 +789,7 @@
   (define texts (filter (lambda (a) (eq? 'retext (sync-action-kind a)))
                         (sync-report-actions r)))
   (check-equal? (length texts) 1 "a text edit is reported, not raised")
-  (check-equal? (sync-action-tag (first texts)) "TextBox 1")
+  (check-equal? (automatic-tag-name (sync-action-tag (first texts))) "TextBox 1")
   (check-equal? (length (sync-report-applied r)) 1 "and applied")
   (check-regexp-match #rx"\"Rewritten\"" (file->string program)
                       "the string literal in the source was replaced")
@@ -443,7 +804,7 @@
 ;; whole point of the round trip.
 (define (deck-shape pptx dir tag)
   (for/list ([s (in-list (deck-states-by-name pptx (build-path dir tag)))])
-    (map el-state-tag (slide-state-elements s))))
+    (map (lambda (e) (visible-tag (el-state-tag e))) (slide-state-elements s))))
 
 (let ()
   (define-values (dir program exported) (fixture "addslide" "05-realistic.pptx"))
@@ -461,7 +822,7 @@
   ;; It reads like the rest of the file: a rule, a name, a canvas.
   (define src (file->string program))
   (check-regexp-match #rx"def slide_4 = slide_canvas[(]" src)
-  (check-regexp-match #rx"all_slides = [[]slide_1, slide_2, slide_3, slide_4[]]" src)
+  (check-regexp-match #rx"[[]slide_1, slide_2, slide_3, slide_4[]]" src)
   (check-regexp-match #rx"\n  slide_4\n" src "and it is exported like the others")
 
   ;; The program now draws four slides, and re-exporting reproduces the deck
@@ -489,7 +850,7 @@
 
   (define r (sync-once program exported #:workdir (build-path dir "w2")))
   (check-equal? (length (sync-report-applied r)) 1 "the paste was applied")
-  (check-regexp-match #rx"all_slides = [[]slide_4, slide_1, slide_2, slide_3[]]"
+  (check-regexp-match #rx"[[]slide_4, slide_1, slide_2, slide_3[]]"
                       (file->string program)
                       "the new slide is first in the order")
 
@@ -510,7 +871,7 @@
   (define r (sync-once program exported #:workdir (build-path dir "w2")))
   (check-equal? (length (sync-report-applied r)) 2 "both were applied")
   (define src (file->string program))
-  (check-regexp-match #rx"all_slides = [[]slide_1, slide_2, slide_3, slide_4, slide_5[]]" src)
+  (check-regexp-match #rx"[[]slide_1, slide_2, slide_3, slide_4, slide_5[]]" src)
 
   (check-equal? (length (load-program-picts program)) 5 "the program builds five slides")
   (define again (build-path dir "again.pptx"))
@@ -595,7 +956,7 @@
 ;; The five numbers rounded, and the two flips as they are -- `el-geometry` ends
 ;; in booleans, which do not round.
 (define (shape-of e)
-  (cons (el-state-tag e)
+  (cons (visible-tag (el-state-tag e))
         (append (for/list ([v (in-list (take (el-geometry e) 5))])
                   (/ (round (* 10.0 v)) 10.0))
                 (list (and (el-state-flip-h? e) #t) (and (el-state-flip-v? e) #t)))))
@@ -867,6 +1228,42 @@
   (check-regexp-match #rx"~size: 40[.]0" src4)
   (check-equal? (sync-report-actions (sync!)) '() "and it settled"))
 
+;; A bare style name can be a lexical parameter. Even if a top-level or
+;; imported definition happens to have the same spelling, its identity is not
+;; established by that coincidence and it must not be rewritten.
+(let ()
+  (define dir (build-path work "lexical-style"))
+  (make-directory* dir)
+  (define program (build-path dir "lexical.rhm"))
+  (define deck (build-path dir "lexical.pptx"))
+  (display-to-file
+   (string-join
+    '("#lang rhombus/and_meta"
+      "import: lib(\"glide-pptx/runtime.rhm\") open"
+      "export: all_slides"
+      "def fill = hex(\"112233\")"
+      "fun box(fill):"
+      "  at(60.0, 60.0,"
+      "     shape_pict(~width: 120.0, ~height: 80.0, ~fill: fill))"
+      "def slide_1 = slide_canvas("
+      "  ~width: 480.0, ~height: 270.0, ~background: hex(\"FFFFFF\"),"
+      "  box(hex(\"4472C4\"))"
+      ")"
+      "def all_slides = [slide_1]"
+      "")
+    "\n")
+   program #:exists 'replace)
+  (picts->pptx (load-program-picts program) deck #:width 480.0 #:height 270.0)
+  (void (sync-once program deck #:workdir (build-path dir "w")))
+  (define tag (at-site-tag (first (find-at-sites program))))
+  (check-true
+   (edit-after-tag! deck 1 tag #px"<a:srgbClr val=\"[0-9A-Fa-f]+\"/>"
+                    "<a:srgbClr val=\"70AD47\"/>"))
+  (define r (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
+  (check-equal? (sync-report-applied r) '())
+  (check-regexp-match #rx"def fill = hex[(]\"112233\"[)]" (file->string program)
+                      "a same-named top-level definition was untouched"))
+
 ;; ------------------------------------------------------- a slideshow to start from
 
 ;; `raco glide --new` writes one, through the same emitter that writes an
@@ -891,8 +1288,8 @@
                                                 #:atomic? #t))
                 '()
                 "and the two of them agree from the start")
-  (check-regexp-match #rx"~tag: \"Title\"" (file->string program)
-                      "with tags, which is what an edit is written back to"))
+  (check-regexp-match #rx"~name: \"Title\"" (file->string program)
+                      "with a readable editor name but no identity bookkeeping"))
 
 ;; --------------------------------------------------------- the size of the deck
 
@@ -2654,18 +3051,12 @@
   (define deck (build-path dir "deck.pptx"))
   (define w (build-path dir "w"))
   (picts->pptx (load-program-picts program) deck)
-  (void (sync-once program deck #:workdir w))
-  ;; Slide 1's own `at` is found by its slide, so that one is written.
-  (check-true (drag-in-deck! deck 1 "Box" 60.0 80.0) "the one on its own slide is dragged")
-  (define r1 (sync-once program deck #:workdir w #:atomic? #t))
-  (check-equal? (map sync-action-kind (sync-report-applied r1)) '(moved) "and written")
-  ;; The badge's is not: its slide does not hold it, and the file holds two.
-  (check-true (drag-in-deck! deck 2 "Box" 90.0 90.0) "the badge is dragged")
-  (define r2 (sync-once program deck #:workdir w #:atomic? #t))
-  (check-equal? (sync-report-applied r2) '() "which is not written")
-  (check-regexp-match #rx"2 `at` forms in the program are tagged \"Box\""
-                      (format-sync-report r2)
-                      "and the report says that is why"))
+  ;; The helper's site is outside slide_2's scope, while another site has the
+  ;; same explicit name. Waiting until the first drag would put editor work at
+  ;; risk, so this is rejected before a base is recorded.
+  (check-exn #rx"no writable source site"
+             (lambda () (sync-once program deck #:workdir w))
+             "an ambiguous cross-scope helper identity is rejected at startup"))
 
 ;; A check that fails prints and carries on, which is what makes a whole run
 ;; readable -- and leaves the exit code saying nothing. Run on its own, this

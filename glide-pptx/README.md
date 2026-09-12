@@ -67,11 +67,11 @@ def slide_3 = slide_canvas(
   ~width: slide_width, ~height: slide_height,
   ~background: hex("FFFFFF"),
   // TextBox 1 (id 2)
-  at(50.4, 28.8, ~tag: "TextBox 1",
+  at(50.4, 28.8, ~name: "TextBox 1",
      textbox(~width: 792.0, ~height: 72.0, ~wrap: #false, ~autofit: #'grow,
              para(run("Pipeline", ~size: 40.0, ~bold: #true, ~color: hex("1F3B63"))))),
   // Rounded Rectangle 2 (id 3)
-  at(57.6, 158.4, ~tag: "Rounded Rectangle 2",
+  at(57.6, 158.4, ~name: "Rounded Rectangle 2",
      shape_pict(~width: 172.8, ~height: 86.4, ~shape: "roundRect", ~fill: hex("4472C4"),
                 ~body: body(~anchor: #'center,
                             para(~align: #'center,
@@ -79,15 +79,28 @@ def slide_3 = slide_canvas(
                                      ~color: hex("FFFFFF")))))))
 ```
 
-Every element carries a `~tag:`, which is the PowerPoint shape name. That tag is
-what an editor's edit is traced back to, so it is written into the exported shape
-as alt text as well -- alt text survives being renamed in PowerPoint, and the
-name does not.
+The visible `~name:` is only a convenience in an editor's selection pane.
+Identity is normally absent from the program: Rhombus's `at` macro derives an
+opaque tag from the call's source file and location, and Glide puts that tag in
+the exported shape's alt text. Renaming the shape in PowerPoint therefore does
+not break the connection back to source.
 
-A tag names a *code site*, not an element, so one `at` inside a loop draws
-several elements under one tag. Dragging all of them the same way is one
+That source tag names a *code site*, not an element, so one `at` inside a loop
+draws several elements under one tag. Dragging all of them the same way is one
 correction on the one `at`; dragging or deleting only some of them is refused,
 with the reason, because no single correction produces it.
+
+The same source site can also be reused on several slides. It exports normally,
+but an edit to only one page is refused because changing that source call would
+change every use. Give the outer calls distinct proxy tags only when those uses
+really need to be independently editable.
+
+An explicit `~tag:` remains an escape hatch for an abstraction whose one inner
+`at` is invoked as several independently editable objects. Put distinct literal
+tags on those outer helper calls and pass each tag through to the inner `at`.
+Glide also uses explicit tags for source it inserts after a shape or slide is
+created in the editor, so that existing editor object keeps its identity across
+the structural handoff. Ordinary authored and translated `at` calls need none.
 
 ### What an edit in the editor does
 
@@ -144,11 +157,11 @@ by paragraph. So bolding one word of a line lands on the run that word is in,
 and a report that cannot write one says which -- "font of run 2", not "font".
 
 Refused, with the reason, rather than guessed at: moving or deleting *one* of
-several elements that share a tag, retyping that spans two runs or a paragraph
-break, moving something whose position is computed and whose tag is not a
-literal, a fill the editor made a gradient, grouping shapes whose positions the
-program computes, and reordering `at` forms with a comment standing between
-them.
+several elements drawn by one source site, retyping that spans two runs or a
+paragraph break, moving something whose position cannot be associated with a
+parseable `at` call, a fill the editor made a gradient, grouping shapes whose
+positions the program computes, and reordering `at` forms with a comment
+standing between them.
 
 Grouping and ungrouping move the `at` forms rather than writing new ones, which
 is the difference between keeping what the code says about a shape and
@@ -245,8 +258,8 @@ raco glide talk.rhm           # open it, keep both in step
 ```
 
 A new program is written by the same emitter that writes an imported deck, so
-it is in the dialect glide reads back: tagged `at` forms, an `all_slides` list,
-a slideshow module and a PDF submodule.
+it is in the dialect Glide reads back: source-located `at` forms, a literal
+`glide_slides` manifest, a slideshow module and a PDF submodule.
 
 ## The workflow
 
@@ -259,13 +272,73 @@ The second command exports the program to a deck, opens it in an editor
 (Keynote on macOS, `--app` to choose), and keeps the two in step: save the
 program and the deck is rewritten; save in the editor and the drag comes back as
 a literal in the source. The deck, the editor's own document and the agreed base
-are scratch, kept in `.glide/` -- what the folder holds is `talk.rhm` and
-its `media/`.
+are scratch, kept in `.glide/` -- what the talk folder holds is `talk.rhm`, any
+locally imported `.rhm` modules, and its `media/`.
+
+### Splitting a talk across source files
+
+The program passed to `raco glide` is the root module. Glide follows its local
+Rhombus imports transitively, so slide definitions can live in imported `.rhm`
+files:
+
+```rhombus
+// talk.rhm
+#lang rhombus/and_meta
+import:
+  lib("glide-pptx/runtime.rhm") open
+  "intro.rhm" open
+  "results.rhm" open
+export:
+  all_slides
+glide_slides all_slides:
+  [slide_1, slide_2, slide_20]
+```
+
+Each slide module exports the definitions used by the root and imports whatever
+runtime or common helpers it needs. An `at(...)` remains owned by the file where
+it is written: saving the deck patches that file, while reordering slides
+patches the root's `all_slides`. Saving any local imported `.rhm` file regenerates
+the deck. Imports such as `lib("...")` are installed libraries, not program
+source, and are neither watched nor edited.
+
+`glide_slides` makes `all_slides` an ordinary `List`, so existing show, PDF and
+snapshot code uses it unchanged. It also records a private checked manifest
+that connects each editor page to its source definition. An ambiguous computed
+entry is rejected while the module is compiled instead of after an editor save.
+
+A section decorator can stay directly in the running order. Its last argument
+is the source owner; the decorated value is used by the show, while Glide loads
+the undecorated slide for synchronization:
+
+```rhombus
+fun slide_20():
+  slide_canvas(
+    ~width: slide_width, ~height: slide_height,
+    at(40.0, 60.0, title("Results"))
+  )
+
+glide_slides all_slides:
+  [slide_1, slide_2, in_section(2, slide_20)]
+```
+
+`divider(section)` is the corresponding generated-page form. For another
+decorator, use `show_as(slide_20, decorated(slide_20))`; for another generated
+page, use `show_only(generated_page())`. These marker forms make ownership
+explicit and do not exist as runtime functions. A plain literal
+`def all_slides = [slide_1, slide_2]` remains supported for existing decks, but
+newly emitted decks use the macro.
+
+A slide-level structural edit -- adding an element, repainting or hiding the
+slide -- additionally needs the named owner itself to contain one statically
+recoverable `slide_canvas`; otherwise that edit is refused rather than assigned
+to an inner slide that may be shared elsewhere.
+
+Media paths are still relative to the root program.
 
 
-Each element keeps the shape id and name PowerPoint gave it, as a comment. That
-is what a future write-back will match on, and in the meantime it is how you
-find the thing you just clicked on in the editor.
+Each element keeps the shape id and name PowerPoint gave it as a comment, and
+the name as optional selection-pane metadata. Those are useful human landmarks;
+the hidden source-location tag is what a future write-back matches.
 
 ## Commands
 
@@ -273,9 +346,9 @@ find the thing you just clicked on in the editor.
 | --- | --- |
 | `program.rhm` | open it in an editor and keep the two in step (the default) |
 | `translate deck.pptx [-o dir\|file.rhm]` | emit a Rhombus program plus the images it uses |
-| `export program.rkt [-o out.pptx]` | write a `.pptx` from the program's slide picts |
-| `sync program.rkt deck.pptx [-n]` | merge the deck's edits back into the program |
-| `watch program.rkt [--app keynote]` | keep both in step, in both directions |
+| `export program.rhm [-o out.pptx]` | write a `.pptx` from the program's slide picts |
+| `sync program.rhm deck.pptx [-n]` | merge the deck's edits back into the program |
+| `watch program.rhm [--app keynote]` | keep both in step, in both directions |
 | `render deck.pptx [-o dir]` | render straight to PDF, skipping code generation |
 | `verify deck.pptx ...` | render both ways and report per-page differences |
 | `ir deck.pptx` | print the intermediate representation |
@@ -640,6 +713,7 @@ glide-pptx/
   pptx-write.rkt   display list to DrawingML and an OPC package
   export.rkt       picts->pptx, the mirror of picts->pdf
   runtime.rhm      Rhombus naming over the same runtime
+  source-tag.rkt   hidden editor identities derived from source locations
   render.rkt       IR to picts, via the runtime
   emit-common.rkt  what to emit, and the pretty printer
   emit-rhombus.rkt Rhombus surface syntax

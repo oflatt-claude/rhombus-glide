@@ -328,14 +328,13 @@
 
 ;; One `at` drawing an element on two slides, and a drag on one of them.
 ;;
-;; Writing the shared form moves both, so the deck's other slide is left holding
-;; the old value -- and read as a fresh edit it gets written again with that
-;; slide's delta, which moves the first one back. It reported the same drag on
-;; slide 3, then slide 5, then slide 3 again, for as long as anyone let it, and
-;; a Ctrl-C in the middle applied it once more on the way out.
+;; Writing the shared form would move both, so the deck's other slide would be
+;; left holding the old value. Read as a fresh edit, that old occurrence could
+;; then move the first one back and make the watcher oscillate forever.
 ;;
-;; The answer is the one a build already had: say the deck is behind, so the
-;; loop writes it again from the program and every instance is in step.
+;; A page-local edit to a source site shared by distinct logical slides is not
+;; representable. Refuse it as one operation and leave both the program and its
+;; base alone; independently editable calls need distinct outer proxy tags.
 (let ()
   (define dir (build-path work "shared-across-slides"))
   (make-directory* dir)
@@ -377,13 +376,16 @@
   (check-true (and (drag-in-deck! deck 1 "Badge" 111.0 222.0) #t)
               "the badge was dragged on the first slide")
   (define first-pass (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
-  (check-equal? (length (sync-report-applied first-pass)) 1 "the drag was written")
-  (check-true (sync-report-deck-behind? first-pass)
-              "and the deck is behind, because the other slide holds the old value")
-  ;; Which is what the loop does about it.
+  (check-equal? (length (sync-report-applied first-pass)) 0
+                "the page-local drag was not written into a shared source call")
+  (check-equal? (length (sync-report-skipped first-pass)) 1
+                "the shared occurrence was refused as one operation")
+  (check-false (sync-report-deck-behind? first-pass)
+               "the refused edit did not advance the base")
+  ;; Regenerating from the unchanged program discards the unrepresentable drag.
   (picts->pptx (load-program-picts program) deck)
-  ;; Twice, because an oscillation takes two passes to show itself: the first
-  ;; would report the other slide, and the second would report this one again.
+  ;; Twice, because the old bug took two passes to show its oscillation: the
+  ;; first reported the other slide and the second reported this one again.
   (for ([pass (in-list '(1 2))])
     (define r (sync-once program deck #:workdir (build-path dir "w") #:atomic? #t))
     (check-equal? (for/list ([a (in-list (sync-report-actions r))])
