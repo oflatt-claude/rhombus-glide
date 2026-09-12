@@ -38,6 +38,8 @@ import:
 export:
   staged_slide
   do_staged_slide           // the function behind the macro, for a show that loops
+  arrive                    // what a transition ends with; see below
+  arriving_page
   dead_beats                // advances that change nothing; see below
   set_start_from
   set_transitions
@@ -184,9 +186,43 @@ fun pan_offset(dir, w :: Real, h :: Real):
   | #'down: values(0.0, h)
   | #'up: values(0.0, -h)
 
+// What every transition ends with: the lead put before the slide's own timeline,
+// which is what `~lead_in:` then plays on the press that lands on the slide.
+//
+// A slide may already have an arrival of its own -- an opening picture that draws
+// itself is one -- and it lives in the same place, epoch -1. `switch` carries only
+// epochs 0 and up, so padding a lead in front of such a slide does not stack the
+// two: it drops the slide's own arrival on the floor, silently, and the slide
+// simply stops animating itself in. So when there is one, the two are played in
+// turn within the one epoch instead: the page arrives, and then it draws itself.
+fun arrive(lead :: Pict, next :: Pict) :~ values(Pict, Boolean):
+  def own = next.epoch_extent(-1)
+  cond
+  | own == 0: values(switch(lead, next).time_pad(~before: -1), #true)
+  | ~else:
+      def le = lead.epoch_extent(0)
+      def total = le + own
+      def both:
+        animate(~extent: total, ~bend: fun (x :: Real): x,
+                fun (n):
+                  def s = n * total
+                  if s <= le
+                  | lead.snapshot(0, (if le == 0 | 0.0 | s / le))
+                  | next.snapshot(-1, math.min(1.0, (s - le) / own)))
+      values(switch(both, next).time_pad(~before: -1), #true)
+
+// The page a transition brings on. A slide that draws itself in should be panned
+// on *before* it has drawn anything, not after: its arrival is what fills it in,
+// and bringing the finished picture in and then drawing it again would be the
+// same picture twice.
+fun arriving_page(next :: Pict) :~ StaticPict:
+  if next.epoch_extent(-1) == 0
+  | next.snapshot(0, 0)
+  | next.snapshot(-1, 0)
+
 fun pan_transition(dir):
   fun (prev :: StaticPict, next :: Pict, data :: Map):
-    def page = next.snapshot(0, 0)
+    def page = arriving_page(next)
     def w = math.max(prev.width, page.width)
     def h = math.max(prev.height, page.height)
     def (dx, dy) = pan_offset(dir, w, h)
@@ -199,7 +235,7 @@ fun pan_transition(dir):
                         prev.translate(-n * dx, -n * dy),
                         page.translate((1.0 - n) * dx, (1.0 - n) * dy))
                   .refocus(frame))
-    values(switch(lead, next).time_pad(~before: -1), #true)
+    arrive(lead, next)
 
 // The slide's logical number -- the one `--skip` wants -- drawn small in the
 // bottom-right. Off unless asked for: it is ink on a deck that did not ask for
@@ -299,11 +335,17 @@ fun do_staged_slide(make, ~title: ttl = #false, ~transition: tr = #false,
       if shown is_a Pict && (shown :~ Pict).duration > 1
       | (shown :~ Pict).sustain()
       | shown
+    // A pict padded to start before epoch 0 carries an arrival -- `pan_transition`
+    // hands one back, and so does a slide whose opening picture draws itself.
+    // Slideshow plays epoch -1 on the press that lands on the slide, skipping both
+    // ends, so it costs no waiting frame of its own; `~lead_in:` is how that is
+    // asked for, and asking the pict is how we know to ask.
+    def lead_in = held is_a Pict && (held :~ Pict).epoch_extent(-1) != 0
     cond
     | ttl && held is_a List: slide(& held, ~title: named, ~& kws)
-    | ttl: slide(held, ~title: named, ~& kws)
+    | ttl: slide(held, ~title: named, ~lead_in: lead_in, ~& kws)
     | held is_a List: slide(& held, ~name: named, ~& kws)
-    | ~else: slide(held, ~name: named, ~& kws)
+    | ~else: slide(held, ~name: named, ~lead_in: lead_in, ~& kws)
 
 expr.macro 'staged_slide:
               $(group_option_sequence

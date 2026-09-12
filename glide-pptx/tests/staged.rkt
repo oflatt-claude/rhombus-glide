@@ -63,6 +63,17 @@
      "def with_stages:"
      "  def base = Pict.from_handle(canvas)"
      "  switch(base, animate(fun (t): base.alpha(t)), animate(fun (t): base.alpha(t)))"
+     "// Three epochs that all animate, so that dropping one off either end"
+     "// leaves the same two: `~before: -1` moves the first off the front of the"
+     "// timeline, which is how a pict says it has an arrival to play, and"
+     "// `~after: -1` drops the last, which is those two epochs and no arrival."
+     "def all_moving:"
+     "  def base = Pict.from_handle(canvas)"
+     "  switch(animate(fun (t): base.alpha(t)),"
+     "         animate(fun (t): base.alpha(t)),"
+     "         animate(fun (t): base.alpha(t)))"
+     "def with_lead = all_moving.time_pad(~before: -1)"
+     "def no_lead = all_moving.time_pad(~after: -1)"
      "")
    "\n"))
 
@@ -85,7 +96,7 @@
      "println(\"staged \" +& glide.transition_of(with_stages))"
      "println(\"advances \" +& with_stages.duration)"
      ""
-     (format "glide.deck_to_pdf([canvas, hidden, with_stages], ~s, ~~width: w, ~~height: h)"
+     (format "glide.deck_to_pdf([canvas, hidden, with_stages, with_lead], ~s, ~~width: w, ~~height: h)"
              (path->string (build-path work "deck.pdf")))
      ""
      "// Counted as the defaults leave them -- a cut between slides and no fade"
@@ -106,6 +117,23 @@
      "println(\"panned \" +& emitted())"
      "show_slides([with_stages], ~width: w, ~height: h)"
      "println(\"stages \" +& emitted())"
+     "// A pict that starts before epoch 0 has an arrival, and `slide` plays it on"
+     "// the press that lands on the slide rather than spending a waiting frame on"
+     "// it -- so the same two epochs are worth more frames with one than without."
+     "show_slides([with_lead], ~width: w, ~height: h)"
+     "println(\"leadin \" +& emitted())"
+     "show_slides([no_lead], ~width: w, ~height: h)"
+     "println(\"nolead \" +& emitted())"
+     "// And a transition arrives in the same place, so the two have to be played"
+     "// in turn rather than one padded over the other. Asked of `arrive` itself:"
+     "// the lead-in play is a fixed number of frames however long the epoch is, so"
+     "// counting slides cannot see the difference, but the epoch's extent can."
+     "def a_lead = animate(~extent: 0.5, fun (n): Pict.from_handle(canvas).alpha(n))"
+     "def (arrived, _l1) = arrive(a_lead, with_lead)"
+     "def (arrived_plain, _l2) = arrive(a_lead, no_lead)"
+     "println(\"arrive own \" +& arrived.epoch_extent(-1)"
+     "          +& \" plain \" +& arrived_plain.epoch_extent(-1)"
+     "          +& \" duration \" +& arrived.duration +& \"/\" +& no_lead.duration)"
      "// The title every page carries, which `a` and `s` group by. Collected"
      "// while retracting, so it also clears the slides it counted."
      "fun titles():"
@@ -190,6 +218,39 @@
    (check-regexp-match #px"revealed ([3-9]|[0-9][0-9]+)" out
                        "and with the reveal on, a still slide is faded up rather than cut to")
 
+   ;; ----------------------------------------------------------- the arrival
+   ;; `time_pad(~before: -1)` moves a pict's first epoch off the front of the
+   ;; timeline, which is what `pan_transition` hands back and what a slide that
+   ;; animates itself in can hand back too. Slideshow plays that epoch on the
+   ;; press that lands on the slide, skipping both ends, so it costs no waiting
+   ;; frame of its own -- and the two picts compared here have the same two
+   ;; epochs, so every frame of the difference is the arrival being played.
+   ;;
+   ;; Nothing here asks for that: a pict that starts before epoch 0 says so, and
+   ;; `slide` reads it. This is the check that it does.
+   (let ([l (regexp-match #px"leadin ([0-9]+)" out)]
+         [n (regexp-match #px"nolead ([0-9]+)" out)])
+     (check-true (and l n #t) "both were shown")
+     (when (and l n)
+       (check-true (> (string->number (cadr l)) (string->number (cadr n)))
+                   "a pict that starts before epoch 0 has its arrival played")))
+
+;; A transition arrives in the same place, and `switch` carries only epochs 0
+   ;; and up -- so a lead padded in front of a slide that already had an arrival
+   ;; used to drop that arrival on the floor, silently. `arrive` plays the two in
+   ;; turn within the one epoch instead: its extent is both of them, and the
+   ;; slide is no longer than it was.
+   (let ([m (regexp-match #px"arrive own ([0-9.]+) plain ([0-9.]+) duration ([0-9]+)/([0-9]+)" out)])
+     (check-true (and m #t) "`arrive` was asked both ways")
+     (when m
+       (define own (string->number (cadr m)))
+       (define plain (string->number (caddr m)))
+       (check-equal? plain 0.5 "a slide with no arrival of its own is just the lead")
+       (check-true (> own plain)
+                   "and one that brought an arrival plays that too, after the lead")
+       (check-equal? (string->number (cadddr m)) (string->number (list-ref m 4))
+                     "neither costs the slide an epoch")))
+
    ;; ------------------------------------------------------- a and s navigate
    ;; `s` skips to the next slide with a different title and `a` back to the
    ;; start of the previous group, so the title is what decides how far a press
@@ -226,9 +287,12 @@
       (define out (open-output-string))
       (parameterize ([current-output-port out]) (system* pdfinfo (path->string pdf)))
       (define m (regexp-match #px"Pages:\\s*(\\d+)" (get-output-string out)))
-      ;; One for the canvas, three for the three advances, none for the hidden one.
-      (check-equal? (and m (string->number (cadr m))) 4
-                    "an advance is a page, and a hidden slide is not")])])
+      ;; One for the canvas, three for the three advances, none for the hidden
+      ;; one -- and three for the lead-in slide, whose two epochs are two pages
+      ;; and whose arrival lands on a third. Without that last one the backup
+      ;; would be missing the picture the slide comes to rest on.
+      (check-equal? (and m (string->number (cadr m))) 7
+                    "an advance is a page, an arrival lands on one, and a hidden slide is not")])])
 
 ;; A program can be loaded twice in one process.
 ;;
